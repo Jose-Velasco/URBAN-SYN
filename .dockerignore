@@ -128,3 +128,14 @@ token.json
 # Git
 .git
 .gitignore
+
+baselines/**/data/
+baselines/**/outputs/
+baselines/**/params/
+
+baselines/**/*.npy
+baselines/**/*.h5
+baselines/**/*.pt
+baselines/**/*.pth
+baselines/**/*.ckpt
+baselines/**/*.csv
