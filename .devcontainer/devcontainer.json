@@ -1,0 +1,20 @@
+{
+  "name": "urban-syn",
+  "dockerComposeFile": "docker-compose.dev.yml",
+  "service": "app",
+  "workspaceFolder": "/home/dev/src",
+  "postCreateCommand": "bash .devcontainer/postCreate.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-azuretools.vscode-docker"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/home/dev/src/.venv/bin/python",
+        "python.analysis.typeCheckingMode": "standard"
+      }
+    }
+  }
+}

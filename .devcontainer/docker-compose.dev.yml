@@ -1,0 +1,19 @@
+version: "3.5"
+name: urban-syn
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    volumes:
+      - ..:/home/dev/src:cached
+      # This speeds up rebuilds/recreates because uv can reuse downloaded artifacts.
+      # # Use a uv cache volume mounted to /home/vscode/.cache/uv so installs are fast across container rebuilds.
+      - uv-cache-urban-syn:/home/vscode/.cache/uv
+    gpus: all
+    shm_size: "10g"  # helpful for PyTorch/ORT buffers
+    restart: unless-stopped
+    command: sleep infinity
+
+volumes:
+  uv-cache-urban-syn:
