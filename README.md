@@ -34,3 +34,17 @@ uv run python your_script.py
 - .venv/ is auto-created (do not commit it)
 - Always use uv run instead of activating manually
 - Keep dependencies reproducible via uv
+
+## Baselines
+
+This project includes baseline implementations adapted from existing research repositories.
+
+### LSTM-TrajGAN
+- Source: https://github.com/GeoDS/LSTM-TrajGAN
+- Paper: [LSTM-TrajGAN: A Deep Learning Approach to Trajectory Privacy Protection](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.GIScience.2021.I.12)
+
+The code for this baseline is included under:
+`baselines/gan/lstm_trajgan/`
+
+
+See `baselines/gan/lstm_trajgan/NOTES.md` for details.
