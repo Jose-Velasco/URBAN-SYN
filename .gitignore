@@ -218,11 +218,45 @@ pyrightconfig.json
 
 # End of https://www.toptal.com/developers/gitignore/api/visualstudiocode
 
+baselines/**/data/*
+baselines/**/outputs/*
+baselines/**/params/*
+
+!baselines/**/data/**/*.py
+!baselines/**/data/**/*.json
+!baselines/**/data/**/*.yaml
+!baselines/**/data/**/*.yml
+!baselines/**/data/**/*.txt
+!baselines/**/data/**/README*
+!baselines/**/data/**/.gitkeep
+
+!baselines/**/params/**/*.py
+!baselines/**/params/**/*.json
+!baselines/**/params/**/*.yaml
+!baselines/**/params/**/*.yml
+!baselines/**/params/**/*.txt
+!baselines/**/params/**/README*
+!baselines/**/params/**/.gitkeep
+
+!baselines/**/outputs/**/README*
+!baselines/**/outputs/**/.gitkeep
+
+baselines/**/*.npy
+baselines/**/*.h5
+baselines/**/*.pt
+baselines/**/*.pth
+baselines/**/*.ckpt
+baselines/**/*.csv
+
+# But allow traversal into this specific one
+!baselines/gan/lstm_trajgan/repo/data/
+# Then allow the file
+!baselines/gan/lstm_trajgan/repo/data/csv2npy.py
+
 *.png
 *.json
 *.csv
 *.svg
 *.tar.gz
-
 
 !.devcontainer/devcontainer.json
