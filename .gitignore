@@ -1,6 +1,3 @@
-### Datasets ###
-data/
-
 ### Database ###
 *.accdb
 *.db
@@ -258,5 +255,11 @@ baselines/**/*.csv
 *.csv
 *.svg
 *.tar.gz
+*.gpkg
+
+
+### Datasets ###
+data/
+outputs/
 
 !.devcontainer/devcontainer.json
