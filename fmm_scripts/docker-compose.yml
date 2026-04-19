@@ -1,0 +1,8 @@
+services:
+  fmm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/workspace
+    command: sleep infinity

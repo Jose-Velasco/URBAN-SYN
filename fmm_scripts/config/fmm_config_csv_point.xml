@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This is for your cleaned parquet converted to point CSV. -->
+<config>
+  <input>
+    <ubodt>
+    <!-- Ubodt file name -->
+      <file>./data/nyc_ubodt.txt</file>
+    </ubodt>
+    <network>
+    <!-- network file name -->
+      <file>./data/fmm_nyc.shp</file>
+      <!-- network id field name -->
+      <id>fid</id>
+      <source>u</source>
+      <target>v</target>
+    <!-- network mode name, only applies to OSM network, one of drive|walk|bike|all. -->
+      <mode>drive</mode>
+    </network>
+    <gps>
+    <!-- GPS file name -->
+      <file>./data/nyc_gps_points_fmm_ready.csv</file>
+      <!-- GPS id field/column name -->
+      <id>id</id>
+      <!-- GPS geometry field/column name (default:geom), only applicable for CSV file -->
+      <!-- <geom>id</geom> -->
+
+      <!-- if specified read input data as gps point, otherwise (default) read input data as trajectory -->
+      <gps_point/>
+      <!-- X field/column name, only applicable for GPS point CSV file -->
+      <x>x</x>
+      <!-- Y field/column name, only applicable for GPS point CSV file -->
+      <y>y</y>
+      <!-- Timestamp field/column name, an integer list (Trajectory file) and int (Point GPS file) -->
+      <timestamp>timestamp</timestamp>
+    </gps>
+  </input>
+  <parameters>
+  <!-- number of candidates -->
+    <k>8</k>
+    <!-- search radius (unit: map unit) -->
+    <r>0.003</r>
+    <!-- GPS sensor error (unit: map unit) -->
+    <gps_error>0.0005</gps_error>
+  </parameters>
+  <output>
+  <!-- refer to https://fmm-wiki.github.io/docs/documentation/output/ -->
+    <fields>
+    <!-- the path traversed by the trajectory -->
+      <cpath/>
+      <!-- edge matched to each point in trajectory -->
+      <opath/>
+      <!-- the geometry of the cpath (matched path) -->
+      <mgeom/>
+      <tpath/>
+      <!-- shortest path distances traversed between consecutive points -->
+      <spdist/>
+      <!-- length of the matched edge for each point -->
+      <length/>
+      <!-- time difference (duration) between two consecutive GPS points -->
+      <duration/>
+      <!-- speed of the vehicle between two consecutive GPS points, calculated by spdist/duration -->
+      <speed/>
+      <!-- distance from each point to its matched point -->
+      <error/>
+    </fields>
+    <!-- Output file name -->
+    <file>./output/nyc_fmm_match.csv</file>
+  </output>
+  <other>
+  <!-- log level: 0-trace,1-debug,2-info,3-warn,4-err,5-critical,6off -->
+    <log_level>2</log_level>
+    <!-- If specified, run map matching in multiple thread -->
+    <use_omp/>
+    <!-- Number of trajectories to report the progress of matching -->
+    <step>1000</step>
+  </other>
+</config>

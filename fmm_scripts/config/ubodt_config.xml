@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Use this after you generate your road edge file. -->
+<config>
+  <input>
+    <network>
+      <file>./data/fmm_nyc.shp</file>
+      <!-- network id field name -->
+      <id>fid</id>
+      <!-- network source field name  -->
+      <source>u</source>
+      <!-- network target field name -->
+      <target>v</target>
+      <!-- network mode name, only applies to OSM network, one of drive|walk|bike|all. -->
+      <mode>drive</mode>
+    </network>
+  </input>
+  <parameters>
+  <!-- Upper distance of routing (unit: map unit) -->
+  <!-- If your network is still in lon/lat degrees, 0.03
+   degrees is roughly a few kilometers, and the docs suggest trying small degree values first when using unprojected data -->
+   <!-- store shortest paths between node pairs within a specific maximum distance of delta -->
+    <delta>0.03</delta>
+  </parameters>
+  <output>
+    <file>./data/nyc_ubodt.txt</file>
+  </output>
+  <other>
+  <!-- Log level: 0-trace,1-debug,2-info,3-warn,4-err,5-critical,6-off -->
+    <log_level>2</log_level>
+    <!-- If specified, run in multiple threads, which will be faster -->
+    <use_omp/>
+  </other>
+</config>

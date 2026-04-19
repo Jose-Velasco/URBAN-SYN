@@ -50,8 +50,9 @@ coverage/
 # Project-specific ignores
 # ======================================================
 
-# Data and medical imaging files (large)
+# Data
 data/
+outputs/
 *.nii
 *.nii.gz
 *.mha
@@ -61,6 +62,7 @@ data/
 *.tfrecord
 *.csv
 *.jsonl
+*.gpkg
 
 # Model artifacts / checkpoints
 checkpoints/
@@ -139,3 +141,5 @@ baselines/**/*.pt
 baselines/**/*.pth
 baselines/**/*.ckpt
 baselines/**/*.csv
+
+fmm/
