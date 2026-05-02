@@ -5,7 +5,7 @@ https://github.com/WenMellors/TS-TrajGen
 
 ## Source: 
 - Repo: https://github.com/WenMellors/TS-TrajGen/tree/master
-- Source commit/tag: 
+- Source commit/tag: a71502d3a834f0069475ba3c71bb56f851e32a62
 
 ## Undocumented preprocessing mismatch
 
@@ -47,8 +47,13 @@ II. Run  `preprocess_pretrain_input.py` on the *Pre-preprocesses* data
     uv run build_tstrajgen_inputs.py \
            --network_path ../../../fmm_scripts/data/fmm_nyc.shp \
            --fmm_match_path ../../../fmm_scripts/output/nyc_fmm_match.csv \
+           --parquet_path ../../../data/nyc_output_tabular/output/traj_cleaned.parquet \
+           --trip_id_map_csv ../../../fmm_scripts/data/nyc_gps_points_fmm_trip_id_map.csv \
            --out_dir ./outputs/nyc \
+           --log_dir ./outputs/logs \
            --dataset_name nyc \
+           --min_len 2 \
+           --min_delta_seconds 0.5 \
            --train_ratio 0.8
     ```
 2. Run  `preprocess_pretrain_input.py`
