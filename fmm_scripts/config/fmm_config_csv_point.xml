@@ -51,6 +51,7 @@
       <opath/>
       <!-- the geometry of the cpath (matched path) -->
       <mgeom/>
+      <!-- edges traversed between consecutive points separated by -->
       <tpath/>
       <!-- shortest path distances traversed between consecutive points -->
       <spdist/>
