@@ -120,6 +120,4 @@ if __name__ == '__main__':
         trip_id_map_csv=TRIP_ID_MAP_CSV,
     )
 
-# Ran this in side dev container
-# next spin up dockerfile for building an fmm container to do the map-matching
-# TODO: test the fmm dockerfile, then next stage after matching: turn cpath into nyc.geo, nyc.rel, and LibCity nyc.dyna.
+# TODO: then next stage after matching: turn tpath into nyc.geo, nyc.rel (LibCity formats).
