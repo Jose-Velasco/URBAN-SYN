@@ -1,0 +1,16 @@
+name: ts-trajgen
+services:
+  ts-trajgen:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /workspace/repo
+    volumes:
+      - ./repo:/workspace/repo
+      - ./data:/workspace/data
+      - ./outputs:/workspace/outputs
+    gpus: all
+    shm_size: "8g"
+    tty: true
+    stdin_open: true
+    command: /bin/bash
