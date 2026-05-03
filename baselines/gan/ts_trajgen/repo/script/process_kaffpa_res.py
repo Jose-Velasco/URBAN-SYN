@@ -1,15 +1,93 @@
 # 生成 region2rid 以及 rid2region 文件
 import json
+from pathlib import Path
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 import networkx as nx
 import seaborn as sns
 import matplotlib.pyplot as plt
+import argparse
 import tarjan
 
-road_info = pd.read_csv('../data/Xian/xian.geo')
-road_rel = pd.read_csv('../data/Xian/xian.rel')
+
+parser = argparse.ArgumentParser(
+    description="Process KaHIP partition results for TS-TrajGen."
+)
+
+parser.add_argument(
+    "--dataset_name",
+    type=str,
+    default="Xian",
+    help="Dataset folder name (e.g., Xian, nyc).",
+)
+
+parser.add_argument(
+    "--data_root",
+    type=str,
+    default="../data",
+    help="Root data directory.",
+)
+
+parser.add_argument(
+    "--geo_filename",
+    type=str,
+    default="xian.geo",
+    help="Geo file name.",
+)
+
+parser.add_argument(
+    "--rel_filename",
+    type=str,
+    default="xian.rel",
+    help="Rel file name.",
+)
+
+parser.add_argument(
+    "--partition_filename",
+    type=str,
+    default="tmppartition50",
+    help="KaHIP output partition file.",
+)
+
+parser.add_argument(
+    "--adjacent_filename",
+    type=str,
+    default="adjacent_list.json",
+    help="Road adjacency JSON file.",
+)
+
+parser.add_argument(
+    "--region2rid_filename",
+    type=str,
+    default="region2rid.json",
+    help="Output mapping: region -> road ids.",
+)
+
+parser.add_argument(
+    "--rid2region_filename",
+    type=str,
+    default="rid2region.json",
+    help="Output mapping: road id -> region.",
+)
+
+args = parser.parse_args()
+
+data_dir: Path = Path(args.data_root) / args.dataset_name
+
+data_dir: Path = data_dir
+geo_path: Path = data_dir / args.geo_filename
+rel_path: Path = data_dir / args.rel_filename
+partition_path: Path = data_dir / args.partition_filename
+adjacent_path: Path = data_dir / args.adjacent_filename
+region2rid_path: Path = data_dir / args.region2rid_filename
+rid2region_path: Path = data_dir / args.rid2region_filename
+
+
+road_info = pd.read_csv(geo_path)
+# road_info = pd.read_csv('../data/Xian/xian.geo')
+road_rel = pd.read_csv(rel_path)
+# road_rel = pd.read_csv('../data/Xian/xian.rel')
 # 需要删除孤立的路段，因此需要做一个重编码（双映射）
 # 找到孤立点
 outlier_set = set(road_info['geo_id'])
@@ -35,7 +113,8 @@ for rid in range(total_road_num):
 
 region2rid = {}
 rid2region = {}
-with open('../data/Xian/tmppartition50', 'r') as f:
+# with open('../data/Xian/tmppartition50', 'r') as f:
+with open(partition_path, 'r') as f:
     road_id = 1
     for line in f:
         region_id = int(line)
@@ -52,7 +131,8 @@ region2rid_true = {}
 rid2region_true = {}
 new_region_id = 0
 
-with open('../data/Xian/adjacent_list.json', 'r') as f:
+# with open('../data/Xian/adjacent_list.json', 'r') as f:
+with open(adjacent_path, 'r') as f:
     adjacent_list = json.load(f)
 
 assert len(rid2region) == road_info.shape[0] - len(outlier_set)
@@ -173,9 +253,11 @@ for key in region2rid_true:
 # plt.show()
 
 
-with open('../data/Xian/region2rid.json', 'w') as f:
+# with open('../data/Xian/region2rid.json', 'w') as f:
+with open(region2rid_path, 'w') as f:
     json.dump(region2rid_true, f)
-with open('../data/Xian/rid2region.json', 'w') as f:
+# with open('../data/Xian/rid2region.json', 'w') as f:
+with open(rid2region_path, 'w') as f:
     json.dump(rid2region_true, f)
 
 region_rid_cnt = np.array(region_rid_cnt)

@@ -12,6 +12,7 @@ import pandas as pd
 from geopy import distance
 from shapely.geometry import LineString
 from tqdm import tqdm
+from collections import defaultdict
 
 
 def str2bool(value):
@@ -191,8 +192,13 @@ def load_train_test_data(paths: dict[str, Path | None]) -> tuple[pd.DataFrame, p
     tuple[pd.DataFrame, pd.DataFrame]
         Train and test trajectory dataframes.
     """
-    train_data = pd.read_csv(paths["train_data_path"])
-    test_data = pd.read_csv(paths["test_data_path"])
+    train_data_path = paths["train_data_path"]
+    test_data_path = paths["test_data_path"]
+    if not (train_data_path and test_data_path):
+        raise ValueError(f"Require both train_data_path and test_data_path but got: {train_data_path = }, {test_data_path = }")
+
+    train_data = pd.read_csv(train_data_path)
+    test_data = pd.read_csv(test_data_path)
     return train_data, test_data
 
 
@@ -214,6 +220,8 @@ def load_adjacent_list(paths: dict[str, Path | None]) -> dict[str, list[int]]:
         Mapping from road id string to list of reachable next road ids.
     """
     adjacent_file = paths["adjacent_file"]
+    if adjacent_file is None:
+        raise ValueError(f"Required adjacent_file but got: {adjacent_file = }")
 
     if adjacent_file.exists():
         with open(adjacent_file, "r", encoding="utf-8") as f:
@@ -226,21 +234,23 @@ def load_adjacent_list(paths: dict[str, Path | None]) -> dict[str, list[int]]:
         )
 
     rid_rel = pd.read_csv(rel_file)
-    road_adjacent_list: dict[str, list[int]] = {}
+    # road_adjacent_list: dict[str, list[int]] = {}
+    road_adjacent_list: dict[str, list[int]] = defaultdict(list)
 
     for _, row in tqdm(rid_rel.iterrows(), total=rid_rel.shape[0], desc="build road adjacent list"):
         from_rid = str(row["origin_id"])
         to_rid = int(row["destination_id"])
 
-        if from_rid not in road_adjacent_list:
-            road_adjacent_list[from_rid] = [to_rid]
-        else:
-            road_adjacent_list[from_rid].append(to_rid)
+        road_adjacent_list[from_rid].append(to_rid)
+        # if from_rid not in road_adjacent_list:
+        #     road_adjacent_list[from_rid] = [to_rid]
+        # else:
+        #     road_adjacent_list[from_rid].append(to_rid)
 
     with open(adjacent_file, "w", encoding="utf-8") as f:
         json.dump(road_adjacent_list, f)
 
-    return road_adjacent_list
+    return dict(road_adjacent_list)
 
 
 def load_rid_gps(paths: dict[str, Path | None]) -> dict[str, tuple[float, float]]:
@@ -261,6 +271,9 @@ def load_rid_gps(paths: dict[str, Path | None]) -> dict[str, tuple[float, float]
         Mapping from road id string to (lon, lat).
     """
     rid_gps_file = paths["rid_gps_file"]
+
+    if rid_gps_file is None:
+        raise ValueError(f"Required rid_gps_file but got: {rid_gps_file = }")
 
     if rid_gps_file.exists():
         with open(rid_gps_file, "r", encoding="utf-8") as f:
@@ -288,28 +301,50 @@ def load_rid_gps(paths: dict[str, Path | None]) -> dict[str, tuple[float, float]
 
     return rid_gps
 
-
 def encode_time(timestamp: str) -> int:
     """
     Encode a timestamp into the model's minute-level time slot.
 
-    Weekdays use [0, 1439], weekends use [1440, 2879], matching the
-    paper/code convention.
+    Supports ISO timestamps with or without milliseconds/timezone suffix.
+    Weekdays use [0, 1439], weekends use [1440, 2879].
 
     Parameters
     ----------
     timestamp : str
-        Timestamp in '%Y-%m-%dT%H:%M:%SZ' format.
 
     Returns
     -------
     int
         Encoded time slot.
     """
-    time = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
+    time = pd.Timestamp(timestamp).to_pydatetime()
+
     if time.weekday() in (5, 6):
         return time.hour * 60 + time.minute + 1440
+
     return time.hour * 60 + time.minute
+
+# def encode_time(timestamp: str) -> int:
+#     """
+#     Encode a timestamp into the model's minute-level time slot.
+
+#     Weekdays use [0, 1439], weekends use [1440, 2879], matching the
+#     paper/code convention.
+
+#     Parameters
+#     ----------
+#     timestamp : str
+#         Timestamp in '%Y-%m-%dT%H:%M:%SZ' format.
+
+#     Returns
+#     -------
+#     int
+#         Encoded time slot.
+#     """
+#     time = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
+#     if time.weekday() in (5, 6):
+#         return time.hour * 60 + time.minute + 1440
+#     return time.hour * 60 + time.minute
 
 
 def parse_rid_list(value: str) -> list[int]:
@@ -376,6 +411,7 @@ def encode_trace(
     rid_gps: dict[str, tuple[float, float]],
     random_encode: bool,
     max_step: int,
+    stats: dict[str, int],
 ) -> None:
     """
     Encode one trajectory into TS-TrajGen pretraining supervision format.
@@ -399,20 +435,28 @@ def encode_trace(
     time_list = parse_time_list(trace["time_list"])
 
     if len(rid_list) < 2 or len(time_list) < 2:
+        print(f"Skipping current trace encode rid_list or time_list less than one: {len(rid_list) = }, {len(time_list)}")
         return
 
     # Keep sequences aligned if malformed rows sneak in.
     if len(rid_list) != len(time_list):
+        print(f"Misaligned rid_list or time_list performing truncation: {len(rid_list) = }, {len(time_list) = }")
         min_len = min(len(rid_list), len(time_list))
         rid_list = rid_list[:min_len]
         time_list = time_list[:min_len]
 
-    if len(rid_list) < 2:
-        return
+    # if len(rid_list) < 2:
+    #     return
 
     des = rid_list[-1]
     des_gps = rid_gps[str(des)]
 
+    # NOTE: comments translated from original repo code (provided for context)
+    """
+    The training data still seems a bit too much.
+    To avoid overfitting, let's use randomized encoding steps. 
+    We can do a comparative experiment to see which one performs better.
+    """
     if not random_encode:
         i = 1
         step_fn = lambda cur_i: cur_i + 1
@@ -427,12 +471,37 @@ def encode_trace(
 
         # If connectivity breaks, the rest of the supervision example is unreliable.
         if str(cur_rid) not in adjacent_list or rid_list[i] not in adjacent_list[str(cur_rid)]:
+            # print("A path break has occurred, discarding the subsequent paths.")
+            
+            # Same-edge repeats can happen in our NYC data when multiple GPS anchors map
+            # to the same road segment at different timestamps.
+            if rid_list[i] == cur_rid:
+                stats["same_edge_repeats"] += 1
+                # NOTE:
+                # to try to proceed but this changes original authors implementation and most likely results
+                # for now align. 
+                # NOTE:
+                # uncomment and not use return below instead to NOT throw away the entire remaining trajectory after the first break.
+                # this will change behavior from discard whole trace to skip that broken transition and continue
+                # i = step_fn(i)
+                # continue
+                return
+
+            # A true path break means the next road is not listed as reachable from
+            # the current road in the .rel adjacency graph.
+            stats["path_breaks"] += 1
+
+            # NOTE:
+            # uncomment below and use instead of return
+            # i = step_fn(i)
+            # continue
             return
 
         candidate_set = adjacent_list[str(cur_rid)]
 
         # Only useful when there is a real branching choice.
         if len(candidate_set) > 1:
+            """Only points with multiple candidate points are worth learning from. (translated original comment)"""
             target = rid_list[i]
             target_index = 0
             candidate_dis = []
@@ -456,6 +525,7 @@ def encode_trace(
             fp.write(
                 f"\"{cur_loc_str}\",\"{cur_time_str}\",{des},\"{candidate_set_str}\",\"{candidate_dis_str}\",{target_index}\n"
             )
+            stats["encoded_examples"] += 1
 
         i = step_fn(i)
 
@@ -465,7 +535,7 @@ def main() -> None:
     Main entry point for building TS-TrajGen pretraining CSVs.
     """
     args = parse_args()
-    np.random.seed(42)
+    np.random.seed(101)
 
     paths = resolve_dataset_paths(args)
 
@@ -476,8 +546,21 @@ def main() -> None:
     total_data_num = train_data.shape[0]
     train_num = int(total_data_num * args.train_rate)
 
-    paths["train_output"].parent.mkdir(parents=True, exist_ok=True)
+    train_output = paths["train_output"]
+    if train_output is None:
+        raise ValueError(f"Required train_output but got: {train_output = }")
 
+    # paths["train_output"].parent.mkdir(parents=True, exist_ok=True)
+    train_output.parent.mkdir(parents=True, exist_ok=True)
+
+    if not (paths["train_output"] and paths["eval_output"] and paths["test_output"]):
+        raise ValueError(f"Require the following but got: {paths['train_output'] = }, {paths['eval_output'] = }, {paths['test_output'] = }")
+
+    stats = {
+        "path_breaks": 0,
+        "same_edge_repeats": 0,
+        "encoded_examples": 0,
+    }
     with open(paths["train_output"], "w", encoding="utf-8") as train_output, \
          open(paths["eval_output"], "w", encoding="utf-8") as eval_output, \
          open(paths["test_output"], "w", encoding="utf-8") as test_output:
@@ -488,7 +571,7 @@ def main() -> None:
         test_output.write(header)
 
         for index, row in tqdm(train_data.iterrows(), total=train_data.shape[0], desc="encode train traj"):
-            if index <= train_num:
+            if index < train_num:
                 encode_trace(
                     trace=row,
                     fp=train_output,
@@ -496,6 +579,7 @@ def main() -> None:
                     rid_gps=rid_gps,
                     random_encode=args.random_encode,
                     max_step=args.max_step,
+                    stats=stats,
                 )
             else:
                 encode_trace(
@@ -505,6 +589,7 @@ def main() -> None:
                     rid_gps=rid_gps,
                     random_encode=args.random_encode,
                     max_step=args.max_step,
+                    stats=stats,
                 )
 
         for _, row in tqdm(test_data.iterrows(), total=test_data.shape[0], desc="encode test traj"):
@@ -515,9 +600,15 @@ def main() -> None:
                 rid_gps=rid_gps,
                 random_encode=args.random_encode,
                 max_step=args.max_step,
+                stats=stats,
             )
 
     print("Done.")
+    print("=== Pretrain Encoding Stats ===")
+    print(f"Encoded examples:    {stats['encoded_examples']:,}")
+    print(f"Path breaks skipped: {stats['path_breaks']:,}")
+    print(f"Same-edge repeats:   {stats['same_edge_repeats']:,}")
+    
     print(f"Train input: {paths['train_output']}")
     print(f"Eval input:  {paths['eval_output']}")
     print(f"Test input:  {paths['test_output']}")

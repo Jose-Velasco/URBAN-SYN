@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
 import scipy.sparse as sp
@@ -17,15 +18,33 @@ import json
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--local', type=str2bool, default=False)
+parser.add_argument('--local', type=str2bool, default=True)
 parser.add_argument('--dataset_name', type=str, default='BJ_Taxi')
 parser.add_argument('--device', type=str, default='cuda:0')
 parser.add_argument('--debug', type=str2bool, default=False)
+
+parser.add_argument(
+    "--geo_path",
+    type=Path,
+    # default=Path("./data/nyc/nyc_features_processed.geo"),
+    required=True,
+    help="Path to *.geo file .geo file has the road feature columns expected.",
+)
+parser.add_argument(
+    "--map_manger_cache_dir",
+    type=Path,
+    required=True,
+    help="Path to save MapManger's computed city lat/long bonding boxes.",
+)
+
 args = parser.parse_args()
 local = args.local
 dataset_name = args.dataset_name
 device = args.device
 debug = args.debug
+
+geo_path: Path = args.geo_path
+map_manger_cache_dir: Path = args.map_manger_cache_dir
 
 archive_data_folder = 'TS_TrajGen_data_archive'
 
@@ -69,6 +88,22 @@ train = True
 
 logger = get_logger(name='GatFC')
 logger.info('read data')
+
+# def safe_minmax(series: pd.Series) -> pd.Series:
+#     """
+#     Normalize a numeric column without producing NaNs for constant columns.
+#     """
+#     series = pd.to_numeric(series, errors="coerce").fillna(0.0)
+#     min_value = series.min()
+#     max_value = series.max()
+#     denom = max_value - min_value
+
+#     if denom == 0:
+#         return pd.Series(0.0, index=series.index)
+
+#     return (series - min_value) / denom
+
+
 if dataset_name == 'BJ_Taxi':
     # 数据集的大小
     road_num = 40306
@@ -114,9 +149,16 @@ elif dataset_name == 'Porto_Taxi':
         'img_height': img_height
     }
 else:
-    # Xian
-    map_manager = MapManager(dataset_name=dataset_name)
-    road_num = 17378
+    # Xian (not only for Xian anymore since migrating to symlink)
+    map_manager = MapManager(
+        dataset_name=dataset_name,
+        geo_path=geo_path,
+        cache_dir=map_manger_cache_dir
+    )
+    
+    # can also maybe get it from rid_gps file? maybe its faster?
+    road_num = pd.read_csv(geo_path).shape[0]
+    # road_num = 17378
     road_num_with_pad = road_num + 1
     adjacent_np_file = os.path.join(data_root, dataset_name, 'adjacent_mx.npz')
     if os.path.exists(adjacent_np_file):
@@ -142,7 +184,9 @@ else:
     # 加载 node_feature
     node_feature_file = os.path.join(data_root, dataset_name, 'node_feature.pt')
     if not os.path.exists(node_feature_file):
-        road_info = pd.read_csv(os.path.join(data_root, dataset_name, 'xian.geo'))
+        road_info = pd.read_csv(geo_path)
+        # road_info = pd.read_csv(os.path.join(data_root, dataset_name, 'xian.geo'))
+        
         na_value = {'lanes': 'unknown', 'bridge': 'no', 'access': 'unknown', 'maxspeed': 120, 'tunnel': 'no',
                     'junction': 'no', 'width': 100}
         encode_feature = ['highway', 'oneway', 'length'] + list(na_value.keys())
@@ -155,20 +199,27 @@ else:
             'maxspeed': 6,
             'width': 9
         }
+        # min-max norm
         for k, v in norm_dict.items():
             d = node_features[k]
             min_ = d.min()
             max_ = d.max()
             dnew = (d - min_) / (max_ - min_)
+            # drop unnorm columns
             node_features = node_features.drop(labels=k, axis=1)
+            # reinsert the same col but now norm
             node_features.insert(v, k, dnew)
         # 对离散属性进行独热码
         onehot_list = ['highway', 'oneway', 'lanes', 'bridge', 'access', 'tunnel', 'junction']
         # 不做独热码了，直接编号吧
         label_encoder = LabelEncoder()
         for label in onehot_list:
-            encoded_label = label_encoder.fit_transform(road_info[label])
-            node_features['{}_encoded'.format(label)] = encoded_label
+            # maybe bug here since node_features[label] is already filled with defaults and cleaned?
+            # encoded_label = label_encoder.fit_transform(road_info[label])
+            encoded_label = label_encoder.fit_transform(
+               node_features[label].astype(str)
+            )
+            node_features['{}_encoded'.format(label)] = encoded_label # pyright: ignore[reportCallIssue, reportArgumentType]
         node_features = node_features.drop(columns=onehot_list)
         # for col in onehot_list:
         #     dum_col = pd.get_dummies(node_features[col], col)
@@ -188,6 +239,14 @@ else:
             lat_grid.append(y)
         node_features['lon_grid'] = lon_grid
         node_features['lat_grid'] = lat_grid
+
+        if node_features.isna().any().any() or node_features.isin([np.inf, -np.inf]).any().any():
+            print(f"INFO: Found erroneous values in node_features before cleaning it: {node_features.isna().any().any() = }, {node_features.isin([np.inf, -np.inf]).any().any() = }")
+
+        # no NaN/inf they are replaced with 0
+        node_features = node_features.replace([np.inf, -np.inf], np.nan)
+        node_features = node_features.fillna(0.0)
+
         node_features = node_features.values
         # 缓存 node_features
         node_features = torch.FloatTensor(node_features)

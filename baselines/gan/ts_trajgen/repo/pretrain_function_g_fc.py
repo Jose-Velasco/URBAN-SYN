@@ -1,4 +1,6 @@
 # 预训练生成器v1
+from pathlib import Path
+
 from generator.function_g_fc import FunctionGFC
 import pandas as pd
 from utils.ListDataset import ListDataset
@@ -13,13 +15,24 @@ from utils.parser import str2bool
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--local', type=str2bool, default=False)
+parser.add_argument('--local', type=str2bool, default=True)
 parser.add_argument('--dataset_name', type=str, default='BJ_Taxi')
 parser.add_argument('--device', type=str, default='cuda:0')
+
+parser.add_argument(
+    "--geo_path",
+    type=Path,
+    # default=Path("./data/nyc/nyc_features_processed.geo"),
+    required=True,
+    help="Path to *.geo file .geo file has the road feature columns expected.",
+)
+
 args = parser.parse_args()
 local = args.local
 dataset_name = args.dataset_name
 device = args.device
+
+geo_path: Path = args.geo_path
 
 if local:
     data_root = './data/'
@@ -65,7 +78,9 @@ if dataset_name == 'BJ_Taxi':
     }
 else:
     # Xian
-    road_num = 17378
+    # can also maybe get it from rid_gps file? maybe its faster?
+    road_num = pd.read_csv(geo_path).shape[0]
+    # road_num = 17378
     time_size = 2880
     loc_pad = road_num
     time_pad = time_size
