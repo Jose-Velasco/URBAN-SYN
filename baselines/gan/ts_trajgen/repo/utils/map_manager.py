@@ -37,37 +37,141 @@ import torchvision.transforms as transforms
 #         transforms.Normalize((0.5), (0.5))]
 # )
 
+import ast
+import json
+import math
+from pathlib import Path
+
+import pandas as pd
+
+Bounds = tuple[float, float, float, float]  # (lon_0, lon_1, lat_0, lat_1)
 
 class MapManager(object):
+    """
+    If you regenerate .geo, delete the cache: rm ./data/Xian/Xian.bounds.json
+    Otherwise you will silently use outdated bounds.
+    """
 
-    def __init__(self, dataset_name):
+    def __init__(self, dataset_name: str, geo_path: Path | None, cache_dir: Path | None):
         self.dataset_name = dataset_name
-        if self.dataset_name == 'Xian':
+
+        if geo_path is not None:
+            # geo_path = Path(geo_path)
+
+            # Default cache location: same folder as .geo
+            if cache_dir is None:
+                cache_dir = geo_path.parent
+
+            cache_path = Path(cache_dir) / f"{geo_path.stem}.bounds.json"
+
+            if cache_path.exists():
+                print(f"INFO: Using cached *.bounds.json file: {cache_path}")
+                # Load cached bounds
+                bounds = self._load_bounds(cache_path)
+            else:
+                # Compute and save
+                bounds = self._bounds_from_geo(geo_path)
+                self._save_bounds(bounds, cache_path)
+
+            self.lon_0, self.lon_1, self.lat_0, self.lat_1 = bounds
+
+        elif self.dataset_name == "Xian":
             self.lon_0 = 108.8093988
             self.lon_1 = 109.0499449
             self.lat_0 = 34.17026046
             self.lat_1 = 34.29639324
+
         else:
-            raise NotImplementedError()
-        self.img_unit = 0.005  # 这样画出来的大小，大概是 0.42 km * 0.55 km 的格子
-        self.img_width = math.ceil((self.lon_1 - self.lon_0) / self.img_unit) + 1  # 图像的宽度
-        self.img_height = math.ceil((self.lat_1 - self.lat_0) / self.img_unit) + 1  # 映射出的图像的高度
+            raise NotImplementedError(
+                f"Unsupported dataset: {self.dataset_name}. "
+                "Pass geo_path to compute bounds."
+            )
 
-    def gps2grid(self, lon, lat):
-        """
-        GPS 经纬度点映射为图像网格
-        Args:
-            lon: 经度
-            lat: 纬度
+        self.img_unit = 0.005
+        self.img_width = math.ceil((self.lon_1 - self.lon_0) / self.img_unit) + 1
+        self.img_height = math.ceil((self.lat_1 - self.lat_0) / self.img_unit) + 1
 
-        Returns:
-            x, y: 映射的网格的 x 与 y 坐标
-        """
-        x = math.floor((lon - self.lon_0) / self.img_unit)
-        y = math.floor((lat - self.lat_0) / self.img_unit)
+    def _bounds_from_geo(self, geo_path: Path) -> Bounds:
+        geo_df = pd.read_csv(geo_path)
+
+        min_lon, max_lon = float("inf"), float("-inf")
+        min_lat, max_lat = float("inf"), float("-inf")
+
+        for coords_raw in geo_df["coordinates"]:
+            coords: list[tuple[float, float]] = ast.literal_eval(coords_raw)
+
+            for lon, lat in coords:
+                min_lon = min(min_lon, lon)
+                max_lon = max(max_lon, lon)
+                min_lat = min(min_lat, lat)
+                max_lat = max(max_lat, lat)
+
+        return (min_lon, max_lon, min_lat, max_lat)
+
+    def _save_bounds(self, bounds: Bounds, path: Path) ->  None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        data = {
+            "lon_0": bounds[0],
+            "lon_1": bounds[1],
+            "lat_0": bounds[2],
+            "lat_1": bounds[3],
+        }
+
+        with open(path, "w") as f:
+            json.dump(data, f)
+
+    def _load_bounds(self, path: Path) -> Bounds:
+        with open(path, "r") as f:
+            data: dict[str, float] = json.load(f)
+
+        return (
+            data["lon_0"],
+            data["lon_1"],
+            data["lat_0"],
+            data["lat_1"],
+        )
+
+    def gps2grid(self, lon: float, lat: float) -> tuple[int, int]:
+        x: int = math.floor((lon - self.lon_0) / self.img_unit)
+        y: int = math.floor((lat - self.lat_0) / self.img_unit)
+
         assert 0 <= x <= self.img_width
         assert 0 <= y <= self.img_height
+
         return x, y
+
+
+# class MapManager(object):
+
+#     def __init__(self, dataset_name):
+#         self.dataset_name = dataset_name
+#         if self.dataset_name == 'Xian':
+#             self.lon_0 = 108.8093988
+#             self.lon_1 = 109.0499449
+#             self.lat_0 = 34.17026046
+#             self.lat_1 = 34.29639324
+#         else:
+#             raise NotImplementedError()
+#         self.img_unit = 0.005  # 这样画出来的大小，大概是 0.42 km * 0.55 km 的格子
+#         self.img_width = math.ceil((self.lon_1 - self.lon_0) / self.img_unit) + 1  # 图像的宽度
+#         self.img_height = math.ceil((self.lat_1 - self.lat_0) / self.img_unit) + 1  # 映射出的图像的高度
+
+#     def gps2grid(self, lon, lat):
+#         """
+#         GPS 经纬度点映射为图像网格
+#         Args:
+#             lon: 经度
+#             lat: 纬度
+
+#         Returns:
+#             x, y: 映射的网格的 x 与 y 坐标
+#         """
+#         x = math.floor((lon - self.lon_0) / self.img_unit)
+#         y = math.floor((lat - self.lat_0) / self.img_unit)
+#         assert 0 <= x <= self.img_width
+#         assert 0 <= y <= self.img_height
+#         return x, y
 
     # def gps_trace2img(trace):
     #     """
