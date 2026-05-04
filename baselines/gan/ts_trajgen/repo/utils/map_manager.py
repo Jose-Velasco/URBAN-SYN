@@ -70,6 +70,7 @@ class MapManager(object):
                 bounds = self._load_bounds(cache_path)
             else:
                 # Compute and save
+                print(f"INFO: building *.bounds.json file and caching to disk: {cache_path}")
                 bounds = self._bounds_from_geo(geo_path)
                 self._save_bounds(bounds, cache_path)
 

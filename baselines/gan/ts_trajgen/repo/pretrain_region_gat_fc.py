@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
 import scipy.sparse as sp
@@ -13,23 +14,137 @@ from utils.parser import str2bool
 import argparse
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--local', type=str2bool, default=False)
-parser.add_argument('--dataset_name', type=str, default='BJ_Taxi')
-parser.add_argument('--device', type=str, default='cuda:0')
-parser.add_argument('--debug', type=str2bool, default=False)
+parser = argparse.ArgumentParser(
+    description=(
+        "Pretrain region-level GAT (Function H) using region adjacency, "
+        "region features, and trajectory pretraining data (TS-TrajGen)."
+    )
+)
+
+# parser.add_argument('--local', type=str2bool, default=True)
+# parser.add_argument('--debug', type=str2bool, default=False)
+
+# ---- dataset ----
+parser.add_argument(
+    "--dataset_name",
+    type=str,
+    default="Xian",
+    help="Dataset folder name (e.g., Xian, nyc via symlink).",
+)
+
+parser.add_argument(
+    "--data_root",
+    type=Path,
+    default=Path("./data"),
+    help="Root directory containing dataset folders.",
+)
+
+parser.add_argument(
+    "--device",
+    type=str,
+    default="cuda:0",
+    help="Torch device (e.g., cuda:0, cpu).",
+)
+
+# ---- inputs ----
+parser.add_argument(
+    "--region2rid_filename",
+    type=str,
+    default="region2rid.json",
+    help="Mapping from region id → list of road ids.",
+)
+
+parser.add_argument(
+    "--adjacent_np_filename",
+    type=str,
+    default="region_adj_mx.npz",
+    help="Region adjacency sparse matrix file.",
+)
+
+parser.add_argument(
+    "--node_feature_filename",
+    type=str,
+    default="region_feature.pt",
+    help="Region-level node feature tensor.",
+)
+
+parser.add_argument(
+    "--region_dist_filename",
+    type=str,
+    default="region_count_dist.npy",
+    help="Region-to-region distance matrix.",
+)
+
+parser.add_argument(
+    "--train_filename",
+    type=str,
+    default="xianshi_region_pretrain_input_train.csv",
+    help="Region-level pretrain training data.",
+)
+
+parser.add_argument(
+    "--eval_filename",
+    type=str,
+    default="xianshi_region_pretrain_input_eval.csv",
+    help="Region-level pretrain validation data.",
+)
+
+parser.add_argument(
+    "--test_filename",
+    type=str,
+    default="xianshi_region_pretrain_input_test.csv",
+    help="Region-level pretrain test data.",
+)
+
+# ---- training control ----
+parser.add_argument(
+    "--train",
+    action="store_true",
+    default=False,
+    help="Enable training mode.",
+)
+
+# ---- outputs ----
+parser.add_argument(
+    "--save_dir",
+    type=Path,
+    default=Path("./save/Xian"),
+    help="Directory to save/load model (default: ./save/<dataset_name>).",
+)
+
+parser.add_argument(
+    "--save_file_name",
+    type=str,
+    default="region_gat_fc.pt",
+    help="Model checkpoint filename.",
+)
+
 args = parser.parse_args()
-local = args.local
-dataset_name = args.dataset_name
-device = args.device
-debug = args.debug
+# local = args.local
+dataset_name: str = args.dataset_name
+device: str = args.device
+# debug = args.debug
 
-archive_data_folder = 'TS_TrajGen_data_archive'
+data_dir: Path = args.data_root / args.dataset_name
+save_dir: Path = args.save_dir
 
-if local:
-    data_root = './data/'
-else:
-    data_root = '/mnt/data/jwj/TS_TrajGen_data_archive/'
+save_dir.mkdir(parents=True, exist_ok=True)
+
+region2rid_path: Path = data_dir / args.region2rid_filename
+adjacent_np_path: Path = data_dir / args.adjacent_np_filename
+node_feature_path: Path = data_dir / args.node_feature_filename
+region_dist_path: Path = data_dir / args.region_dist_filename
+train_path: Path = data_dir / args.train_filename
+eval_path: Path = data_dir / args.eval_filename
+test_path: Path = data_dir / args.test_filename
+save_path: Path = save_dir / args.save_file_name
+
+# archive_data_folder = 'TS_TrajGen_data_archive'
+
+# if local:
+#     data_root = './data/'
+# else:
+#     data_root = '/mnt/data/jwj/TS_TrajGen_data_archive/'
 
 # 训练参数
 batch_size = 32
@@ -61,25 +176,29 @@ lr_patience = 2
 lr_decay_ratio = 0.01
 early_stop_lr = 1e-6
 
-save_folder = './save/{}'.format(dataset_name)
-save_file_name = 'region_gat_fc.pt'
+# save_folder = './save/{}'.format(dataset_name)
+save_folder: Path = save_dir
+# save_file_name = 'region_gat_fc.pt'
 temp_folder = './temp/{}/gat/'.format(dataset_name)
-train = True
+train: bool = args.train
 
 logger = get_logger(name='RegionGatDis')
 logger.info('read data')
-with open(os.path.join(data_root, dataset_name, 'region2rid.json'), 'r') as f:
+# with open(os.path.join(data_root, dataset_name, 'region2rid.json'), 'r') as f:
+with open(region2rid_path, 'r') as f:
     region2rid = json.load(f)
 # 数据集的大小
 road_num = len(region2rid)
 road_num_with_pad = road_num + 1
-adjacent_np_file = os.path.join(data_root, dataset_name, 'region_adj_mx.npz')
+# adjacent_np_file = os.path.join(data_root, dataset_name, 'region_adj_mx.npz')
+# adjacent_np_file: Path = adjacent_np_path
 
-adj_mx = sp.load_npz(adjacent_np_file)
+adj_mx = sp.load_npz(adjacent_np_path)
 
 # 加载区域 region_feature
-node_feature_file = os.path.join(data_root, dataset_name, 'region_feature.pt')
-node_features = torch.load(node_feature_file, map_location='cpu').to(device)
+# node_feature_file = os.path.join(data_root, dataset_name, 'region_feature.pt')
+# node_features = torch.load(node_feature_file, map_location='cpu').to(device)
+node_features = torch.load(node_feature_path, map_location='cpu').to(device)
 
 data_feature = {
     'adj_mx': adj_mx,
@@ -100,9 +219,12 @@ if dataset_name == 'BJ_Taxi':
     test_data = pd.read_csv('./data/201511_region_pretrain_input_test.csv')
 else:
     # Xian
-    train_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_region_pretrain_input_train.csv'))
-    eval_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_region_pretrain_input_eval.csv'))
-    test_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_region_pretrain_input_test.csv'))
+    # train_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_region_pretrain_input_train.csv'))
+    train_data = pd.read_csv(train_path)
+    # eval_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_region_pretrain_input_eval.csv'))
+    eval_data = pd.read_csv(eval_path)
+    # test_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_region_pretrain_input_test.csv'))
+    test_data = pd.read_csv(test_path)
 
 train_data = train_data.values.tolist()
 eval_data = eval_data.values.tolist()
@@ -119,7 +241,8 @@ train_dataset = ListDataset(train_data)
 eval_dataset = ListDataset(eval_data)
 test_dataset = ListDataset(test_data)
 
-region_dist = np.load(os.path.join(data_root, dataset_name, 'region_count_dist.npy'))
+# region_dist = np.load(os.path.join(data_root, dataset_name, 'region_count_dist.npy'))
+region_dist = np.load(region_dist_path)
 
 
 # 自定义收集函数
@@ -207,7 +330,8 @@ if train:
     logger.info('load best from {}'.format(best_epoch))
     gat.load_state_dict(torch.load(os.path.join(temp_folder, load_temp_file)))
 else:
-    gat.load_state_dict(torch.load(os.path.join(save_folder, save_file_name), map_location=device))
+    # gat.load_state_dict(torch.load(os.path.join(save_folder, save_file_name), map_location=device))
+    gat.load_state_dict(torch.load(save_path, map_location=device))
 # 开始评估
 gat.train(False)
 test_hit = 0
@@ -224,7 +348,8 @@ logger.info('==> Test Result: test ac {}'.format(test_ac))
 # 保存模型
 if not os.path.exists(save_folder):
     os.makedirs(save_folder)
-torch.save(gat.state_dict(), os.path.join(save_folder, save_file_name))
+# torch.save(gat.state_dict(), os.path.join(save_folder, save_file_name))
+torch.save(gat.state_dict(), save_path)
 # 删除 temp 文件
 for rt, dirs, files in os.walk(temp_folder):
     for name in files:

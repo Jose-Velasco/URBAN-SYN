@@ -1,5 +1,7 @@
 from datetime import datetime
 
+import pandas as pd
+
 
 def parse_coordinate(coordinate, type):
     """
@@ -26,14 +28,36 @@ def parse_coordinate(coordinate, type):
         lat = float(coordinate[1])
         return lon, lat
 
+def encode_time(timestamp: str) -> int:
+    """
+    Encode a timestamp into the model's minute-level time slot.
 
-def encode_time(timestamp):
+    Supports ISO timestamps with or without milliseconds/timezone suffix.
+    Weekdays use [0, 1439], weekends use [1440, 2879].
+
+    Parameters
+    ----------
+    timestamp : str
+
+    Returns
+    -------
+    int
+        Encoded time slot.
     """
-    将字符串格式的时间戳编码
-    """
-    # 按一分钟编码，周末与工作日区分开来
-    time = datetime.strptime(timestamp, '%Y-%m-%dT%H:%M:%SZ')
-    if time.weekday() == 5 or time.weekday() == 6:
+    time = pd.Timestamp(timestamp).to_pydatetime()
+
+    if time.weekday() in (5, 6):
         return time.hour * 60 + time.minute + 1440
-    else:
-        return time.hour * 60 + time.minute
+
+    return time.hour * 60 + time.minute
+
+# def encode_time(timestamp):
+#     """
+#     将字符串格式的时间戳编码
+#     """
+#     # 按一分钟编码，周末与工作日区分开来
+#     time = datetime.strptime(timestamp, '%Y-%m-%dT%H:%M:%SZ')
+#     if time.weekday() == 5 or time.weekday() == 6:
+#         return time.hour * 60 + time.minute + 1440
+#     else:
+#         return time.hour * 60 + time.minute

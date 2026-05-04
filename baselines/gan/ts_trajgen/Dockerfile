@@ -50,7 +50,7 @@ RUN mkdir build && cd build && \
 
 WORKDIR /workspace/repo
 
-COPY baselines/gan/ts_trajgen/requirements.txt /tmp/requirements.txt
+COPY ./requirements.txt /tmp/requirements.txt
 
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r /tmp/requirements.txt

@@ -232,5 +232,115 @@ python encode_region_traj.py \
 
 ```bash
 python prepare_region_feature.py \
+       --dataset_name Xian \
+       --device cuda:0 \
+       --data_root ./data \
+       --geo_path ./data/Xian/xian.geo \
+       --map_manger_cache_dir ./data/Xian \
+       --save_folder ./save/Xian \
+       --save_file_name gat_fc.pt \
+       --adjacent_np_filename adjacent_mx.npz \
+       --node_feature_filename node_feature.pt \
+       --rid2region_filename rid2region.json \
+       --region2rid_filename region2rid.json \
+       --region_feature_filename region_feature.pt
+```
 
+14. (**INSIDE CONTAINER ts-trajgen**) to calculate gps distance between regions
+
+```bash
+python construct_region_dist.py \
+       --dataset_name Xian \
+       --data_root ../data \
+       --geo_filename xian.geo \
+       --road_length_filename road_length.json \
+       --rid2region_filename rid2region.json \
+       --region_gps_filename region_gps.json \
+       --train_mm_filename xianshi_partA_mm_train.csv \
+       --test_mm_filename xianshi_partA_mm_test.csv \
+       --processed_traj_filename xianshi_partA_traj_mm_processed.csv \
+       --region_dist_filename region_count_dist.npy
+```
+
+15. (**INSIDE CONTAINER ts-trajgen**) to pretrain region-level function G.
+
+```bash
+python pretrain_region_function_g_fc.py \
+       --dataset_name Xian \
+       --data_root ./data \
+       --region2rid_filename region2rid.json \
+       --train_filename xianshi_region_pretrain_input_train.csv \
+       --eval_filename xianshi_region_pretrain_input_eval.csv \
+       --test_filename xianshi_region_pretrain_input_test.csv \
+       --save_dir ./save/Xian \
+       --save_file_name region_function_g_fc.pt \
+       --device cuda:0 \
+       --train
+```
+
+16. (**INSIDE CONTAINER ts-trajgen**) to pretrain region-level function H.
+
+```bash
+python pretrain_region_gat_fc.py \
+       --dataset_name Xian \
+       --data_root ./data \
+       --region2rid_filename region2rid.json \
+       --adjacent_np_filename region_adj_mx.npz \
+       --node_feature_filename region_feature.pt \
+       --region_dist_filename region_count_dist.npy \
+       --train_filename xianshi_region_pretrain_input_train.csv \
+       --eval_filename xianshi_region_pretrain_input_eval.csv \
+       --test_filename xianshi_region_pretrain_input_test.csv \
+       --save_dir ./save/Xian \
+       --save_file_name region_gat_fc.pt \
+       --device cuda:0 \
+       --train
+```
+
+18. (**INSIDE CONTAINER ts-trajgen**) to build od_distinct_route.json required for `train_gan.py`
+
+```bash
+python generate_od_distinct_route.py \
+       --dataset_name Xian \
+       --data_root ../data \
+       --traj_filename xianshi_partA_traj_mm_processed.csv \
+       --rid_gps_filename rid_gps.json \
+       --output_filename od_distinct_route.json
+
+```
+
+19. (**INSIDE CONTAINER ts-trajgen**) to build road_time_distribution.npy required for `train_gan.py`
+
+```bash
+python generate_time_distribution.py \
+       --dataset_name Xian \
+       --data_root ../data \
+       --traj_filename xianshi_partA_traj_mm_processed.csv \
+       --geo_filename xian.geo \
+       --output_filename road_time_distribution.npy
+```
+
+20. (**INSIDE CONTAINER ts-trajgen**) to adversarial learning (road level?)
+
+```bash
+python train_gan.py \
+       --dataset_name Xian \
+       --data_root ./data \
+       --exp_id 1 \
+       --save_dir ./save/our_gan \
+       --pretrain_g_file ./save/Xian/function_g_fc.pt \
+       --pretrain_gat_file ./save/Xian/gat_fc.pt \
+       --trajectory_filename xianshi_partA_mm_train.csv \
+       --node_feature_filename node_feature.pt \
+       --adjacent_np_filename adjacent_mx.npz \
+       --adjacent_list_filename adjacent_list.json \
+       --rid_gps_filename rid_gps.json \
+       --road_length_filename road_length.json \
+       --od_distinct_route_filename od_distinct_route.json \
+       --road_time_dist_filename road_time_distribution.npy \
+       --geo_filename xian.geo \
+       --map_manger_cache_dir ./data/Xian/ \
+       --device cuda:0 \
+       --pretrain_discriminator True \
+       --debug True
 ```

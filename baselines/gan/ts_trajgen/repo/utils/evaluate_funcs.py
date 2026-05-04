@@ -24,33 +24,33 @@ from matplotlib import pyplot as plt
 debug = False
 
 # 读取路网长度字典与路段 GPS 字典
-road_len_file = './data/porto_road_length.json'
-if not os.path.exists(road_len_file) or not os.path.exists('./data/porto_rid_gps.json'):
-    road_info = pd.read_csv('./data/porto.geo')
-    road_length = {}
-    road_gps = {}
-    for index, row in tqdm(road_info.iterrows(), desc='cal road length'):
-        rid = row['geo_id']
-        length = row['length']
-        coordinate = row['coordinates'].replace('[', '')
-        coordinate = coordinate.replace(']', '').split(',')
-        lon1 = float(coordinate[0])
-        lat1 = float(coordinate[1])
-        lon2 = float(coordinate[2])
-        lat2 = float(coordinate[3])
-        center_gps = ((lon1 + lon2) / 2, (lat1 + lat2) / 2)
-        road_gps[str(rid)] = center_gps
-        road_length[str(rid)] = length
-    # 保存
-    with open(road_len_file, 'w') as f:
-        json.dump(road_length, f)
-    with open('./data/porto_rid_gps.json', 'w') as f:
-        json.dump(road_gps, f)
-else:
-    with open(road_len_file, 'r') as f:
-        road_length = json.load(f)
-    with open('./data/porto_rid_gps.json', 'r') as f:
-        road_gps = json.load(f)
+# road_len_file = './data/porto_road_length.json'
+# if not os.path.exists(road_len_file) or not os.path.exists('./data/porto_rid_gps.json'):
+#     road_info = pd.read_csv('./data/porto.geo')
+#     road_length = {}
+#     road_gps = {}
+#     for index, row in tqdm(road_info.iterrows(), desc='cal road length'):
+#         rid = row['geo_id']
+#         length = row['length']
+#         coordinate = row['coordinates'].replace('[', '')
+#         coordinate = coordinate.replace(']', '').split(',')
+#         lon1 = float(coordinate[0])
+#         lat1 = float(coordinate[1])
+#         lon2 = float(coordinate[2])
+#         lat2 = float(coordinate[3])
+#         center_gps = ((lon1 + lon2) / 2, (lat1 + lat2) / 2)
+#         road_gps[str(rid)] = center_gps
+#         road_length[str(rid)] = length
+#     # 保存
+#     with open(road_len_file, 'w') as f:
+#         json.dump(road_length, f)
+#     with open('./data/porto_rid_gps.json', 'w') as f:
+#         json.dump(road_gps, f)
+# else:
+#     with open(road_len_file, 'r') as f:
+#         road_length = json.load(f)
+#     with open('./data/porto_rid_gps.json', 'r') as f:
+#         road_gps = json.load(f)
 
 # 划分网格
 # lon_range = 0.2507  # 地图经度的跨度
@@ -81,21 +81,21 @@ travel_radius_bins.append(max_radius)
 travel_radius_bins = np.array(travel_radius_bins)
 
 # 预先计算 road 与 grid 的映射关系
-if not os.path.exists('./data/porto_road2grid.json'):
-    road2grid = {}
-    for road in road_gps:
-        gps = road_gps[road]
-        x = math.ceil((gps[0] - lon_0) / img_unit)
-        y = math.ceil((gps[1] - lat_0) / img_unit)
-        road2grid[road] = (x, y)
-    # 缓存
-    with open('./data/porto_road2grid.json', 'w') as f:
-        json.dump(road2grid, f)
-else:
-    with open('./data/porto_road2grid.json', 'r') as f:
-        road2grid = json.load(f)
+# if not os.path.exists('./data/porto_road2grid.json'):
+#     road2grid = {}
+#     for road in road_gps:
+#         gps = road_gps[road]
+#         x = math.ceil((gps[0] - lon_0) / img_unit)
+#         y = math.ceil((gps[1] - lat_0) / img_unit)
+#         road2grid[road] = (x, y)
+#     # 缓存
+#     with open('./data/porto_road2grid.json', 'w') as f:
+#         json.dump(road2grid, f)
+# else:
+#     with open('./data/porto_road2grid.json', 'r') as f:
+#         road2grid = json.load(f)
 
-road_num = len(road2grid)
+# road_num = len(road2grid)
 
 
 def cal_polygon_area(polygon, mode=1):
