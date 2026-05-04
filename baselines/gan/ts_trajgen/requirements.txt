@@ -5,4 +5,10 @@ scipy==1.15.3
 scikit-learn==1.7.2
 tarjan==0.2.4
 seaborn==0.13.2
+hausdorff==0.2.6
+numba==0.65.1
+# https://github.com/slaypni/fastdtw/issues/64
+Cython==3.2.4
+pyproj==3.7.1
+fastdtw==0.3.4
 # kahip==3.25

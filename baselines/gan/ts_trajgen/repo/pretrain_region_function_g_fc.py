@@ -1,4 +1,6 @@
 # 预训练生成器v1
+from pathlib import Path
+
 from generator.function_g_fc import FunctionGFC
 import pandas as pd
 from utils.ListDataset import ListDataset
@@ -13,19 +15,103 @@ import argparse
 from utils.parser import str2bool
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--local', type=str2bool, default=False)
-parser.add_argument('--dataset_name', type=str, default='BJ_Taxi')
+parser = argparse.ArgumentParser(
+    description=(
+        "Pretrain region-level Function G (FC) model using region-level "
+        "trajectory pretraining inputs (TS-TrajGen)."
+    )
+)
+
+parser.add_argument('--local', type=str2bool, default=True)
 parser.add_argument('--device', type=str, default='cuda:0')
+
+# ---- dataset ----
+parser.add_argument(
+    "--dataset_name",
+    type=str,
+    default="Xian",
+    help="Dataset folder name (e.g., Xian, nyc via symlink).",
+)
+
+parser.add_argument(
+    "--data_root",
+    type=Path,
+    default=Path("./data"),
+    help="Root directory containing dataset folders.",
+)
+
+# ---- inputs ----
+parser.add_argument(
+    "--region2rid_filename",
+    type=str,
+    default="region2rid.json",
+    help="Mapping from region id → list of road ids.",
+)
+
+parser.add_argument(
+    "--train_filename",
+    type=str,
+    default="xianshi_region_pretrain_input_train.csv",
+    help="Region-level pretrain training data.",
+)
+
+parser.add_argument(
+    "--eval_filename",
+    type=str,
+    default="xianshi_region_pretrain_input_eval.csv",
+    help="Region-level pretrain validation data.",
+)
+
+parser.add_argument(
+    "--test_filename",
+    type=str,
+    default="xianshi_region_pretrain_input_test.csv",
+    help="Region-level pretrain test data.",
+)
+
+# ---- training control ----
+parser.add_argument(
+    "--train",
+    action="store_true",
+    default=False,
+    help="Enable training mode (if false, script may run eval/inference).",
+)
+
+# ---- outputs ----
+parser.add_argument(
+    "--save_dir",
+    type=Path,
+    default=Path("./save/Xian"),
+    help="Directory to save trained model.",
+)
+
+parser.add_argument(
+    "--save_file_name",
+    type=str,
+    default="region_function_g_fc.pt",
+    help="Output model checkpoint filename.",
+)
+
 args = parser.parse_args()
 local = args.local
-dataset_name = args.dataset_name
-device = args.device
+dataset_name: str = args.dataset_name
+device: str = args.device
 
-if local:
-    data_root = './data/'
-else:
-    data_root = '/mnt/data/jwj/TS_TrajGen_data_archive/'
+data_dir: Path = args.data_root / args.dataset_name
+save_dir: Path = args.save_dir
+
+save_dir.mkdir(parents=True, exist_ok=True)
+
+region2rid_path: Path = data_dir / args.region2rid_filename
+train_path: Path = data_dir / args.train_filename
+eval_path: Path = data_dir / args.eval_filename
+test_path: Path = data_dir / args.test_filename
+save_path: Path = save_dir / args.save_file_name
+
+# if local:
+#     data_root = './data/'
+# else:
+#     data_root = '/mnt/data/jwj/TS_TrajGen_data_archive/'
 
 # 训练相关参数
 max_epoch = 25
@@ -34,12 +120,15 @@ learning_rate = 0.001
 weight_decay = 0.00001
 lr_patience = 2
 lr_decay_ratio = 0.001
-save_folder = './save/{}'.format(dataset_name)
-save_file_name = 'region_function_g_fc.pt'
+# save_folder = './save/{}'.format(dataset_name)
+save_folder: Path = save_dir
+# save_file_name = 'region_function_g_fc.pt'
 temp_folder = './temp/{}/gan/'.format(dataset_name)
 early_stop_lr = 1e-6
-train = True
-with open(os.path.join(data_root, dataset_name, 'region2rid.json'), 'r') as f:
+# train = True
+train: bool = args.train
+# with open(os.path.join(data_root, dataset_name, 'region2rid.json'), 'r') as f:
+with open(region2rid_path, 'r') as f:
     region2rid = json.load(f)
 # 数据集的大小
 road_num = len(region2rid)
@@ -85,9 +174,12 @@ if dataset_name == 'BJ_Taxi':
     test_data = pd.read_csv('./data/201511_region_pretrain_input_test.csv')
 else:
     # Xian
-    train_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_region_pretrain_input_train.csv'))
-    eval_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_region_pretrain_input_eval.csv'))
-    test_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_region_pretrain_input_test.csv'))
+    # train_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_region_pretrain_input_train.csv'))
+    train_data = pd.read_csv(train_path)
+    # eval_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_region_pretrain_input_eval.csv'))
+    eval_data = pd.read_csv(eval_path)
+    # test_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_region_pretrain_input_test.csv'))
+    test_data = pd.read_csv(test_path)
 
 train_data = train_data.values.tolist()
 eval_data = eval_data.values.tolist()
@@ -203,7 +295,7 @@ if train:
     logger.info('load best from {}'.format(best_epoch))
     gen_model.load_state_dict(torch.load(os.path.join(temp_folder, load_temp_file)))
 else:
-    gen_model.load_state_dict(torch.load(os.path.join(save_folder, save_file_name), map_location=device))
+    gen_model.load_state_dict(torch.load(save_path, map_location=device))
 # 开始评估
 test_hit = 0
 gen_model.train(False)
@@ -220,7 +312,7 @@ logger.info('==> Test Result: ac {:.6f}'.format(test_ac))
 # 保存模型
 if not os.path.exists(save_folder):
     os.makedirs(save_folder)
-torch.save(gen_model.state_dict(), os.path.join(save_folder, save_file_name))
+torch.save(gen_model.state_dict(), save_path)
 # 删除 temp 文件
 for rt, dirs, files in os.walk(temp_folder):
     for name in files:
