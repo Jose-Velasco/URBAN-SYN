@@ -55,30 +55,30 @@ debug = False
 # 划分网格
 # lon_range = 0.2507  # 地图经度的跨度
 # lat_range = 0.21  # 地图纬度的跨度
-lon_range = 0.133  # porto
-lat_range = 0.046  # porto
-# lon_0 = 116.25
-# lat_0 = 39.79  # 地图最左下角的坐标（即原点坐标）
-lon_0 = -8.6887
-lat_0 = 41.1405
-img_unit = 0.005  # 这样画出来的大小，大概是 0.42 km * 0.55 km 的格子
-img_width = math.ceil(lon_range / img_unit) + 1  # 图像的宽度
-img_height = math.ceil(lat_range / img_unit) + 1  # 映射出的图像的高度
-road_pad = 11095
-max_distance = 100  # 这里设置一个出行上限阈值
-real_max_distance = 31  # 这个值是真实数据中的上限
-max_radius = 31.6764 * 31.6764
-real_max_radius = 7.2  # 这个值是真实数据中的上限
-# 手动构建 distance_bins, radius_bins
-travel_distance_bins = np.arange(0, real_max_distance, float(real_max_distance) / 1000).tolist()
-# 将从 real max distance 到 max_distance 设置为一个 bin
-travel_distance_bins.append(real_max_distance + 1)
-travel_distance_bins.append(max_distance)
-travel_distance_bins = np.array(travel_distance_bins)
-travel_radius_bins = np.arange(0, real_max_radius, float(real_max_radius) / 100).tolist()
-travel_radius_bins.append(real_max_radius + 1)
-travel_radius_bins.append(max_radius)
-travel_radius_bins = np.array(travel_radius_bins)
+# lon_range = 0.133  # porto
+# lat_range = 0.046  # porto
+# # lon_0 = 116.25
+# # lat_0 = 39.79  # 地图最左下角的坐标（即原点坐标）
+# lon_0 = -8.6887
+# lat_0 = 41.1405
+# img_unit = 0.005  # 这样画出来的大小，大概是 0.42 km * 0.55 km 的格子
+# img_width = math.ceil(lon_range / img_unit) + 1  # 图像的宽度
+# img_height = math.ceil(lat_range / img_unit) + 1  # 映射出的图像的高度
+# road_pad = 11095
+# max_distance = 100  # 这里设置一个出行上限阈值
+# real_max_distance = 31  # 这个值是真实数据中的上限
+# max_radius = 31.6764 * 31.6764
+# real_max_radius = 7.2  # 这个值是真实数据中的上限
+# # 手动构建 distance_bins, radius_bins
+# travel_distance_bins = np.arange(0, real_max_distance, float(real_max_distance) / 1000).tolist()
+# # 将从 real max distance 到 max_distance 设置为一个 bin
+# travel_distance_bins.append(real_max_distance + 1)
+# travel_distance_bins.append(max_distance)
+# travel_distance_bins = np.array(travel_distance_bins)
+# travel_radius_bins = np.arange(0, real_max_radius, float(real_max_radius) / 100).tolist()
+# travel_radius_bins.append(real_max_radius + 1)
+# travel_radius_bins.append(max_radius)
+# travel_radius_bins = np.array(travel_radius_bins)
 
 # 预先计算 road 与 grid 的映射关系
 # if not os.path.exists('./data/porto_road2grid.json'):

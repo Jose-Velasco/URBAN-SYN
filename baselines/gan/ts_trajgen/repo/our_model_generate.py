@@ -1,3 +1,5 @@
+# The generation script uses the pretrained Function G and Function H/GAT checkpoints rather than GAN-trained full-generator checkpoints.
+# Therefore, the current generated outputs represent the imitation-learning pretrained TS-TrajGen pipeline unless the script is modified to load adversarial generator state_dicts.
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -12,28 +14,253 @@ import argparse
 import os
 import math
 from utils.map_manager import MapManager
+import argparse
+from pathlib import Path
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--local', type=str2bool, default=False)
-parser.add_argument('--dataset_name', type=str, default='BJ_Taxi')
+# parser = argparse.ArgumentParser()
+parser = argparse.ArgumentParser(
+    description=(
+        "Generate trajectories using pretrained TS-TrajGen "
+        "road-level and region-level generators."
+    )
+)
+
+parser.add_argument('--local', type=str2bool, default=True)
+# parser.add_argument('--dataset_name', type=str, default='Xian')
 parser.add_argument('--device', type=str, default='cuda:0')
-args = parser.parse_args()
-local = args.local
-dataset_name = args.dataset_name
-device = args.device
 
-archive_data_folder = 'TS_TrajGen_data_archive'
+# ---- dataset ----
+parser.add_argument(
+    "--dataset_name",
+    type=str,
+    default="Xian",
+    help="Dataset folder name (use Xian if using symlink setup).",
+)
+
+parser.add_argument(
+    "--data_root",
+    type=Path,
+    default=Path("./data"),
+    help="Root directory containing dataset folders.",
+)
+
+# ---- input trajectories ----
+parser.add_argument(
+    "--true_traj_file",
+    type=str,
+    default="xianshi_partA_mm_test.csv",
+    help="Ground-truth road-level test trajectories used as OD input.",
+)
+
+# ---- output ----
+parser.add_argument(
+    "--generated_trace_output_file",
+    type=str,
+    default="TS_TrajGen_generate.csv",
+    help="Output generated trajectory CSV.",
+)
+
+# ---- pretrained road-level models ----
+parser.add_argument(
+    "--pretrain_gen_file",
+    type=Path,
+    default=Path("./save/Xian/function_g_fc.pt"),
+    help="Pretrained road-level Function G checkpoint.",
+)
+
+parser.add_argument(
+    "--pretrain_gat_file",
+    type=Path,
+    default=Path("./save/Xian/gat_fc.pt"),
+    help="Pretrained road-level Function H (GAT) checkpoint.",
+)
+
+# ---- pretrained region-level models ----
+parser.add_argument(
+    "--pretrain_region_gen_file",
+    type=Path,
+    default=Path("./save/Xian/region_function_g_fc.pt"),
+    help="Pretrained region-level Function G checkpoint.",
+)
+
+parser.add_argument(
+    "--pretrain_region_gat_file",
+    type=Path,
+    default=Path("./save/Xian/region_gat_fc.pt"),
+    help="Pretrained region-level Function H (GAT) checkpoint.",
+)
+
+# ---- map manager ----
+parser.add_argument(
+    "--geo_path",
+    type=Path,
+    required=True,
+    help="Path to road network .geo file used by MapManager.",
+)
+
+parser.add_argument(
+    "--map_manager_cache_dir",
+    type=Path,
+    default=Path("./data/Xian"),
+    help="Directory used by MapManager to cache computed city bounds.",
+)
+
+# ---- feature / graph files ----
+parser.add_argument(
+    "--node_feature_file",
+    type=str,
+    default="node_feature.pt",
+    help="Road-level node feature tensor.",
+)
+
+parser.add_argument(
+    "--adjacent_np_file",
+    type=str,
+    default="adjacent_mx.npz",
+    help="Road-level sparse adjacency matrix.",
+)
+
+parser.add_argument(
+    "--region_adjacent_np_file",
+    type=str,
+    default="region_adj_mx.npz",
+    help="Region-level sparse adjacency matrix.",
+)
+
+parser.add_argument(
+    "--region_feature_file",
+    type=str,
+    default="region_feature.pt",
+    help="Region-level node feature tensor.",
+)
+
+# ---- json graph / search files ----
+parser.add_argument(
+    "--region2rid_file",
+    type=str,
+    default="region2rid.json",
+    help="Region-to-road mapping JSON.",
+)
+
+parser.add_argument(
+    "--adjacent_list_file",
+    type=str,
+    default="adjacent_list.json",
+    help="Road adjacency list JSON.",
+)
+
+parser.add_argument(
+    "--rid_gps_file",
+    type=str,
+    default="rid_gps.json",
+    help="Road GPS lookup JSON ([lon, lat]).",
+)
+
+parser.add_argument(
+    "--road_length_file",
+    type=str,
+    default="road_length.json",
+    help="Road length lookup JSON.",
+)
+
+parser.add_argument(
+    "--region_adjacent_list_file",
+    type=str,
+    default="region_adjacent_list.json",
+    help="Region adjacency + boundary-road lookup JSON.",
+)
+
+parser.add_argument(
+    "--region_dist_file",
+    type=str,
+    default="region_count_dist.npy",
+    help="Region distance matrix used during hierarchical search.",
+)
+
+parser.add_argument(
+    "--region_transfer_file",
+    type=str,
+    default="region_transfer_prob.json",
+    help="Region transfer probability JSON.",
+)
+
+parser.add_argument(
+    "--rid2region_file",
+    type=str,
+    default="rid2region.json",
+    help="Road-to-region mapping JSON.",
+)
+
+# ---- time distributions ----
+parser.add_argument(
+    "--road_time_distribution_file",
+    type=str,
+    default="road_time_distribution.npy",
+    help="Road-level hourly travel-time distribution.",
+)
+
+parser.add_argument(
+    "--region_time_distribution_file",
+    type=str,
+    default="region_time_distribution.npy",
+    help="Region-level hourly travel-time distribution.",
+)
+args = parser.parse_args()
+
+local: bool = args.local
+dataset_name: str = args.dataset_name
+device: str = args.device
+
+data_dir: Path = args.data_root / args.dataset_name
+
+# trajectory input/output
+true_traj_path: Path = data_dir / args.true_traj_file
+generate_trace_path: Path = data_dir / args.generated_trace_output_file
+
+# pretrained checkpoints
+pretrain_gen_path = args.pretrain_gen_file
+pretrain_gat_path = args.pretrain_gat_file
+pretrain_region_gen_path = args.pretrain_region_gen_file
+pretrain_region_gat_path = args.pretrain_region_gat_file
+
+# map manager
+geo_path: Path = args.geo_path
+map_manager_cache_dir: Path = args.map_manager_cache_dir
+
+# graph/features
+node_feature_path: Path = data_dir / args.node_feature_file
+adjacent_np_path: Path = data_dir / args.adjacent_np_file
+region_adjacent_np_path: Path = data_dir / args.region_adjacent_np_file
+region_feature_path: Path = data_dir / args.region_feature_file
+
+# JSON lookups
+region2rid_path: Path =  data_dir / args.region2rid_file
+adjacent_list_path: Path =  data_dir / args.adjacent_list_file
+rid_gps_path: Path =  data_dir / args.rid_gps_file
+road_length_path: Path =  data_dir / args.road_length_file
+region_adjacent_list_path: Path =  data_dir / args.region_adjacent_list_file
+region_transfer_path: Path =  data_dir / args.region_transfer_file
+rid2region_path: Path =  data_dir / args.rid2region_file
+
+# numpy arrays
+region_dist_path: Path = data_dir / args.region_dist_file
+road_time_distribution_path: Path = data_dir / args.road_time_distribution_file
+region_time_distribution_path: Path = data_dir / args.region_time_distribution_file
+
+archive_data_folder: str = 'TS_TrajGen_data_archive'
 
 if local:
-    data_root = './data/'
+    data_root: str = args.data_root
 else:
-    data_root = '/mnt/data/jwj/'
+    data_root: str = '/mnt/data/jwj/'
 
+# setup model configuration to match that of the pretrained
 if dataset_name == 'BJ_Taxi':
     # 这里我们进行修改，配合后续新工作的实验
     true_traj = pd.read_csv(os.path.join(data_root, dataset_name, 'chaoyang_traj_mm_test.csv'))
     pretrain_gen_file = './save/BJ_Taxi/function_g_fc.pt'
     pretrain_gat_file = './save/BJ_Taxi/gat_fc.pt'
+    # output file path
     ganerate_trace_file = os.path.join(data_root, dataset_name, 'TS_TrajGen_chaoyang_generate.csv')
     pretrain_region_gen_file = './save/BJ_Taxi/region_function_g_fc.pt'
     pretrain_region_gat_file = './save/BJ_Taxi/region_gat_fc.pt'
@@ -135,12 +362,14 @@ elif dataset_name == 'Porto_Taxi':
     }
 else:
     assert dataset_name == 'Xian'
-    true_traj = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_partA_mm_test.csv'))
-    pretrain_gen_file = './save/Xian/function_g_fc.pt'
-    pretrain_gat_file = './save/Xian/gat_fc.pt'
-    ganerate_trace_file = os.path.join(data_root, dataset_name, 'TS_TrajGen_generate.csv')
-    pretrain_region_gen_file = './save/Xian/region_function_g_fc.pt'
-    pretrain_region_gat_file = './save/Xian/region_gat_fc.pt'
+    # true_traj = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_partA_mm_test.csv'))
+    true_traj = pd.read_csv(true_traj_path)
+    # pretrain_gen_file = './save/Xian/function_g_fc.pt'
+    # pretrain_gat_file = './save/Xian/gat_fc.pt'
+    # output file path
+    # ganerate_trace_file = os.path.join(data_root, dataset_name, 'TS_TrajGen_generate.csv')
+    # pretrain_region_gen_file = './save/Xian/region_function_g_fc.pt'
+    # pretrain_region_gat_file = './save/Xian/region_gat_fc.pt'
     gen_config = {
         "function_g": {
             "road_emb_size": 128,  # 需要和路网表征预训练部分维度一致
@@ -186,8 +415,13 @@ else:
         'dis_weight': 0.45
     }
 
-map_manager = MapManager(dataset_name=dataset_name)
+map_manager = MapManager(
+    dataset_name=dataset_name,
+    geo_path=geo_path,
+    cache_dir=map_manager_cache_dir
+)
 
+# Load road level and region level data
 if dataset_name == 'BJ_Taxi':
     # 加载道路级别 node_feature
     node_feature_file = os.path.join(data_root, archive_data_folder, 'node_feature.pt') #  './data/node_feature.pt'
@@ -330,17 +564,22 @@ elif dataset_name == 'Porto_Taxi':
                                                     'porto_region_time_distribution.npy'))
 else:
     # 加载道路级别 node_feature
-    node_feature_file = os.path.join(data_root, archive_data_folder, dataset_name, 'node_feature.pt')
-    node_features = torch.load(node_feature_file).to(device)
-    adjacent_np_file = os.path.join(data_root, archive_data_folder, dataset_name, 'adjacent_mx.npz')
-    adj_mx = sp.load_npz(adjacent_np_file)
+    # node_feature_file = os.path.join(data_root, archive_data_folder, dataset_name, 'node_feature.pt')
+    # node_features = torch.load(node_feature_file).to(device)
+    node_features = torch.load(node_feature_path).to(device)
+    # adjacent_np_file = os.path.join(data_root, archive_data_folder, dataset_name, 'adjacent_mx.npz')
+    # adj_mx = sp.load_npz(adjacent_np_file)
+    adj_mx = sp.load_npz(adjacent_np_path)
     # 加载区域级别 region_feature
-    region_adjacent_np_file = os.path.join(data_root, archive_data_folder, dataset_name, 'region_adj_mx.npz')
-    region_adj_mx = sp.load_npz(region_adjacent_np_file)
-    region_feature_file = os.path.join(data_root, archive_data_folder, dataset_name, 'region_feature.pt')
-    region_features = torch.load(region_feature_file, map_location=device)
+    # region_adjacent_np_file = os.path.join(data_root, archive_data_folder, dataset_name, 'region_adj_mx.npz')
+    # region_adj_mx = sp.load_npz(region_adjacent_np_file)
+    region_adj_mx = sp.load_npz(region_adjacent_np_path)
+    # region_feature_file = os.path.join(data_root, archive_data_folder, dataset_name, 'region_feature.pt')
+    # region_features = torch.load(region_feature_file, map_location=device)
+    region_features = torch.load(region_feature_path, map_location=device)
     # 数据集的大小
-    road_num = 17378
+    # road_num = 17378
+    road_num = pd.read_csv(geo_path).shape[0]
     time_size = 2880
     loc_pad = road_num
     time_pad = time_size
@@ -354,7 +593,8 @@ else:
         'img_height': map_manager.img_height,
         'img_width': map_manager.img_width
     }
-    with open(os.path.join(data_root, archive_data_folder, dataset_name, 'region2rid.json'), 'r') as f:
+    # with open(os.path.join(data_root, archive_data_folder, dataset_name, 'region2rid.json'), 'r') as f:
+    with open(region2rid_path, 'r') as f:
         region2rid = json.load(f)
     region_num = len(region2rid)
     region_data_feature = {
@@ -369,39 +609,49 @@ else:
     }
 
     # 读取路网邻接表
-    with open(os.path.join(data_root, archive_data_folder, dataset_name, 'adjacent_list.json'), 'r') as f:
+    # with open(os.path.join(data_root, archive_data_folder, dataset_name, 'adjacent_list.json'), 'r') as f:
+    with open(adjacent_list_path, 'r') as f:
         adjacent_list = json.load(f)
     # 读取路网 GPS
-    with open(os.path.join(data_root, archive_data_folder, dataset_name, 'rid_gps.json'), 'r') as f:
+    # with open(os.path.join(data_root, archive_data_folder, dataset_name, 'rid_gps.json'), 'r') as f:
+    with open(rid_gps_path, 'r') as f:
         rid_gps = json.load(f)
     # 读取路段长度信息
-    with open(os.path.join(data_root, archive_data_folder, dataset_name, 'road_length.json'), 'r') as f:
+    # with open(os.path.join(data_root, archive_data_folder, dataset_name, 'road_length.json'), 'r') as f:
+    with open(road_length_path, 'r') as f:
         road_length = json.load(f)
     # 区域相关信息
-    with open(os.path.join(data_root, archive_data_folder, dataset_name, 'region_adjacent_list.json'), 'r') as f:
+    # with open(os.path.join(data_root, archive_data_folder, dataset_name, 'region_adjacent_list.json'), 'r') as f:
+    with open(region_adjacent_list_path, 'r') as f:
         region_adjacent_list = json.load(f)
-    region_dist = np.load(os.path.join(data_root, archive_data_folder, dataset_name, 'region_count_dist.npy'))
-    with open(os.path.join(data_root, archive_data_folder, dataset_name, 'region_transfer_prob.json'), 'r') as f:
+    # region_dist = np.load(os.path.join(data_root, archive_data_folder, dataset_name, 'region_count_dist.npy'))
+    region_dist = np.load(region_dist_path)
+    # with open(os.path.join(data_root, archive_data_folder, dataset_name, 'region_transfer_prob.json'), 'r') as f:
+    with open(region_transfer_path, 'r') as f:
         region_transfer_freq = json.load(f)
-    with open(os.path.join(data_root, archive_data_folder, dataset_name, 'rid2region.json'), 'r') as f:
+    # with open(os.path.join(data_root, archive_data_folder, dataset_name, 'rid2region.json'), 'r') as f:
+    with open(rid2region_path, 'r') as f:
         rid2region = json.load(f)
-    road_time_distribution = np.load(os.path.join(data_root, archive_data_folder, dataset_name,
-                                                  'road_time_distribution.npy'))
-    region_time_distribution = np.load(os.path.join(data_root, archive_data_folder, dataset_name,
-                                                    'region_time_distribution.npy'))
+    # road_time_distribution = np.load(os.path.join(data_root, archive_data_folder, dataset_name,
+    #                                               'road_time_distribution.npy'))
+    road_time_distribution = np.load(road_time_distribution_path)
+    # region_time_distribution = np.load(os.path.join(data_root, archive_data_folder, dataset_name,
+    #                                                 'region_time_distribution.npy'))
+    region_time_distribution = np.load(region_time_distribution_path)
 
 # 初始化生成器
 road_generator = GeneratorV4(config=gen_config, data_feature=data_feature).to(device)
-road_generatorv1_state = torch.load(pretrain_gen_file, map_location=device)
+road_generatorv1_state = torch.load(pretrain_gen_path, map_location=device)
 road_generator.function_g.load_state_dict(road_generatorv1_state)
-road_gat_state = torch.load(pretrain_gat_file, map_location=device)
+road_gat_state = torch.load(pretrain_gat_path, map_location=device)
 road_generator.function_h.load_state_dict(road_gat_state)
 road_generator.train(False)
 
 region_generator = GeneratorV4(config=region_gen_config, data_feature=region_data_feature).to(device)
-region_generatorv1_state = torch.load(pretrain_region_gen_file, map_location=device)
+region_generatorv1_state = torch.load(pretrain_region_gen_path, map_location=device)
 region_generator.function_g.load_state_dict(region_generatorv1_state)
-region_gat_state = torch.load(pretrain_region_gat_file, map_location=device)
+# region_gat_state = torch.load(pretrain_region_gat_file, map_location=device)
+region_gat_state = torch.load(pretrain_region_gat_path, map_location=device)
 region_generator.function_h.load_state_dict(region_gat_state)
 region_generator.train(False)
 
@@ -410,7 +660,8 @@ searcher = DoubleLayerSearcher(device=device, adjacent_list=adjacent_list, road_
                                rid2region=rid2region, road_time_distribution=road_time_distribution,
                                region_time_distribution=region_time_distribution, region2rid=region2rid)
 # 对每条轨迹都进行一个生成，并将生成结果保存至本地
-f = open(ganerate_trace_file, 'w')
+# f = open(ganerate_trace_file, 'w')
+f = open(generate_trace_path, 'w')
 f.write("traj_id,rid_list,time_list\n")
 fail_cnt = 0
 region_astar_fail_cnt = 0
