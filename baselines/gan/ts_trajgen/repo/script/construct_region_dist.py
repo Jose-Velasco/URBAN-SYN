@@ -1,4 +1,5 @@
 # 因为区域数目不多，所以这里可以都计算一个
+# sum of road lengths across trajectories -> average -> region distance
 import json
 import os
 from pathlib import Path

@@ -1,0 +1,38 @@
+road_gen_config:
+  function_g:
+    road_emb_size: 128
+    time_emb_size: 32
+    hidden_size: 128
+    dropout_p: 0.6
+    lstm_layer_num: 2
+    pretrain_road_rep: null
+    dis_weight: 0.5
+    device: cuda:0
+  function_h:
+    embed_dim: 128
+    gps_emb_dim: 5
+    num_of_heads: 4
+    concat: false
+    device: cuda:0
+    distance_mode: l2
+  dis_weight: 0.45
+
+region_gen_config:
+  function_g:
+    road_emb_size: 64
+    time_emb_size: 16
+    hidden_size: 64
+    dropout_p: 0.6
+    lstm_layer_num: 2
+    pretrain_road_rep: null
+    dis_weight: 0.5
+    device: cuda:0
+  function_h:
+    embed_dim: 68
+    gps_emb_dim: 5
+    num_of_heads: 4
+    concat: false
+    device: cuda:0
+    distance_mode: l2
+    no_gps_emb: true
+  dis_weight: 0.45

@@ -244,11 +244,15 @@ baselines/**/*.pt
 baselines/**/*.pth
 baselines/**/*.ckpt
 baselines/**/*.csv
+baselines/gan/ts_trajgen/repo/config/*.yaml
 
 # But allow traversal into this specific one
 !baselines/gan/lstm_trajgan/repo/data/
 # Then allow the file
 !baselines/gan/lstm_trajgan/repo/data/csv2npy.py
+
+!baselines/gan/ts_trajgen/repo/config/example.yaml
+
 
 *.png
 *.json

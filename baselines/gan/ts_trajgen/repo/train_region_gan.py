@@ -16,14 +16,231 @@ from discriminator.discriminator_v1 import DiscriminatorV1
 from search import DoubleLayerSearcher
 from rollout import Rollout
 from loss import gan_loss
-from utils.util import get_logger
+from utils.utils import get_logger
 from utils.data_util import encode_time
 from utils.evaluate_funcs import edit_distance, hausdorff_metric, dtw_metric
+import argparse
+from pathlib import Path
 
-save_folder = './save/our_region_gan'
-pretrain_region_generator_file = './save/kaffpa_tarjan_region_generatorv5.pt'
-trajectory_file = './data/201511_week1_mm_region_test.csv'
-device = 'cuda:0'
+def str2bool(value):
+    """
+    Parse common string boolean values for argparse.
+
+    Parameters
+    ----------
+    value : str | bool
+        Raw CLI value.
+
+    Returns
+    -------
+    bool
+        Parsed boolean value.
+
+    Raises
+    ------
+    argparse.ArgumentTypeError
+        If the value cannot be interpreted as boolean.
+    """
+    if isinstance(value, bool):
+        return value
+    if value.lower() in ("yes", "true", "1"):
+        return True
+    if value.lower() in ("no", "false", "0"):
+        return False
+    raise argparse.ArgumentTypeError("bool value expected.")
+
+parser = argparse.ArgumentParser(
+    description="Train TS-TrajGen region-level GAN model."
+)
+
+# ---- general ----
+parser.add_argument("--device", type=str, default="cuda:0")
+parser.add_argument(
+    "--debug",
+    type=str2bool,
+    default=False,
+    help="Enable debug mode.",
+)
+parser.add_argument(
+    "--pretrain_discriminator",
+    type=str2bool,
+    default=False,
+    help="Whether to pretrain discriminator else loads an already trained one from I think running this file at least once",
+)
+# ---- data ----
+parser.add_argument(
+    "--dataset_name",
+    type=str,
+    default="Xian",
+    help="Dataset folder name (use Xian if using symlink).",
+)
+parser.add_argument(
+    "--data_root",
+    type=Path,
+    default=Path("./data"),
+    help="Root directory containing all dataset files.",
+)
+
+parser.add_argument(
+    "--trajectory_file",
+    type=str,
+    default="xianshi_mm_region_train.csv",
+    help="Region-level trajectory file for GAN training.",
+)
+
+# ---- pretrain generator (LIKE train_gan.py) ----
+parser.add_argument(
+    "--pretrain_region_function_g_file",
+    type=Path,
+    default=Path("./save/Xian/region_function_g_fc.pt"),
+    help="Pretrained region Function G checkpoint.",
+)
+
+parser.add_argument(
+    "--pretrain_region_gat_file",
+    type=Path,
+    default=Path("./save/Xian/region_gat_fc.pt"),
+    help="Pretrained region Function H (GAT) checkpoint.",
+)
+
+# ---- save ----
+parser.add_argument(
+    "--save_folder",
+    type=Path,
+    default=Path("./save/our_region_gan"),
+    help="Directory to save trained generator and discriminator checkpoints.",
+)
+
+# ---- required files ----
+parser.add_argument(
+    "--adjacent_list_file",
+    type=str,
+    default="adjacent_list.json",
+    help="Road-level adjacency list mapping each road ID to reachable next road IDs.",
+)
+parser.add_argument(
+    "--rid_gps_file",
+    type=str,
+    default="rid_gps.json",
+    help="Road ID to GPS mapping ([lon, lat]) used for trajectory evaluation and DTW.",
+)
+parser.add_argument(
+    "--road_length_file",
+    type=str,
+    default="road_length.json",
+    help="Road segment lengths (meters), used for time estimation.",
+)
+
+parser.add_argument(
+    "--region_adjacent_list_file",
+    type=str,
+    default="region_adjacent_list.json",
+    help="Region adjacency mapping with boundary road sets for region transitions.",
+)
+parser.add_argument(
+    "--region_adj_mx_file",
+    type=str,
+    default="region_adj_mx.npz",
+    help="Sparse region adjacency matrix used by GAT (Function H).",
+)
+parser.add_argument(
+    "--region_feature_file",
+    type=str,
+    default="region_feature.pt",
+    help="Precomputed region node features used as input to GAT.",
+)
+parser.add_argument(
+    "--region_dist_file",
+    type=str,
+    default="region_count_dist.npy",
+    help="Region-to-region distance matrix (meters) used for candidate scoring.",
+)
+parser.add_argument(
+    "--region_transfer_file",
+    type=str,
+    default="region_transfer_prob.json",
+    help="Region transition probabilities derived from trajectory boundary crossings.",
+)
+parser.add_argument(
+    "--rid2region_file",
+    type=str,
+    default="rid2region.json",
+    help="Mapping from road IDs to region IDs.",
+)
+parser.add_argument(
+    "--region2rid_file",
+    type=str,
+    default="region2rid.json",
+    help="Mapping from region IDs to lists of road IDs.",
+)
+parser.add_argument(
+    "--region_gps_file",
+    type=str,
+    default="region_gps.json",
+    help="Region ID to GPS mapping ([lon, lat]) used for region-level trajectory evaluation.",
+)
+parser.add_argument(
+    "--region_od_file",
+    type=str,
+    default="region_od_distinct_route.json",
+    help="Region-level OD distinct routes used for yaw loss (DTW comparison).",
+)
+parser.add_argument(
+    "--road_time_dist_file",
+    type=str,
+    default="road_time_distribution.npy",
+    help="Road-level time distribution (hourly), used in lower-level search.",
+)
+parser.add_argument(
+    "--region_time_dist_file",
+    type=str,
+    default="region_time_distribution.npy",
+    help="Region-level time distribution (hourly), used in region-level search.",
+)
+args = parser.parse_args()
+
+data_dir: Path = args.data_root / args.dataset_name
+save_dir: Path = args.save_folder
+
+save_dir.mkdir(parents=True, exist_ok=True)
+
+trajectory: Path = data_dir / args.trajectory_file
+
+adjacent_list_path: Path = data_dir / args.adjacent_list_file
+rid_gps_path: Path = data_dir / args.rid_gps_file
+road_length_path: Path = data_dir / args.road_length_file
+
+region_adj_list_path: Path = data_dir / args.region_adjacent_list_file
+region_adj_mx_path: Path = data_dir / args.region_adj_mx_file
+region_feature_path: Path = data_dir / args.region_feature_file
+region_dist_path: Path = data_dir / args.region_dist_file
+region_transfer_path: Path = data_dir / args.region_transfer_file
+rid2region_path: Path = data_dir / args.rid2region_file
+region2rid_path: Path = data_dir / args.region2rid_file
+region_gps_path: Path = data_dir / args.region_gps_file
+region_od_path: Path = data_dir / args.region_od_file
+
+road_time_path: Path = data_dir / args.road_time_dist_file
+region_time_path: Path = data_dir / args.region_time_dist_file
+
+pretrain_g_path = args.pretrain_region_function_g_file
+pretrain_h_path = args.pretrain_region_gat_file
+
+disc_path: Path = save_dir / "adversarial_region_discriminator.pt"
+generator_path: Path = save_dir / "adversarial_region_generator.pt"
+
+# save_folder = './save/our_region_gan'
+# NOTE:
+# kaffpa_tarjan_region_generatorv5.pt is likely a missing file from the original repo:
+# a combined checkpoint containing both region function_g and region function_h
+# I am going to update train_region_gan.py to load the two pretrained pieces like train_gan.py
+# pretrain_region_generator_file = './save/kaffpa_tarjan_region_generatorv5.pt'
+
+# The author says the real trajectory dataset used in GAN training is the training set, not test or all trajectories.
+# https://github.com/WenMellors/TS-TrajGen/issues/10
+# trajectory_file = './data/201511_week1_mm_region_test.csv'
+
+device: str = args.device
 learning_rate = 0.0005
 weight_decay = 0.0001
 lr_patience = 2
@@ -31,8 +248,8 @@ lr_decay_ratio = 0.1
 dis_train_rate = 0.8
 batch_size = 64
 clip = 5.0
-pretrain_discriminator = True
-debug = False
+pretrain_discriminator: bool = args.pretrain_discriminator
+debug: bool = args.debug
 if debug:
     total_epoch = 1
     pretrain_dis_epoch = 1
@@ -46,11 +263,19 @@ else:
     gen_sample_num = 2000  # 生成器训练的时间复杂度很高
     rollout_times = 8
 # 生成器 config
+# NOTE:
+#  function_g: road_emb_size, time_emb_size, hidden_size, lstm_layer_num
+#              parameters must match the pretrained model that will be loaded
+#  function_h: embed_dim, gps_emb_dim, num_of_heads, lstm_layer_num
+#              parameters must match the pretrained model that will be loaded
 region_gen_config = {
     "function_g": {
-        "road_emb_size": 128,  # 这里下调一下网络参数，因为区域数目比较少
-        "time_emb_size": 32,
-        "hidden_size": 128,
+        # "road_emb_size": 128,  # 这里下调一下网络参数，因为区域数目比较少
+        "road_emb_size": 64,  # 这里下调一下网络参数，因为区域数目比较少
+        # "time_emb_size": 32,
+        "time_emb_size": 16,
+        # "hidden_size": 128,
+        "hidden_size": 64,
         "dropout_p": 0.6,
         "lstm_layer_num": 2,
         "pretrain_road_rep": None,
@@ -58,16 +283,21 @@ region_gen_config = {
         "device": device
     },
     "function_h": {
-        'embed_dim': 128,
+        # 'embed_dim': 128,
+        'embed_dim': 68,
         'gps_emb_dim': 5,
-        'num_of_heads': 5,
+        # 'num_of_heads': 5,
+        'num_of_heads': 4,
         'concat': False,
         'device': device,
         'distance_mode': 'l2',
         'no_gps_emb': True
-    }
+    },
+    'dis_weight': 0.45
 }
 # 判别器参数
+# must match discriminator parameters with the road network pre-training part
+# I think when pretrain_discriminator=False else its trained then saved
 region_dis_config = {
     "road_emb_size": 64,  # 需要和路网表征预训练部分维度一致
     "hidden_size": 64,
@@ -78,37 +308,53 @@ region_dis_config = {
 }
 
 # 加载区域级别 region_feature
-region_adjacent_np_file = './data/kaffpa_tarjan_region_adj_mx.npz'
-region_adj_mx = sp.load_npz(region_adjacent_np_file)
-region_feature_file = './data/kaffpa_tarjan_region_feature.pt'
-region_features = torch.load(region_feature_file, map_location=device)
+# region_adjacent_np_file = './data/kaffpa_tarjan_region_adj_mx.npz'
+# region_adj_mx = sp.load_npz(region_adjacent_np_file)
+region_adj_mx = sp.load_npz(region_adj_mx_path)
+# region_feature_file = './data/kaffpa_tarjan_region_feature.pt'
+# region_features = torch.load(region_feature_file, map_location=device)
+region_features = torch.load(region_feature_path, map_location=device)
 
 # init logger
 logger = get_logger()
 # build road adjacent list
 
 # 读取路网邻接表
-with open('./data/adjacent_list.json', 'r') as f:
+# with open('./data/adjacent_list.json', 'r') as f:
+with open(adjacent_list_path, 'r') as f:
     adjacent_list = json.load(f)
 # 读取路网 GPS
-with open('./data/rid_gps.json', 'r') as f:
+# with open('./data/rid_gps.json', 'r') as f:
+with open(rid_gps_path, 'r') as f:
     rid_gps = json.load(f)
 # 读取路段长度信息
-with open('./data/road_length.json', 'r') as f:
+# with open('./data/road_length.json', 'r') as f:
+with open(road_length_path, 'r') as f:
     road_length = json.load(f)
 # 区域相关信息
-with open('./data/kaffpa_tarjan_region_adjacent_list.json', 'r') as f:
+# with open('./data/kaffpa_tarjan_region_adjacent_list.json', 'r') as f:
+with open(region_adj_list_path, 'r') as f:
     region_adjacent_list = json.load(f)
-region_dist = np.load('./data/kaffpa_tarjan_region_dist.npy')
-with open('./data/kaffpa_tarjan_region_transfer_prob.json', 'r') as f:
+
+# I think from region_dist usage in DoubleLayerSearcher.__init(...)
+# Distance between regions, used to predict time. Unit: meters. (A numpy array is sufficient)
+# thus it should be region_count_dist.npy
+# region_dist = np.load('./data/kaffpa_tarjan_region_dist.npy')
+region_dist = np.load(region_dist_path)
+# with open('./data/kaffpa_tarjan_region_transfer_prob.json', 'r') as f:
+with open(region_transfer_path, 'r') as f:
     region_transfer_freq = json.load(f)
-with open('./data/kaffpa_tarjan_rid2region.json', 'r') as f:
+# with open('./data/kaffpa_tarjan_rid2region.json', 'r') as f:
+with open(rid2region_path, 'r') as f:
     rid2region = json.load(f)
-with open('./data/kaffpa_tarjan_region2rid.json', 'r') as f:
+# with open('./data/kaffpa_tarjan_region2rid.json', 'r') as f:
+with open(region2rid_path, 'r') as f:
     region2rid = json.load(f)
-with open('./data/kaffpa_tarjan_region_gps.json', 'r') as f:
+# with open('./data/kaffpa_tarjan_region_gps.json', 'r') as f:
+with open(region_gps_path, 'r') as f:
     region_gps = json.load(f)
-with open('./data/kaffpa_tarjan_region_od_distinct_route.json', 'r') as f:
+# with open('./data/kaffpa_tarjan_region_od_distinct_route.json', 'r') as f:
+with open(region_od_path, 'r') as f:
     od_distinct_route = json.load(f)
 
 time_size = 2880
@@ -123,8 +369,10 @@ region_data_feature = {
     'adj_mx': region_adj_mx,
     'node_features': region_features
 }
-road_time_distribution = np.load('./data/road_time_distribution.npy')
-region_time_distribution = np.load('./data/kaffpa_tarjan_region_time_distribution.npy')
+# road_time_distribution = np.load('./data/road_time_distribution.npy')
+road_time_distribution = np.load(road_time_path)
+# region_time_distribution = np.load('./data/kaffpa_tarjan_region_time_distribution.npy')
+region_time_distribution = np.load(region_time_path)
 
 
 # def collate_fn(indices):
@@ -339,7 +587,8 @@ def train_generator(stage):
 if __name__ == '__main__':
     logger.info('load true trajectory.')
     # 加载真实轨迹数据
-    trace = pd.read_csv(trajectory_file)
+    # trace = pd.read_csv(trajectory_file)
+    trace = pd.read_csv(trajectory)
     total_trace = trace.shape[0]
     searcher = DoubleLayerSearcher(device=device, adjacent_list=adjacent_list, road_center_gps=rid_gps,
                                    road_length=road_length,
@@ -349,11 +598,17 @@ if __name__ == '__main__':
                                    region_time_distribution=region_time_distribution,
                                    region2rid=region2rid)
     # 加载预训练生成器
-    logger.info('load pretrain generator from ' + pretrain_region_generator_file)
+    # logger.info('load pretrain generator from ' + pretrain_region_generator_file)
+    logger.info('load pretrain generator from ' + str(pretrain_g_path) + " and " + str(pretrain_h_path))
     # 初始化区域生成器
     region_generator = GeneratorV4(config=region_gen_config, data_feature=region_data_feature).to(device)
-    region_generator_state = torch.load(pretrain_region_generator_file, map_location=device)
-    region_generator.load_state_dict(region_generator_state)
+    region_generator_pretrain_g_state = torch.load(pretrain_g_path, map_location=device)
+    region_generator.function_g.load_state_dict(region_generator_pretrain_g_state)
+    # region_generator.load_state_dict(region_generator_state)
+
+    region_generator_pretrain_gat_state =  torch.load(pretrain_h_path, map_location=device)
+    region_generator.function_h.load_state_dict(region_generator_pretrain_gat_state)
+    
     # 开始对抗学习
     rollout = Rollout(searcher=searcher, generator=region_generator, device=device, od_distinct_route=od_distinct_route,
                       road_gps=rid_gps)
@@ -364,7 +619,8 @@ if __name__ == '__main__':
         train_discriminator(max_epoch=pretrain_dis_epoch)
     else:
         logger.info('load discriminator from save pt file.')
-        discriminator_state = torch.load(os.path.join(save_folder, 'adversarial_region_discriminator.pt'), map_location=device)
+        # discriminator_state = torch.load(os.path.join(save_folder, 'adversarial_region_discriminator.pt'), map_location=device)
+        discriminator_state = torch.load(disc_path, map_location=device)
         discriminator.load_state_dict(discriminator_state)
     prev_hausdorff = None
     patience = 2
@@ -385,7 +641,11 @@ if __name__ == '__main__':
         train_discriminator(max_epoch=1)
         rollout.update_params(region_generator)
     # 保存本次训练的生成器与判别器
-    if not os.path.exists(save_folder):
-        os.makedirs(save_folder)
-    torch.save(region_generator.state_dict(), os.path.join(save_folder, 'adversarial_region_generator.pt'))
-    torch.save(discriminator.state_dict(), os.path.join(save_folder, 'adversarial_region_discriminator.pt'))
+    # if not os.path.exists(save_folder):
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+        # os.makedirs(save_folder)
+    # torch.save(region_generator.state_dict(), os.path.join(save_folder, 'adversarial_region_generator.pt'))
+    torch.save(region_generator.state_dict(), generator_path)
+    # torch.save(discriminator.state_dict(), os.path.join(save_folder, 'adversarial_region_discriminator.pt'))
+    torch.save(discriminator.state_dict(), disc_path)

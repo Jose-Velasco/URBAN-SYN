@@ -259,6 +259,11 @@ else:
     rollout_times = 8
 # 生成器 config
 # generator config
+# NOTE:
+#  function_g: road_emb_size, time_emb_size, hidden_size, lstm_layer_num
+#              parameters must match the pretrained model that will be loaded
+#  function_h: embed_dim, gps_emb_dim, num_of_heads, lstm_layer_num
+#              parameters must match the pretrained model that will be loaded
 gen_config = {
     "function_g": {
         # "road_emb_size": 256,  # 需要和路网表征预训练部分维度一致
@@ -293,8 +298,11 @@ node_features = torch.load(node_feature_path).to(device)
 # adjacent_np_file = './data/adjacent_mx.npz'
 # adj_mx = sp.load_npz(adjacent_np_file)
 adj_mx = sp.load_npz(adjacent_np_path)
+
 # 判别器 config
 # discriminator config
+# must match discriminator parameters with the road network pre-training part
+# I think when pretrain_discriminator=False else its trained then saved
 dis_config = {
     "road_emb_size": 256,  # 需要和路网表征预训练部分维度一致
     "hidden_size": 256,

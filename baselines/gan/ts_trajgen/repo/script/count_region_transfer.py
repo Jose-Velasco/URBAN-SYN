@@ -2,13 +2,64 @@
 import json
 import pandas as pd
 from tqdm import tqdm
+import argparse
+from pathlib import Path
+
+parser = argparse.ArgumentParser(
+    description=(
+        "Compute region transfer probabilities for TS-TrajGen from "
+        "map-matched road trajectories and region mappings."
+    )
+)
+
+parser.add_argument("--dataset_name", type=str, default="Xian")
+parser.add_argument("--data_root", type=Path, default=Path("../data"))
+
+parser.add_argument(
+    "--rid2region_filename",
+    type=str,
+    default="rid2region.json",
+    help="Road id to region id mapping.",
+)
+parser.add_argument(
+    "--region_adjacent_filename",
+    type=str,
+    default="region_adjacent_list.json",
+    help="Region adjacency with boundary road sets.",
+)
+parser.add_argument(
+    "--traj_filename",
+    type=str,
+    default="xianshi_partA_mm_train.csv",
+    help=(
+        "Trajectory CSV containing rid_list. Use train split by default "
+        "to avoid test leakage; original-style(containing the combined train/test splits) processed file can also be passed."
+    ),
+)
+parser.add_argument(
+    "--output_filename",
+    type=str,
+    default="region_transfer_prob.json",
+    help="Output region transfer probability JSON.",
+)
+
+args = parser.parse_args()
+
+data_dir: Path = args.data_root / args.dataset_name
+
+rid2region_path: Path = data_dir / args.rid2region_filename
+region_adjacent_path: Path = data_dir / args.region_adjacent_filename
+traj_path: Path = data_dir / args.traj_filename
+output_path: Path = data_dir / args.output_filename
 
 region_transfer_cnt = {}
 
-with open('../data/Xian/rid2region.json', 'r') as f:
+# with open('../data/Xian/rid2region.json', 'r') as f:
+with open(rid2region_path, 'r') as f:
     rid2region = json.load(f)
 
-mm_traj = pd.read_csv('../data/Xian/xianshi_partA_traj_mm_processed.csv')
+# mm_traj = pd.read_csv('../data/Xian/xianshi_partA_traj_mm_processed.csv')
+mm_traj = pd.read_csv(traj_path)
 
 for index, row in tqdm(mm_traj.iterrows(), total=mm_traj.shape[0]):
     rid_list = row['rid_list'].split(',')
@@ -41,7 +92,8 @@ for region_f in region_transfer_cnt:
             border_rid_cnt.append(rid_cnt[rid])
         final_result[region_f][region_t] = {'transfer_rid': border_rid_set, 'transfer_freq': border_rid_cnt}
 
-with open('../data/Xian/region_adjacent_list.json', 'r') as f:
+# with open('../data/Xian/region_adjacent_list.json', 'r') as f:
+with open(region_adjacent_path, 'r') as f:
     region_adjacent_list = json.load(f)
 
 f_not_exist = 0
@@ -66,5 +118,6 @@ print('f_region not exist cnt is ', f_not_exist)
 print('transfer not exist cnt is ', cnt)
 
 # 保存统计结果
-with open('../data/Xian/region_transfer_prob.json', 'w') as f:
+# with open('../data/Xian/region_transfer_prob.json', 'w') as f:
+with open(output_path, 'w') as f:
     json.dump(final_result, f)
