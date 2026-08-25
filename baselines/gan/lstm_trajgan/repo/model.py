@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import tensorflow as tf
 import keras
 import numpy as np
@@ -176,10 +178,12 @@ class LSTM_TrajGAN():
                 
         return Model(inputs=inputs, outputs=outputs)
 
-    def train(self, epochs=200, batch_size=256, sample_interval=10):
+    # def train(self, epochs=200, batch_size=256, sample_interval=10):
+    def train(self, epochs=200, batch_size=256, sample_interval=10, *, train_npy: Path, output_dir: Path):
         
         # Training data
-        x_train = np.load('data/final_train.npy',allow_pickle=True)
+        # x_train = np.load('data/final_train.npy',allow_pickle=True)
+        x_train = np.load(train_npy,allow_pickle=True)
         self.x_train = x_train
 
         # Padding zero to reach the maxlength
@@ -238,7 +242,7 @@ class LSTM_TrajGAN():
 
             # Print and save the losses/params
             if epoch % sample_interval == 0:
-                self.save_checkpoint(epoch)
+                self.save_checkpoint(epoch, output_dir=output_dir)
                 print('Model params saved to the disk.')
         
         # Training the model
@@ -291,8 +295,17 @@ class LSTM_TrajGAN():
 #                 self.save_checkpoint(epoch)
 #                 print('Model params saved to the disk.')
     
-    def save_checkpoint(self, epoch):
-        self.combined.save_weights("training_params/C_model_"+str(epoch)+".h5")
-        self.generator.save_weights("training_params/G_model_"+str(epoch)+".h5")
-        self.discriminator.save_weights("training_params/D_model_"+str(epoch)+".h5")
+    def save_checkpoint(self, epoch, output_dir: Path):
+        # self.combined.save_weights("training_params/C_model_"+str(epoch)+".h5")
+        # self.generator.save_weights("training_params/G_model_"+str(epoch)+".h5")
+        # self.discriminator.save_weights("training_params/D_model_"+str(epoch)+".h5")
+
+        c_save_filename = "C_model_" + str(epoch) + ".h5"
+        self.combined.save_weights(output_dir / c_save_filename)
+        
+        g_save_filename = "G_model_" + str(epoch) + ".h5"
+        self.generator.save_weights(output_dir / g_save_filename)
+
+        d_save_filename = "D_model_" + str(epoch) + ".h5"
+        self.discriminator.save_weights(output_dir / d_save_filename)
         print("Training Params Saved")

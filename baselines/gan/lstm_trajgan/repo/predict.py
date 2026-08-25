@@ -3,11 +3,13 @@ import pandas as pd
 import numpy as np
 
 from model import LSTM_TrajGAN
+from utlis import predict_file_parse_args
 
 from keras.preprocessing.sequence import pad_sequences
 
 if __name__ == '__main__':
-    n_epochs = int(sys.argv[1])
+    # n_epochs = int(sys.argv[1])
+    args = predict_file_parse_args()
     
     latent_dim = 100
     max_length = 144
@@ -15,8 +17,11 @@ if __name__ == '__main__':
     keys = ['lat_lon', 'day', 'hour', 'category', 'mask']
     vocab_size = {"lat_lon":2,"day":7,"hour":24,"category":10,"mask":1}
     
-    tr = pd.read_csv('data/train_latlon.csv')
-    te = pd.read_csv('data/test_latlon.csv')
+    # tr = pd.read_csv('data/train_latlon.csv')
+    # te = pd.read_csv('data/test_latlon.csv')
+
+    tr = pd.read_csv(args.train_csv)
+    te = pd.read_csv(args.test_csv)
     
     lat_centroid = (tr['lat'].sum() + te['lat'].sum())/(len(tr)+len(te))
     lon_centroid = (tr['lon'].sum() + te['lon'].sum())/(len(tr)+len(te))
@@ -35,8 +40,15 @@ if __name__ == '__main__':
     gan = LSTM_TrajGAN(latent_dim, keys, vocab_size, max_length, lat_centroid, lon_centroid, scale_factor)
     
     # Test data
-    x_test = np.load('data/final_test.npy',allow_pickle=True)
+    # x_test = np.load('data/final_test.npy',allow_pickle=True)
+    x_test = np.load(
+        args.test_npy,
+        allow_pickle=True,
+    )
     
+    # final_train.npy: 5 arrays needed for training
+    # final_test.npy: 7 arrays needed for prediction/reconstruction
+    # https://github.com/GeoDS/LSTM-TrajGAN/issues/5
     x_test = [x_test[0],x_test[1],x_test[2],x_test[3],x_test[4],x_test[5].reshape(-1,1),x_test[6].reshape(-1,1)]
     X_test = [pad_sequences(f, max_length, padding='pre', dtype='float64') for f in x_test[:5]]
     
@@ -45,7 +57,14 @@ if __name__ == '__main__':
     X_test.append(noise)
     
     # Load params for the generator
-    gan.generator.load_weights('training_params/G_model_' + str(n_epochs) + '.h5') # params/G_model_2000.h5
+    # gan.generator.load_weights('training_params/G_model_' + str(n_epochs) + '.h5') # params/G_model_2000.h5
+
+    generator_weights = (
+        args.generator_weights_dir
+        / "G_model_{}.h5".format(args.load_checkpoint_epochs)
+    )
+    gan.generator.load_weights(generator_weights)
+
     
     # Make predictions
     prediction = gan.generator.predict(X_test)
@@ -64,7 +83,11 @@ if __name__ == '__main__':
         traj_attr_concat_list.append(traj_attr_concat)
     traj_data = np.concatenate(traj_attr_concat_list,axis=1)
     
-    df_test = pd.read_csv('data/dev_test_encoded_final.csv')
+    # df_test = pd.read_csv('data/dev_test_encoded_final.csv')
+    df_test = pd.read_csv(
+        args.encoded_test_csv
+    )
+
     label = np.array(df_test['label']).reshape(-1,1)
     tid = np.array(df_test['tid']).reshape(-1,1)
     traj_data = np.concatenate([label,tid,traj_data],axis=1)
@@ -85,7 +108,11 @@ if __name__ == '__main__':
     df_traj_fin['label'] = df_traj_fin['label'].astype(np.int32)
     
     # Save synthetic trajectory data
-    df_traj_fin.to_csv('results/syn_traj_test.csv',index=False)
+    # df_traj_fin.to_csv('results/syn_traj_test.csv',index=False)
+    df_traj_fin.to_csv(
+        args.output_csv,
+        index=False,
+    )
     
     
     
