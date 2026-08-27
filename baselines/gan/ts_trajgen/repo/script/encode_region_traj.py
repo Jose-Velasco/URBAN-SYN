@@ -2,39 +2,11 @@
 import pandas as pd
 from tqdm import tqdm
 import json
-from datetime import datetime
 from geopy import distance
 import numpy as np
-import os
 import argparse
 from pathlib import Path
-
-def str2bool(value):
-    """
-    Parse common string boolean values for argparse.
-
-    Parameters
-    ----------
-    value : str | bool
-        Raw CLI value.
-
-    Returns
-    -------
-    bool
-        Parsed boolean value.
-
-    Raises
-    ------
-    argparse.ArgumentTypeError
-        If the value cannot be interpreted as boolean.
-    """
-    if isinstance(value, bool):
-        return value
-    if value.lower() in ("yes", "true", "1"):
-        return True
-    if value.lower() in ("no", "false", "0"):
-        return False
-    raise argparse.ArgumentTypeError("bool value expected.")
+from utils.refactor_utils import load_config
 
 parser = argparse.ArgumentParser(
     description=(
@@ -47,40 +19,22 @@ parser = argparse.ArgumentParser(
 parser.add_argument(
     "--dataset_name",
     type=str,
-    default="Xian",
+    required=True,
     help="Dataset folder name (e.g., Xian, nyc).",
 )
 
 parser.add_argument(
     "--data_root",
-    type=str,
-    default="../data",
+    type=Path,
+    default=Path("../data"),
     help="Root directory containing dataset folders.",
 )
 
 parser.add_argument(
     "--output_dir",
-    type=str,
+    type=Path,
     default=None,
     help="Directory for outputs (defaults to <data_root>/<dataset_name>).",
-)
-
-# ---- encoding params ----
-parser.add_argument(
-    "--max_step",
-    type=int,
-    default=4,
-    help="Maximum step size for encoding transitions used when random_encode=True.",
-)
-
-parser.add_argument(
-    "--random_encode",
-    type=str2bool,
-    default=False,
-    help=(
-        "Use random step encoding to reduce data size (mainly for long trajectories). "
-        "Region trajectories are short, so typically disabled."
-    ),
 )
 
 # ---- inputs ----
@@ -162,17 +116,31 @@ parser.add_argument(
     help="Output pretrain test file.",
 )
 
+parser.add_argument(
+    "--config",
+    type=Path,
+    required=True,
+)
+
 args = parser.parse_args()
 
-data_dir: Path = Path(args.data_root) / args.dataset_name
-output_dir: Path = Path(args.output_dir) if args.output_dir else data_dir
+data_dir: Path = args.data_root / args.dataset_name
+output_dir: Path = args.output_dir if args.output_dir else data_dir
 
 output_dir.mkdir(parents=True, exist_ok=True)
 
-max_step: int = args.max_step
+experiment_config = load_config(args.config)
+
+encoding_config = experiment_config["data"]["encoding"]["region"]
+
+# "Maximum step size for encoding transitions used when random_encode=True.
+max_step = encoding_config["max_step"]
+# "Use random step encoding to reduce data size (mainly for long trajectories). "
+# "Region trajectories are short, so typically disabled."
+random_encode = encoding_config["random_encode"]
+
 # max_step = 4
 # 随机步数 encode，主要是减少数据量，避免过拟合，因为区域轨迹都比较短，所以就不跳步了
-random_encode: bool = args.random_encode
 # random_encode = True
 
 rid2region_path: Path = data_dir / args.rid2region_filename
@@ -377,7 +345,6 @@ if __name__ == '__main__':
         eval_output = open('/mnt/data/jwj/TS_TrajGen_data_archive/{}.csv'.format('porto_taxi_region_pretrain_input_eval'), 'w')
         test_output = open('/mnt/data/jwj/TS_TrajGen_data_archive/{}.csv'.format('porto_taxi_region_pretrain_input_test'), 'w')
     else:
-        assert dataset_name == 'Xian'
         # train_output = open(
         #     '/mnt/data/jwj/TS_TrajGen_data_archive/Xian/{}.csv'.format('xianshi_region_pretrain_input_train'), 'w')
         train_output = open(train_output_path, 'w')

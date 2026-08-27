@@ -1,0 +1,177 @@
+# TS-TrajGen experiment configuration
+#
+# This file contains model architecture and training
+# hyperparameters shared across the TS-TrajGen pipeline.
+
+
+# Road-level model architecture
+road:
+  generator:
+    function_g:
+      road_emb_size: 128
+      time_emb_size: 32
+      hidden_size: 128
+      dropout_p: 0.6
+      lstm_layer_num: 2
+      pretrain_road_rep: null
+      dis_weight: 0.5
+
+    function_h:
+      embed_dim: 128
+      gps_emb_dim: 5
+      num_of_heads: 4
+      concat: false
+      distance_mode: l2
+
+    # GeneratorV4-level weighting
+    dis_weight: 0.45
+
+  discriminator:
+    road_emb_size: 256
+    hidden_size: 256
+    dropout_p: 0.6
+    lstm_layer_num: 2
+
+
+# Region-level model architecture
+region:
+  generator:
+    function_g:
+      road_emb_size: 64
+      time_emb_size: 16
+      hidden_size: 64
+      dropout_p: 0.6
+      lstm_layer_num: 2
+      pretrain_road_rep: null
+      dis_weight: 0.5
+
+    function_h:
+      embed_dim: 68
+      gps_emb_dim: 5
+      num_of_heads: 4
+      concat: false
+      distance_mode: l2
+      no_gps_emb: true
+
+    dis_weight: 0.45
+
+  discriminator:
+    road_emb_size: 64
+    hidden_size: 64
+    dropout_p: 0.6
+    lstm_layer_num: 2
+
+
+# Training configuration
+training:
+
+  # Road Function G pretraining
+  # pretrain_function_g_fc.py
+  road_function_g:
+    max_epoch: 25
+    batch_size: 64
+
+    optimizer:
+      learning_rate: 0.0005
+      weight_decay: 0.00001
+
+    scheduler:
+      lr_patience: 2
+      lr_decay_ratio: 0.1
+      early_stop_lr: 1.0e-6
+
+    clip: 5.0
+
+
+  # Road Function H / GAT pretraining
+  # pretrain_gat_fc.py
+  road_function_h:
+    max_epoch: 50
+    batch_size: 32
+
+    optimizer:
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+
+    scheduler:
+      lr_patience: 2
+      lr_decay_ratio: 0.01
+      early_stop_lr: 1.0e-6
+
+
+  # Region Function G pretraining
+  # pretrain_region_function_g_fc.py
+  region_function_g:
+    max_epoch: 25
+    batch_size: 32
+
+    optimizer:
+      learning_rate: 0.001
+      weight_decay: 0.00001
+
+    scheduler:
+      lr_patience: 2
+      lr_decay_ratio: 0.001
+
+
+  # Region Function H / GAT pretraining
+  # pretrain_region_gat_fc.py
+  region_function_h:
+    max_epoch: 50
+    batch_size: 32
+
+    optimizer:
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+
+    scheduler:
+      lr_patience: 2
+      lr_decay_ratio: 0.01
+      early_stop_lr: 1.0e-6
+
+
+  # Road-level GAN
+  # train_gan.py
+  road_gan:
+    total_epoch: 20
+    pretrain_dis_epoch: 5
+
+    batch_size: 64
+    dis_train_rate: 0.8
+
+    dis_sample_num: 5000
+    gen_sample_num: 2000
+    rollout_times: 8
+
+    optimizer:
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+
+    clip: 5.0
+
+
+  # Region-level GAN
+  # train_region_gan.py
+  region_gan:
+    total_epoch: 10
+    pretrain_dis_epoch: 5
+
+    batch_size: 64
+    dis_train_rate: 0.8
+
+    dis_sample_num: 5000
+    gen_sample_num: 2000
+    rollout_times: 8
+
+    optimizer:
+      learning_rate: 0.0005
+      weight_decay: 0.0001
+
+    clip: 5.0
+
+# dataset/experiment behavior
+data:
+  time_size: 2880
+
+  splits:
+    region_train_rate: 0.9

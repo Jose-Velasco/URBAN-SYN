@@ -1,6 +1,13 @@
 # region_feature 由预训练好的路段 node_feature 聚类得到
 
-import os
+"""
+script:
+  load road GAT
+  compute road embeddings
+  aggregate road embeddings by region
+  save region_feature.pt
+"""
+
 from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
@@ -8,10 +15,10 @@ import scipy.sparse as sp
 import torch
 from generator.distance_gat_fc import DistanceGatFC
 import json
-from loss import mask_mape_loss
 import numpy as np
 from utils.map_manager import MapManager
 import argparse
+from utils.refactor_utils import load_config
 
 parser = argparse.ArgumentParser(
     description=(
@@ -20,13 +27,19 @@ parser = argparse.ArgumentParser(
     )
 )
 
-parser.add_argument("--dataset_name", type=str, default="Xian")
+parser.add_argument(
+    "--dataset_name",
+    type=str,
+    required=True,
+    help="Dataset folder name. Ex. nyc",
+)
+
 parser.add_argument("--device", type=str, default="cuda:0")
 
 parser.add_argument(
     "--data_root",
     type=Path,
-    default=Path("./data"),
+    default=Path("../datasets"),
     help="Root data directory containing dataset folders.",
 )
 parser.add_argument(
@@ -35,17 +48,19 @@ parser.add_argument(
     required=True,
     help="Path to the active .geo file used to dynamically derive road_num.",
 )
+
 parser.add_argument(
-    "--map_manger_cache_dir",
+    "--map_manager_cache_dir",
     type=Path,
     required=True,
-    help="Path to save/load MapManager computed city lat/lon bounding boxes.",
+    help="Directory used by MapManager to save/load city bounding-box cache.",
 )
 
 parser.add_argument(
     "--save_folder",
     type=Path,
-    default=Path("./save/Xian"),
+    default=Path("./save/nyc"),
+    required=True,
     help="Folder containing pretrained road-level GAT checkpoint.",
 )
 parser.add_argument(
@@ -86,11 +101,17 @@ parser.add_argument(
     help="Output region-level feature tensor filename.",
 )
 
+parser.add_argument(
+    "--config",
+    type=Path,
+    required=True,
+    help="Path to TS-TrajGen YAML experiment configuration.",
+)
+
 args = parser.parse_args()
 
 data_dir: Path = args.data_root / args.dataset_name
 
-data_dir: Path =  data_dir
 checkpoint_path: Path =  args.save_folder / args.save_file_name
 adjacent_np_file: Path =  data_dir / args.adjacent_np_filename
 node_feature_file: Path =  data_dir / args.node_feature_filename
@@ -99,7 +120,7 @@ region2rid_path: Path =  data_dir / args.region2rid_filename
 region_feature_path: Path =  data_dir / args.region_feature_filename
 
 geo_path: Path = args.geo_path
-map_manger_cache_dir: Path = args.map_manger_cache_dir
+map_manager_cache_dir: Path = args.map_manager_cache_dir
 
 # save_folder: Path = args.save_folder
 # save_file_name: str = args.save_file_name
@@ -108,30 +129,23 @@ map_manger_cache_dir: Path = args.map_manger_cache_dir
 # dataset_name = 'Xian'
 dataset_name: str = args.dataset_name
 device = args.device
-batch_size = 128
-config = {
-    'embed_dim': 128,
-    'gps_emb_dim': 5,
-    'num_of_heads': 4,
-    'concat': False,
-    'device': device,
-    'distance_mode': 'l2'
-}
-train_rate = 0.6
-eval_rate = 0.2
-max_epoch = 50
-learning_rate = 0.0005
-weight_decay = 0.001
-lr_patience = 2
-lr_decay_ratio = 0.1
-early_stop_lr = 1e-6
+
+experiment_config = load_config(args.config)
+config = experiment_config["road"]["generator"]["function_h"].copy()
+config["device"] = device
+
+# config = {
+#     'embed_dim': 128,
+#     'gps_emb_dim': 5,
+#     'num_of_heads': 4,
+#     'concat': False,
+#     'device': device,
+#     'distance_mode': 'l2'
+# }
 
 # save_folder = './save/Xian/'
 # save_folder: Path = args.save_folder
 # save_file_name = 'gat_fc.pt'
-temp_folder = './temp/gat/'
-train = True
-debug = False
 
 # 加载 rel
 # road_num = 17378
@@ -145,7 +159,7 @@ node_features = torch.load(node_feature_file).to(device)
 map_manager = MapManager(
     dataset_name=dataset_name,
     geo_path=geo_path,
-    cache_dir=map_manger_cache_dir,
+    cache_dir=map_manager_cache_dir,
 )
 data_feature = {
     'adj_mx': adj_mx,
@@ -170,7 +184,7 @@ with open(region2rid_path, 'r') as f:
     region2rid = json.load(f)
 region_num = len(region2rid)
 # (region_num, road_num)
-region2rid_mat = np.zeros((region_num, road_num))
+region2rid_mat = np.zeros((region_num, road_num)) # NOTE: this can be very memory expensive mainly depending on large road_num
 for rid in tqdm(rid2region):
     region = rid2region[rid]
     region2rid_mat[region][int(rid)] = 1.0

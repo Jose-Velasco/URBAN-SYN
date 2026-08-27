@@ -12,3 +12,5 @@ Cython==3.2.4
 pyproj==3.7.1
 fastdtw==0.3.4
 # kahip==3.25
+
+PyYAML==6.0

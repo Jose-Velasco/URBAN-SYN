@@ -13,10 +13,27 @@ parser = argparse.ArgumentParser(
     description="Construct TS-TrajGen region adjacency from road adjacency and road-to-region mappings."
 )
 
-parser.add_argument("--dataset_name", type=str, default="Xian")
-parser.add_argument("--data_root", type=str, default="../data")
+parser.add_argument(
+    "--dataset_name",
+    type=str,
+    required=True,
+    help="Dataset folder name.",
+)
 
-parser.add_argument("--rel_filename", type=str, default="xian.rel")
+parser.add_argument(
+    "--data_root",
+    type=Path,
+    default=Path("../data"),
+    help="Root directory containing dataset folders.",
+)
+
+parser.add_argument(
+    "--rel_filename",
+    type=str,
+    required=True,
+    help="Road relationship .rel filename. Ex. nyc.rel",
+)
+
 parser.add_argument("--adjacent_filename", type=str, default="adjacent_list.json")
 parser.add_argument("--rid2region_filename", type=str, default="rid2region.json")
 parser.add_argument("--region2rid_filename", type=str, default="region2rid.json")
@@ -26,7 +43,7 @@ parser.add_argument("--region_adjacent_filename_output", type=str, default="regi
 
 args = parser.parse_args()
 
-data_dir: Path = Path(args.data_root) / args.dataset_name
+data_dir: Path = args.data_root / args.dataset_name
 
 
 rel_path: Path = data_dir / args.rel_filename
@@ -39,18 +56,23 @@ region_adjacent_path: Path = data_dir / args.region_adjacent_filename_output
 
 
 # 读取路段邻接表
-rid_rel = pd.read_csv(rel_path)
+# rid_rel = pd.read_csv(rel_path)
 # rid_rel = pd.read_csv('../data/Xian/xian.rel')
 
 if adjacent_path.exists():
     with open(adjacent_path, "r", encoding="utf-8") as f:
         rid_adjacent_list: dict[str, list[int]] = json.load(f)
 else:
-    print(f"WARNING: Missing adjacency file rebuilding it, load/save path: {adjacent_path = }")
+    print(
+        "WARNING: Missing adjacency file; rebuilding it from "
+        f"{rel_path} and saving to {adjacent_path}"
+    )
+
+    rid_rel = pd.read_csv(rel_path)
     rid_adjacent_list: dict[str, list[int]] = {}
     for index, row in tqdm(rid_rel.iterrows(), total=rid_rel.shape[0], desc='cal road adjacent list'):
-        f_rid = str(row['origin_id'])
-        t_rid = row['destination_id']
+        f_rid = str(int(row['origin_id']))
+        t_rid = int(row['destination_id'])
         if f_rid not in rid_adjacent_list:
             rid_adjacent_list[f_rid] = [t_rid]
         else:
@@ -61,11 +83,11 @@ else:
 
 # 读取路段与区域之间的映射关系
 # with open('../data/Xian/rid2region.json', 'r') as f:
-with open(rid2region_path, 'r') as f:
+with open(rid2region_path, 'r', encoding="utf-8") as f:
     rid2region = json.load(f)
 
 # with open('../data/Xian/region2rid.json', 'r') as f:
-with open(region2rid_path, 'r') as f:
+with open(region2rid_path, 'r', encoding="utf-8") as f:
     region2rid = json.load(f)
 
 region_adjacent_list = {}
@@ -131,7 +153,7 @@ region_adj_mx = sp.coo_matrix((region_adj_data, (region_adj_row, region_adj_col)
 # sp.save_npz("../data/Xian/region_adj_mx", region_adj_mx)
 sp.save_npz(region_adj_mx_path, region_adj_mx)
 # with open('../data/Xian/region_adjacent_list.json', 'w') as f:
-with open(region_adjacent_path, 'w') as f:
+with open(region_adjacent_path, 'w', encoding="utf-8") as f:
     json.dump(region_adjacent_list, f)
 
 # 进行一些简单的统计

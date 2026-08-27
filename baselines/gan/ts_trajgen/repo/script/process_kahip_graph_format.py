@@ -17,7 +17,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset_name",
         type=str,
-        default="Xian",
+        # default="Xian",
+        required=True,
         help="Dataset folder name under data_root.",
     )
     parser.add_argument(
@@ -29,20 +30,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--geo_filename",
         type=str,
-        default="xian.geo",
-        help="Geo filename inside the dataset folder.",
+        # default="xian.geo",
+        required=True,
+        help="Geo filename inside the dataset folder. Ex. nyc.geo",
     )
     parser.add_argument(
         "--rel_filename",
         type=str,
-        default="xian.rel",
-        help="Rel filename inside the dataset folder.",
+        # default="xian.rel",
+        required=True,
+        help="Rel filename inside the dataset folder. Ex. nyc.rel",
     )
     parser.add_argument(
         "--graph_filename",
         type=str,
-        default="xian.graph",
-        help="Output KaHIP graph filename.",
+        # default="xian.graph",
+        required=True,
+        help="Output KaHIP graph filename. Ex. nyc.graph",
     )
     parser.add_argument(
         "--rid2new_filename",
@@ -79,6 +83,8 @@ def build_active_road_mappings(road_info: pd.DataFrame, road_rel: pd.DataFrame):
     Build 1-indexed KaHIP node ids for roads that appear in at least one relation.
 
     KaHIP expects node ids starting at 1, while our road ids start at 0.
+    
+    Perform the isolated-road filtering.
     """
     connected_roads = set(road_rel["origin_id"]).union(set(road_rel["destination_id"]))
 

@@ -216,6 +216,7 @@ pyrightconfig.json
 # End of https://www.toptal.com/developers/gitignore/api/visualstudiocode
 
 baselines/**/data/*
+baselines/**/datasets/*
 baselines/**/outputs/*
 baselines/**/params/*
 

@@ -4,7 +4,7 @@ from pathlib import Path
 from generator.function_g_fc import FunctionGFC
 import pandas as pd
 from utils.ListDataset import ListDataset
-from torch.utils.data import random_split, DataLoader
+from torch.utils.data import DataLoader
 import torch
 import numpy as np
 import os
@@ -12,108 +12,197 @@ from utils.utils import get_logger
 from tqdm import tqdm
 import argparse
 from utils.parser import str2bool
+from utils.refactor_utils import load_config
 
+parser = argparse.ArgumentParser(
+    description="Pretrain TS-TrajGen road-level Function G (FunctionGFC)."
+)
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--local', type=str2bool, default=True)
-parser.add_argument('--dataset_name', type=str, default='BJ_Taxi')
-parser.add_argument('--device', type=str, default='cuda:0')
+# Dataset / runtime
+parser.add_argument(
+    "--dataset_name",
+    type=str,
+    required=True,
+    help="Dataset name.",
+)
 
+parser.add_argument(
+    "--data_root",
+    type=Path,
+    default=Path("./data"),
+    help="Root directory containing dataset folders.",
+)
+
+parser.add_argument(
+    "--device",
+    type=str,
+    default="cuda:0",
+    help="PyTorch device.",
+)
+
+parser.add_argument(
+    "--train",
+    type=str2bool,
+    default=True,
+    help="Train the model. If false, load an existing checkpoint and evaluate.",
+)
+
+# Experiment configuration
+parser.add_argument(
+    "--config",
+    type=Path,
+    required=True,
+    help="Path to TS-TrajGen YAML experiment configuration.",
+)
+
+# Dataset files
 parser.add_argument(
     "--geo_path",
     type=Path,
-    # default=Path("./data/nyc/nyc_features_processed.geo"),
     required=True,
-    help="Path to *.geo file .geo file has the road feature columns expected.",
+    help="Path to the processed .geo file.",
+)
+
+parser.add_argument(
+    "--train_filename",
+    type=str,
+    required=True,
+    help="Function G pretraining training-set CSV filename.",
+)
+
+parser.add_argument(
+    "--eval_filename",
+    type=str,
+    required=True,
+    help="Function G pretraining validation-set CSV filename.",
+)
+
+parser.add_argument(
+    "--test_filename",
+    type=str,
+    required=True,
+    help="Function G pretraining test-set CSV filename.",
+)
+
+# Outputs
+parser.add_argument(
+    "--save_dir",
+    type=Path,
+    required=True,
+    help="Directory where the final checkpoint is saved.",
+)
+
+parser.add_argument(
+    "--save_file_name",
+    type=str,
+    default="function_g_fc.pt",
+    help="Final Function G checkpoint filename.",
+)
+
+parser.add_argument(
+    "--temp_dir",
+    type=Path,
+    required=True,
+    help="Directory used for temporary epoch checkpoints.",
 )
 
 args = parser.parse_args()
-local = args.local
-dataset_name = args.dataset_name
-device = args.device
+
+dataset_name: str = args.dataset_name
+device: str = args.device
+train: bool = args.train
+
+data_dir: Path = args.data_root / dataset_name
 
 geo_path: Path = args.geo_path
 
-if local:
-    data_root = './data/'
-else:
-    data_root = '/mnt/data/jwj/TS_TrajGen_data_archive/'
-# 训练相关参数
-max_epoch = 25
-batch_size = 64
-train_rate = 0.6
-eval_rate = 0.2
-learning_rate = 0.0005
-weight_decay = 0.00001
-lr_patience = 2
-lr_decay_ratio = 0.1
-save_folder = './save/{}'.format(dataset_name)
-save_file_name = 'function_g_fc.pt'
-temp_folder = './temp/{}/gan/'.format(dataset_name)
-early_stop_lr = 1e-6
-train = True
-clip = 5.0
-# 数据集的大小
-if dataset_name == 'BJ_Taxi':
-    road_num = 40306
-    time_size = 2880
-    loc_pad = road_num
-    time_pad = time_size
-    data_feature = {
-        'road_num': road_num + 1,
-        'time_size': time_size + 1,
-        'road_pad': loc_pad,
-        'time_pad': time_pad
-    }
-    # 生成器 config
-    gen_config = {
-        "road_emb_size": 256,  # 需要和路网表征预训练部分维度一致
-        "time_emb_size": 50,
-        "hidden_size": 256,
-        "dropout_p": 0.6,
-        "lstm_layer_num": 2,
-        "pretrain_road_rep": None,
-        "dis_weight": 0.5,
-        "device": device
-    }
-else:
-    # Xian
-    # can also maybe get it from rid_gps file? maybe its faster?
-    road_num = pd.read_csv(geo_path).shape[0]
-    # road_num = 17378
-    time_size = 2880
-    loc_pad = road_num
-    time_pad = time_size
-    data_feature = {
-        'road_num': road_num + 1,
-        'time_size': time_size + 1,
-        'road_pad': loc_pad,
-        'time_pad': time_pad
-    }
-    gen_config = {
-        "road_emb_size": 128,  # 需要和路网表征预训练部分维度一致
-        "time_emb_size": 32,
-        "hidden_size": 128,
-        "dropout_p": 0.6,
-        "lstm_layer_num": 2,
-        "pretrain_road_rep": None,
-        "dis_weight": 0.5,
-        "device": device
-    }
+train_path: Path = data_dir / args.train_filename
+eval_path: Path = data_dir / args.eval_filename
+test_path: Path = data_dir / args.test_filename
 
+save_dir: Path = args.save_dir
+save_path: Path = save_dir / args.save_file_name
+
+temp_dir: Path = args.temp_dir
+
+save_dir.mkdir(parents=True, exist_ok=True)
+temp_dir.mkdir(parents=True, exist_ok=True)
+
+experiment_config = load_config(args.config)
+
+# local = args.local
+# dataset_name = args.dataset_name
+# device = args.device
+
+# geo_path: Path = args.geo_path
+
+# if local:
+#     data_root = './data/'
+# else:
+#     data_root = '/mnt/data/jwj/TS_TrajGen_data_archive/'
+
+# 训练相关参数
+train_config = experiment_config["training"]["road_function_g"]
+
+max_epoch = train_config["max_epoch"]
+batch_size = train_config["batch_size"]
+
+optimizer_config = train_config["optimizer"]
+learning_rate = optimizer_config["learning_rate"]
+weight_decay = optimizer_config["weight_decay"]
+
+scheduler_config = train_config["scheduler"]
+lr_patience = scheduler_config["lr_patience"]
+lr_decay_ratio = scheduler_config["lr_decay_ratio"]
+early_stop_lr = scheduler_config["early_stop_lr"]
+
+clip = train_config["clip"]
+
+# max_epoch = 25
+# batch_size = 64
+# train_rate = 0.6
+# eval_rate = 0.2
+# learning_rate = 0.0005
+# weight_decay = 0.00001
+# lr_patience = 2
+# lr_decay_ratio = 0.1
+# save_folder = './save/{}'.format(dataset_name)
+# save_file_name = 'function_g_fc.pt'
+# temp_folder = './temp/{}/gan/'.format(dataset_name)
+# early_stop_lr = 1e-6
+# train = True
+# clip = 5.0
+
+
+# 数据集的大小
+# can also maybe get it from rid_gps file? maybe its faster?
+road_num = pd.read_csv(geo_path).shape[0]
+# road_num = 17378
+time_size = 2880
+loc_pad = road_num
+time_pad = time_size
+data_feature = {
+    'road_num': road_num + 1,
+    'time_size': time_size + 1,
+    'road_pad': loc_pad,
+    'time_pad': time_pad
+}
+
+# Function G architecture + training hyperparameters
+gen_config = experiment_config["road"]["generator"]["function_g"].copy()
+
+# Runtime-specific setting remains CLI-controlled.
+gen_config["device"] = device
 
 logger = get_logger(name='FunctionGFC')
 logger.info('read data')
-# 读取训练输入数据
-if dataset_name == 'BJ_Taxi':
-    train_data = pd.read_csv('./data/201511_pretrain_input_train.csv')
-    eval_data = pd.read_csv('./data/201511_pretrain_input_eval.csv')
-    test_data = pd.read_csv('./data/201511_pretrain_input_test.csv')
-else:
-    # Xian
-    train_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_partA_pretrain_input_train.csv'))
-    eval_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_partA_pretrain_input_eval.csv'))
-    test_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_partA_pretrain_input_test.csv'))
+
+# 读取训练输入数据 <-- old comment
+
+# custom dataset
+train_data = pd.read_csv(train_path)
+eval_data = pd.read_csv(eval_path)
+test_data = pd.read_csv(test_path)
 
 train_data = train_data.values.tolist()
 eval_data = eval_data.values.tolist()
@@ -186,8 +275,6 @@ lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, m
 
 # 开始训练
 if train:
-    if not os.path.exists(temp_folder):
-        os.makedirs(temp_folder)
     metrics = []
     for epoch in range(max_epoch):
         # train
@@ -218,7 +305,9 @@ if train:
         metrics.append(val_ac)
         lr_scheduler.step(val_ac)
         # store temp model
-        torch.save(gen_model.state_dict(), os.path.join(temp_folder, 'function_g_{}.pt'.format(epoch)))
+        # torch.save(gen_model.state_dict(), os.path.join(temp_folder, 'function_g_{}.pt'.format(epoch)))
+        temp_path = temp_dir / f"function_g_{epoch}.pt"
+        torch.save(gen_model.state_dict(), temp_path)
         lr = optimizer.param_groups[0]['lr']
         logger.info('==> Train Epoch {}: Train Loss {:.6f}, val AC {:.6f}, lr {}'.format(epoch, train_loss, val_ac, lr))
         if lr < early_stop_lr:
@@ -226,11 +315,24 @@ if train:
             break
     # load best epoch
     best_epoch = np.argmax(metrics)
-    load_temp_file = 'function_g_{}.pt'.format(best_epoch)
+    # load_temp_file = 'function_g_{}.pt'.format(best_epoch)
     logger.info('load best from {}'.format(best_epoch))
-    gen_model.load_state_dict(torch.load(os.path.join(temp_folder, load_temp_file)))
+    # gen_model.load_state_dict(torch.load(os.path.join(temp_folder, load_temp_file)))
+    temp_path = temp_dir / f"function_g_{best_epoch}.pt"
+    gen_model.load_state_dict(
+        torch.load(
+            temp_path,
+            map_location=device,
+        )
+    )
 else:
-    gen_model.load_state_dict(torch.load(os.path.join(save_folder, save_file_name), map_location=device))
+    # gen_model.load_state_dict(torch.load(os.path.join(save_folder, save_file_name), map_location=device))
+    gen_model.load_state_dict(
+        torch.load(
+            save_path,
+            map_location=device,
+        )
+    )
 # 开始评估
 test_hit = 0
 gen_model.train(False)
@@ -245,11 +347,13 @@ for trace_loc, trace_time, des, candidate_set, candidate_dis, target in tqdm(tes
 test_ac = test_hit / test_num
 logger.info('==> Test Result: ac {:.6f}'.format(test_ac))
 # 保存模型
-if not os.path.exists(save_folder):
-    os.makedirs(save_folder)
-torch.save(gen_model.state_dict(), os.path.join(save_folder, save_file_name))
+# torch.save(gen_model.state_dict(), os.path.join(save_folder, save_file_name))
+torch.save(
+    gen_model.state_dict(),
+    save_path,
+)
 # 删除 temp 文件
-for rt, dirs, files in os.walk(temp_folder):
+for rt, dirs, files in os.walk(temp_dir):
     for name in files:
         remove_path = os.path.join(rt, name)
         os.remove(remove_path)
