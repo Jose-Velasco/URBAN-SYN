@@ -136,14 +136,14 @@ parser = argparse.ArgumentParser(
 parser.add_argument(
     "--dataset_name",
     type=str,
-    default="Xian",
+    required=True,
     help="Dataset folder name (e.g., Xian, nyc).",
 )
 
 parser.add_argument(
     "--data_root",
     type=Path,
-    default=Path("../data"),
+    default=Path("../datasets"),
     help="Root directory containing dataset folders.",
 )
 
@@ -151,8 +151,8 @@ parser.add_argument(
 parser.add_argument(
     "--geo_filename",
     type=str,
-    default="xian.geo",
-    help="Road network .geo file (used to build road_length if missing).",
+    required=True,
+    help="Road network .geo file (used to build road_length if missing). Ex. nyc.geo",
 )
 
 parser.add_argument(

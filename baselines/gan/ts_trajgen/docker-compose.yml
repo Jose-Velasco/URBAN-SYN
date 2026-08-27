@@ -7,7 +7,7 @@ services:
     working_dir: /workspace/repo
     volumes:
       - ./repo:/workspace/repo
-      - ./data:/workspace/data
+      - ./datasets:/workspace/datasets
       - ./outputs:/workspace/outputs
     gpus: all
     shm_size: "8g"

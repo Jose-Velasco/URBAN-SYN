@@ -15,46 +15,197 @@ import argparse
 from sklearn.preprocessing import LabelEncoder
 from utils.map_manager import MapManager
 import json
+from utils.refactor_utils import load_config
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--local', type=str2bool, default=True)
-parser.add_argument('--dataset_name', type=str, default='BJ_Taxi')
-parser.add_argument('--device', type=str, default='cuda:0')
-parser.add_argument('--debug', type=str2bool, default=False)
+parser = argparse.ArgumentParser(
+    description="Pretrain TS-TrajGen road-level Function H (DistanceGatFC)."
+)
 
+# Dataset / runtime
+parser.add_argument(
+    "--dataset_name",
+    type=str,
+    required=True,
+    help="Dataset name used for logging and MapManager.",
+)
+
+parser.add_argument(
+    "--data_root",
+    type=Path,
+    default=Path("./data"),
+    help="Root directory containing dataset folders.",
+)
+
+parser.add_argument(
+    "--device",
+    type=str,
+    default="cuda:0",
+    help="PyTorch device.",
+)
+
+parser.add_argument(
+    "--debug",
+    type=str2bool,
+    default=False,
+    help="Run only a small portion of training for debugging.",
+)
+
+parser.add_argument(
+    "--train",
+    type=str2bool,
+    default=True,
+    help="Train the model. If false, load the existing checkpoint and evaluate.",
+)
+
+
+# Experiment configuration
+parser.add_argument(
+    "--config",
+    type=Path,
+    required=True,
+    help="Path to TS-TrajGen YAML experiment configuration.",
+)
+
+
+# Road-network files
 parser.add_argument(
     "--geo_path",
     type=Path,
-    # default=Path("./data/nyc/nyc_features_processed.geo"),
     required=True,
-    help="Path to *.geo file .geo file has the road feature columns expected.",
+    help="Path to the processed .geo file.",
 )
+
 parser.add_argument(
-    "--map_manger_cache_dir",
+    "--rel_filename",
+    type=str,
+    required=True,
+    help="Road relationship .rel filename inside the dataset directory.",
+)
+
+parser.add_argument(
+    "--map_manager_cache_dir",
     type=Path,
     required=True,
-    help="Path to save MapManger's computed city lat/long bonding boxes.",
+    help="Directory used by MapManager to cache computed city bounds.",
 )
 
+parser.add_argument(
+    "--adjacent_np_filename",
+    type=str,
+    default="adjacent_mx.npz",
+    help="Road-level sparse adjacency matrix filename.",
+)
+
+parser.add_argument(
+    "--node_feature_filename",
+    type=str,
+    default="node_feature.pt",
+    help="Road-level node feature tensor filename.",
+)
+
+parser.add_argument(
+    "--rid_gps_filename",
+    type=str,
+    default="rid_gps.json",
+    help="Road-ID to GPS lookup filename.",
+)
+
+
+# Pretraining datasets
+parser.add_argument(
+    "--train_filename",
+    type=str,
+    required=True,
+    help="Function H pretraining training-set CSV filename.",
+)
+
+parser.add_argument(
+    "--eval_filename",
+    type=str,
+    required=True,
+    help="Function H pretraining validation-set CSV filename.",
+)
+
+parser.add_argument(
+    "--test_filename",
+    type=str,
+    required=True,
+    help="Function H pretraining test-set CSV filename.",
+)
+
+
+# Outputs
+parser.add_argument(
+    "--save_dir",
+    type=Path,
+    required=True,
+    help="Directory where the final checkpoint is saved.",
+)
+
+parser.add_argument(
+    "--save_file_name",
+    type=str,
+    default="gat_fc.pt",
+    help="Final Function H checkpoint filename.",
+)
+
+parser.add_argument(
+    "--temp_dir",
+    type=Path,
+    required=True,
+    help="Directory used to save temporary epoch checkpoints.",
+)
+
+
 args = parser.parse_args()
-local = args.local
-dataset_name = args.dataset_name
-device = args.device
-debug = args.debug
+
+dataset_name: str = args.dataset_name
+device: str = args.device
+debug: bool = args.debug
+train: bool = args.train
+
+data_root: Path = args.data_root
+data_dir: Path = args.data_root / dataset_name
 
 geo_path: Path = args.geo_path
-map_manger_cache_dir: Path = args.map_manger_cache_dir
+rel_path: Path = data_dir / args.rel_filename
+
+adjacent_np_path: Path = data_dir / args.adjacent_np_filename
+node_feature_path: Path = data_dir / args.node_feature_filename
+rid_gps_path: Path = data_dir / args.rid_gps_filename
+
+train_path: Path = data_dir / args.train_filename
+eval_path: Path = data_dir / args.eval_filename
+test_path: Path = data_dir / args.test_filename
+
+save_dir: Path = args.save_dir
+save_path: Path = save_dir / args.save_file_name
+
+temp_dir: Path = args.temp_dir
+
+map_manager_cache_dir: Path = args.map_manager_cache_dir
+
+
+# local = args.local
+# dataset_name = args.dataset_name
+# device = args.device
+# debug = args.debug
+
+# geo_path: Path = args.geo_path
+# map_manger_cache_dir: Path = args.map_manger_cache_dir
+
+experiment_config = load_config(args.config)
 
 archive_data_folder = 'TS_TrajGen_data_archive'
 
-if local:
-    data_root = './data/'
-else:
-    data_root = '/mnt/data/jwj/TS_TrajGen_data_archive/'
+# if local:
+#     data_root = './data/'
+# else:
+#     data_root = '/mnt/data/jwj/TS_TrajGen_data_archive/'
 
 # 训练参数
-batch_size = 32
+# batch_size = 32
 if dataset_name == 'BJ_Taxi' or dataset_name == 'Porto_Taxi':
     config = {
         'embed_dim': 256,
@@ -65,26 +216,54 @@ if dataset_name == 'BJ_Taxi' or dataset_name == 'Porto_Taxi':
         'distance_mode': 'l2'
     }
 else:
-    # Xian
-    config = {
-        'embed_dim': 128,
-        'gps_emb_dim': 5,
-        'num_of_heads': 4,
-        'concat': False,
-        'device': device,
-        'distance_mode': 'l2'
-    }
-max_epoch = 50
-learning_rate = 0.0005
-weight_decay = 0.0001
-lr_patience = 2
-lr_decay_ratio = 0.01
-early_stop_lr = 1e-6
+    # Custom dataset (no longer Xian specific architecture)
+    
+    # Function H / GAT architecture is shared by pretraining, GAN training,
+    # and trajectory generation so that their checkpoint shapes stay compatible.
+    config = experiment_config["road"]["generator"]["function_h"].copy()
+    # Device is runtime-specific, so keep it as a CLI argument rather than YAML.
+    config["device"] = device
 
-save_folder = './save/{}'.format(dataset_name)
-save_file_name = 'gat_fc.pt'
-temp_folder = './temp/{}/gat/'.format(dataset_name)
-train = True
+    
+    # config = {
+    #     'embed_dim': 128,
+    #     'gps_emb_dim': 5,
+    #     'num_of_heads': 4,
+    #     'concat': False,
+    #     'device': device,
+    #     'distance_mode': 'l2'
+    # }
+
+# Stage-specific Function H pretraining settings.
+train_config = experiment_config["training"]["road_function_h"]
+
+batch_size = train_config["batch_size"]
+max_epoch = train_config["max_epoch"]
+
+optimizer_config = train_config["optimizer"]
+learning_rate = optimizer_config["learning_rate"]
+weight_decay = optimizer_config["weight_decay"]
+
+scheduler_config = train_config["scheduler"]
+lr_patience = scheduler_config["lr_patience"]
+lr_decay_ratio = scheduler_config["lr_decay_ratio"]
+early_stop_lr = scheduler_config["early_stop_lr"]
+
+# max_epoch = 50
+# learning_rate = 0.0005
+# weight_decay = 0.0001
+# lr_patience = 2
+# lr_decay_ratio = 0.01
+# early_stop_lr = 1e-6
+
+# save_folder = './save/{}'.format(dataset_name)
+# save_file_name = 'gat_fc.pt'
+# temp_folder = './temp/{}/gat/'.format(dataset_name)
+
+save_dir.mkdir(parents=True, exist_ok=True)
+temp_dir.mkdir(parents=True, exist_ok=True)
+
+# train = True
 
 logger = get_logger(name='GatFC')
 logger.info('read data')
@@ -149,22 +328,24 @@ elif dataset_name == 'Porto_Taxi':
         'img_height': img_height
     }
 else:
-    # Xian (not only for Xian anymore since migrating to symlink)
+    # custom dataset
     map_manager = MapManager(
         dataset_name=dataset_name,
         geo_path=geo_path,
-        cache_dir=map_manger_cache_dir
+        cache_dir=map_manager_cache_dir
     )
     
     # can also maybe get it from rid_gps file? maybe its faster?
     road_num = pd.read_csv(geo_path).shape[0]
     # road_num = 17378
     road_num_with_pad = road_num + 1
-    adjacent_np_file = os.path.join(data_root, dataset_name, 'adjacent_mx.npz')
+    # adjacent_np_file = os.path.join(data_root, dataset_name, 'adjacent_mx.npz')
+    adjacent_np_file = str(adjacent_np_path)
     if os.path.exists(adjacent_np_file):
         adj_mx = sp.load_npz(adjacent_np_file)
     else:
-        road_rel = pd.read_csv(os.path.join(data_root, dataset_name, 'xian.rel'))
+        # road_rel = pd.read_csv(os.path.join(data_root, dataset_name, 'xian.rel'))
+        road_rel = pd.read_csv(rel_path)
         # 使用稀疏矩阵构建邻接矩阵
         adj_row = []
         adj_col = []
@@ -182,7 +363,8 @@ else:
         # 缓存 adj_mx
         sp.save_npz(adjacent_np_file, adj_mx)
     # 加载 node_feature
-    node_feature_file = os.path.join(data_root, dataset_name, 'node_feature.pt')
+    # node_feature_file = os.path.join(data_root, dataset_name, 'node_feature.pt')
+    node_feature_file = str(node_feature_path)
     if not os.path.exists(node_feature_file):
         road_info = pd.read_csv(geo_path)
         # road_info = pd.read_csv(os.path.join(data_root, dataset_name, 'xian.geo'))
@@ -227,7 +409,8 @@ else:
         #     node_features = pd.concat([node_features, dum_col], axis=1)
         # 把经纬度离散化后
         # 这里直接拿之前
-        with open(os.path.join(data_root, dataset_name, 'rid_gps.json'), 'r') as f:
+        # with open(os.path.join(data_root, dataset_name, 'rid_gps.json'), 'r') as f:
+        with open(rid_gps_path, 'r') as f:
             rid_gps = json.load(f)
         lon_grid = []  # x
         lat_grid = []  # y
@@ -241,7 +424,9 @@ else:
         node_features['lat_grid'] = lat_grid
 
         if node_features.isna().any().any() or node_features.isin([np.inf, -np.inf]).any().any():
-            print(f"INFO: Found erroneous values in node_features before cleaning it: {node_features.isna().any().any() = }, {node_features.isin([np.inf, -np.inf]).any().any() = }")
+            log_warning_message = f"INFO: Found erroneous values in node_features before cleaning it: {node_features.isna().any().any() = }, {node_features.isin([np.inf, -np.inf]).any().any() = }"
+            logger.warning(log_warning_message)
+            print(log_warning_message)
 
         # no NaN/inf they are replaced with 0
         node_features = node_features.replace([np.inf, -np.inf], np.nan)
@@ -280,9 +465,12 @@ elif dataset_name == 'Porto_Taxi':
     test_data = pd.read_csv(os.path.join(data_root, archive_data_folder, 'porto_taxi_pretrain_input_test.csv'))
 else:
     # Xian
-    train_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_partA_pretrain_input_train.csv'))
-    eval_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_partA_pretrain_input_eval.csv'))
-    test_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_partA_pretrain_input_test.csv'))
+    # train_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_partA_pretrain_input_train.csv'))
+    train_data = pd.read_csv(train_path)
+    # eval_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_partA_pretrain_input_eval.csv'))
+    eval_data = pd.read_csv(eval_path)
+    # test_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_partA_pretrain_input_test.csv'))
+    test_data = pd.read_csv(test_path)
 train_data = train_data.values.tolist()
 eval_data = eval_data.values.tolist()
 test_data = test_data.values.tolist()
@@ -334,8 +522,6 @@ test_loader = DataLoader(test_dataset, batch_size=1, shuffle=True, collate_fn=co
 
 
 if train:
-    if not os.path.exists(temp_folder):
-        os.makedirs(temp_folder)
     metrics = []
     for epoch in range(max_epoch):
         # train
@@ -368,7 +554,9 @@ if train:
         metrics.append(val_ac)
         lr_scheduler.step(val_ac)
         # store temp model
-        torch.save(gat.state_dict(), os.path.join(temp_folder, 'gat_{}.pt'.format(epoch)))
+        # torch.save(gat.state_dict(), os.path.join(temp_folder, 'gat_{}.pt'.format(epoch)))
+        temp_path = temp_dir / f"gat_{epoch}.pt"
+        torch.save(gat.state_dict(), temp_path)
         lr = optimizer.param_groups[0]['lr']
         logger.info('==> Train Epoch {}: Train Loss {:.6f}, val ac {}, lr {}'.format(epoch, train_loss, val_ac, lr))
         if lr < early_stop_lr:
@@ -377,12 +565,16 @@ if train:
         if debug:
             break
     # load best epoch
-    best_epoch = np.argmin(metrics)
-    load_temp_file = 'gat_{}.pt'.format(best_epoch)
+    # best_epoch = np.argmin(metrics) BUG selects the worst val_acc but scheduler uses mode="max"
+    best_epoch = np.argmax(metrics)
+    # load_temp_file = 'gat_{}.pt'.format(best_epoch)
     logger.info('load best from {}'.format(best_epoch))
-    gat.load_state_dict(torch.load(os.path.join(temp_folder, load_temp_file)))
+    # gat.load_state_dict(torch.load(os.path.join(temp_folder, load_temp_file)))
+    temp_path = temp_dir / f"gat_{best_epoch}.pt"
+    gat.load_state_dict(torch.load(temp_path))
 else:
-    gat.load_state_dict(torch.load(os.path.join(save_folder, save_file_name), map_location=device))
+    # gat.load_state_dict(torch.load(os.path.join(save_folder, save_file_name), map_location=device))
+    gat.load_state_dict(torch.load(save_path, map_location=device))
 # 开始评估
 gat.train(False)
 test_hit = 0
@@ -399,11 +591,10 @@ for des, candidate_set, candidate_distance, target in tqdm(test_loader, desc='te
 test_ac = test_hit / test_num
 logger.info('==> Test Result: test ac {}'.format(test_ac))
 # 保存模型
-if not os.path.exists(save_folder):
-    os.makedirs(save_folder)
-torch.save(gat.state_dict(), os.path.join(save_folder, save_file_name))
+# torch.save(gat.state_dict(), os.path.join(save_folder, save_file_name))
+torch.save(gat.state_dict(), save_path)
 # 删除 temp 文件
-for rt, dirs, files in os.walk(temp_folder):
+for rt, dirs, files in os.walk(temp_dir):
     for name in files:
         remove_path = os.path.join(rt, name)
         os.remove(remove_path)

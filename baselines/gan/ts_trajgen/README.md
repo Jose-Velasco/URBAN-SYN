@@ -68,43 +68,48 @@ IIII.  (**INSIDE CONTAINER ts-trajgen**) symlink/compatible file with expected c
 
 IIIII. run `pretrain_gat_fc.py`
 
+___
 
-1. **Pre-preprocesses** data
+1. **Pre-preprocesses** data ✅
     
-    1.1 run b`build_tstrajgen_inputs.py` on your dataset: example command:
+    1.1 run b`build_tstrajgen_inputs.py` (in dev container) on your dataset: example command:
     ```bash
     uv run build_tstrajgen_inputs.py \
            --network_path ../../../fmm_scripts/data/fmm_nyc.shp \
            --fmm_match_path ../../../fmm_scripts/output/nyc_fmm_match.csv \
            --parquet_path ../../../data/nyc_output_tabular/output/traj_cleaned.parquet \
            --trip_id_map_csv ../../../fmm_scripts/data/nyc_gps_points_fmm_trip_id_map.csv \
-           --out_dir ./data/nyc \
-           --log_dir ./data/logs \
+           --out_dir ./datasets/nyc \
+           --log_dir ./datasets/logs \
            --dataset_name nyc \
            --min_len 2 \
            --min_delta_seconds 0.5 \
            --train_ratio 0.8
     ```
-2. (**INSIDE CONTAINER ts-trajgen**) Run  `preprocess_pretrain_input.py`
+    **Outputs:** nyc_mm_test.csv, nyc_mm_train.csv, nyc.geo, nyc.rel
+2. (**INSIDE CONTAINER ts-trajgen**) Run  `preprocess_pretrain_input.py` ✅
 
 ```bash
 python ./script/preprocess_pretrain_input.py \
        --dataset_name nyc \
-       --data_root ../data/ \
+       --data_root ../datasets/ \
        --dataset_prefix nyc \
        --train_rate 0.9 \
        --random_encode false
     #    --max_step
 ```
+**Output:** adjacent_list.json, rid_gps.json, nyc_pretrain_input_eval.csv, nyc_pretrain_input_test.csv, nyc_pretrain_input_train.csv
 
-3. CAN run inside (ts-trajgen use `python`) or outside (dev container `uv run`) `ensure_geo_feature_columns.py` 
+3. (**INSIDE CONTAINER ts-trajgen**)  `ensure_geo_feature_columns.py` ✅
 ```bash
-uv run ensure_geo_feature_columns.py \
-   --geo_path ./data/nyc/nyc.geo \
-   --output_path ./data/nyc/nyc_features_processed.geo
+python ensure_geo_feature_columns.py \
+   --geo_path ../datasets/nyc/nyc.geo \
+   --output_path ../datasets/nyc/nyc_features_processed.geo
 ```
 - Ensures a TS-TrajGen .geo file has the road feature columns expected 
     by the original Xian preprocessing code (pretrain_gat_fc.py).
+
+**Outputs:**  nyc_features_processed.geo
 
 4. (**INSIDE CONTAINER ts-trajgen**) symlink you custom dataset EX nyc.geo -> xian.geo
 ```bash
@@ -124,67 +129,105 @@ ln -sf /workspace/data/nyc/adjacent_list.json adjacent_list.json
 - to verify it worked
 `ls -l`
 
-5. (**INSIDE CONTAINER ts-trajgen**) run `pretrain_gat_fc.py` for function H
+5. (**INSIDE CONTAINER ts-trajgen**) run `pretrain_gat_fc.py` for function H ✅
 
 ```bash
 python pretrain_gat_fc.py \
-       --local True \
-       --dataset_name Xian \
-       --device cuda:0 \
-       --debug False \
-       --geo_path ./data/Xian/xian.geo \
-       --map_manger_cache_dir ./data/Xian/
+    --dataset_name nyc \
+    --data_root ../datasets \
+    --device cuda:0 \
+    --debug False \
+    --train True \
+    --config ./configs/ts_trajgen_nyc.yaml \
+    \
+    --geo_path ../datasets/nyc/nyc_features_processed.geo \
+    --rel_filename nyc.rel \
+    --map_manager_cache_dir ../datasets/nyc \
+    \
+    --adjacent_np_filename adjacent_mx.npz \
+    --node_feature_filename node_feature.pt \
+    --rid_gps_filename rid_gps.json \
+    \
+    --train_filename nyc_pretrain_input_train.csv \
+    --eval_filename nyc_pretrain_input_eval.csv \
+    --test_filename nyc_pretrain_input_test.csv \
+    \
+    --save_dir ./save/nyc \
+    --save_file_name gat_fc.pt \
+    --temp_dir ./temp/nyc/gat
 ```
 
-6. (**INSIDE CONTAINER ts-trajgen**) run `pretrain_function_g_fc.py` for function G
+**Outputs:** node_feature.pt, adjacent_mx.npz, gat_fc.pt, nyc_features_processed.bounds.json
+
+6. (**INSIDE CONTAINER ts-trajgen**) run `pretrain_function_g_fc.py` for function G ✅
 
 ```bash
 python pretrain_function_g_fc.py \
-       --dataset_name Xian \
-       --device cuda:0 \
-       --geo_path ./data/Xian/xian.geo
+    --dataset_name nyc \
+    --data_root ../datasets \
+    --device cuda:0 \
+    --train True \
+    --config ./configs/ts_trajgen_nyc.yaml \
+    --geo_path ../datasets/nyc/nyc_features_processed.geo \
+    \
+    --train_filename nyc_pretrain_input_train.csv \
+    --eval_filename nyc_pretrain_input_eval.csv \
+    --test_filename nyc_pretrain_input_test.csv \
+    \
+    --save_dir ./save/nyc \
+    --save_file_name function_g_fc.pt \
+    --temp_dir ./temp/nyc/function_g
 ```
 
-7. (**INSIDE CONTAINER ts-trajgen**) run `process_kahip_graph_format.py` to generate KaHIP's input
+**Outputs:** function_g_fc.pt
+
+7. (**INSIDE CONTAINER ts-trajgen**) run `process_kahip_graph_format.py` to generate KaHIP's input ✅
 
 ```bash
-python process_kahip_graph_format.py \
-       --dataset_name Xian \
-       --data_root ../data \
-       --geo_filename xian.geo \
-       --rel_filename xian.rel \
-       --graph_filename xian.graph
+python ./script/process_kahip_graph_format.py \
+       --dataset_name nyc \
+       --data_root ../datasets \
+       --geo_filename nyc.geo \
+       --rel_filename nyc.rel \
+       --graph_filename nyc.graph \
+       --rid2new_filename rid2new.json \
+       --new2rid_filename new2rid.json
 ```
 
-8. (**INSIDE CONTAINER ts-trajgen**) run to conduct graph partition
+**Outputs:** nyc.graph, rid2new.json, new2rid.json
+
+8. (**INSIDE CONTAINER ts-trajgen**) run to conduct graph partition ✅
 
 ```bash
-/opt/KaHIP/build/kaffpa ./data/Xian/xian.graph \
+/opt/KaHIP/build/kaffpa ../datasets/nyc/nyc.graph \
                         --k 100 \
                         --preconfiguration=strong \
-                        --output_filename ./data/Xian/tmppartition100
+                        --output_filename ../datasets/nyc/tmppartition100
 ```
 
-9. (**INSIDE CONTAINER ts-trajgen**) to process KaHIP's output and generate regions.
+**Outputs:** tmppartition100
+
+9. (**INSIDE CONTAINER ts-trajgen**) to process KaHIP's output and generate regions. ✅
 
 ```bash
-python process_kaffpa_res.py \
-       --dataset_name Xian \
-       --data_root ../data \
-       --geo_filename xian.geo \
-       --rel_filename xian.rel \
-       --partition_filename tmppartition100 \
-       --adjacent_filename adjacent_list.json \
-       --region2rid_filename region2rid.json \
-       --rid2region_filename rid2region.json
+python ./script/process_kaffpa_res.py \
+    --dataset_name nyc \
+    --data_root ../datasets \
+    --partition_filename tmppartition100 \
+    --new2rid_filename new2rid.json \
+    --adjacent_filename adjacent_list.json \
+    --region2rid_filename region2rid.json \
+    --rid2region_filename rid2region.json
 ```
 
-10. (**INSIDE CONTAINER ts-trajgen**) to calculate regions' adjacent relationships.
+**Outputs:** region2rid.json, rid2region.json
+
+10. (**INSIDE CONTAINER ts-trajgen**) to calculate regions' adjacent relationships.✅
 ```bash
-python construct_traffic_zone_relation.py \
-       --dataset_name Xian \
-       --data_root ../data \
-       --rel_filename xian.rel \
+python ./script/construct_traffic_zone_relation.py \
+       --dataset_name nyc \
+       --data_root ../datasets \
+       --rel_filename nyc.rel \
        --adjacent_filename adjacent_list.json \
        --rid2region_filename rid2region.json \
        --region2rid_filename region2rid.json \
@@ -192,59 +235,68 @@ python construct_traffic_zone_relation.py \
        --region_adjacent_filename_output region_adjacent_list.json
 ```
 
-11. (**INSIDE CONTAINER ts-trajgen**) to map the road-level traj to region level.
+**Outputs:** region_adj_mx.npz, region_adjacent_list.json
+
+11. (**INSIDE CONTAINER ts-trajgen**) to map the road-level traj to region level. ✅
 
 ```bash
-python map_region_traj.py \
-       --dataset_name Xian \
-       --data_root ../data \
-       --rid2region_filename rid2region.json \
-       --region_adjacent_filename region_adjacent_list.json \
-       --train_mm_filename xianshi_partA_mm_train.csv \
-       --test_mm_filename xianshi_partA_mm_test.csv \
-       --train_region_filename xianshi_mm_region_train.csv \
-       --eval_region_filename xianshi_mm_region_eval.csv \
-       --test_region_filename xianshi_mm_region_test.csv \
-       --train_rate 0.9
+python -m script.map_region_traj \
+    --dataset_name nyc \
+    --data_root ../datasets \
+    --rid2region_filename rid2region.json \
+    --train_mm_filename nyc_mm_train.csv \
+    --test_mm_filename nyc_mm_test.csv \
+    --train_region_filename nyc_mm_region_train.csv \
+    --eval_region_filename nyc_mm_region_eval.csv \
+    --test_region_filename nyc_mm_region_test.csv \
+    --config ./configs/ts_trajgen_nyc.yaml
 ```
+- python -m script.map_region_traj run it as a module to resolve relative imports like *from utils.refactor_utils import load_config*
 
-12. (**INSIDE CONTAINER ts-trajgen**) to encode the region-level trajectories to pretrain input of models.
+**Outputs:** nyc_mm_region_eval.csv, nyc_mm_region_test.csv, nyc_mm_region_train.csv
+
+12. (**INSIDE CONTAINER ts-trajgen**) to encode the region-level trajectories to pretrain input of models. ✅
 
 ```bash
-python encode_region_traj.py \
-       --dataset_name Xian \
-       --data_root ../data \
-       --random_encode False \
+python -m script.encode_region_traj \
+       --dataset_name nyc \
+       --data_root ../datasets \
        --rid2region_filename rid2region.json \
        --region2rid_filename region2rid.json \
        --rid_gps_filename rid_gps.json \
        --region_adjacent_filename region_adjacent_list.json \
-       --train_region_filename xianshi_mm_region_train.csv \
-       --eval_region_filename xianshi_mm_region_eval.csv \
-       --test_region_filename xianshi_mm_region_test.csv \
+       --train_region_filename nyc_mm_region_train.csv \
+       --eval_region_filename nyc_mm_region_eval.csv \
+       --test_region_filename nyc_mm_region_test.csv \
        --region_gps_output_filename region_gps.json \
-       --train_output_filename xianshi_region_pretrain_input_train.csv \
-       --eval_output_filename xianshi_region_pretrain_input_eval.csv \
-       --test_output_filename xianshi_region_pretrain_input_test.csv
+       --train_output_filename nyc_region_pretrain_input_train.csv \
+       --eval_output_filename nyc_region_pretrain_input_eval.csv \
+       --test_output_filename nyc_region_pretrain_input_test.csv \
+       --config ./configs/ts_trajgen_nyc.yaml
 ```
 
-13. (**INSIDE CONTAINER ts-trajgen**)  to calculate region GAT node feature based on road-level node
+**Output:** region_gps.json, nyc_region_pretrain_input_train.csv, nyc_region_pretrain_input_test.csv, nyc_region_pretrain_input_eval.csv
+
+13. (**INSIDE CONTAINER ts-trajgen**)  to calculate region GAT node feature based on road-level node ✅
 
 ```bash
 python prepare_region_feature.py \
-       --dataset_name Xian \
+       --dataset_name nyc \
        --device cuda:0 \
-       --data_root ./data \
-       --geo_path ./data/Xian/xian.geo \
-       --map_manger_cache_dir ./data/Xian \
-       --save_folder ./save/Xian \
+       --data_root ../datasets \
+       --geo_path ../datasets/nyc/nyc_features_processed.geo \
+       --map_manager_cache_dir ../datasets/nyc \
+       --save_folder ./save/nyc \
        --save_file_name gat_fc.pt \
        --adjacent_np_filename adjacent_mx.npz \
        --node_feature_filename node_feature.pt \
        --rid2region_filename rid2region.json \
        --region2rid_filename region2rid.json \
-       --region_feature_filename region_feature.pt
+       --region_feature_filename region_feature.pt \
+       --config ./configs/ts_trajgen_nyc.yaml
 ```
+
+**Output:** region_feature.pt,
 
 14. (**INSIDE CONTAINER ts-trajgen**) to calculate gps distance between regions
 

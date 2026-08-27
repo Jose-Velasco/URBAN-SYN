@@ -2,11 +2,9 @@
 import json
 from pathlib import Path
 import pandas as pd
-import numpy as np
 from tqdm import tqdm
 import argparse
-import os
-
+from utils.refactor_utils import load_config
 
 def str2bool(s) -> bool:
     if isinstance(s, bool):
@@ -40,8 +38,8 @@ parser.add_argument(
 
 parser.add_argument(
     "--data_root",
-    type=str,
-    default="../data",
+    type=Path,
+    default=Path("../data"),
     help="Root directory containing dataset folders.",
 )
 
@@ -51,13 +49,6 @@ parser.add_argument(
     type=str,
     default="rid2region.json",
     help="Mapping from road id → region id.",
-)
-
-parser.add_argument(
-    "--region_adjacent_filename",
-    type=str,
-    default="region_adjacent_list.json",
-    help="Region adjacency list (region → downstream regions).",
 )
 
 parser.add_argument(
@@ -106,12 +97,11 @@ parser.add_argument(
     help="Output region-level test trajectories.",
 )
 
-# ---- split ----
 parser.add_argument(
-    "--train_rate",
-    type=float,
-    default=0.9,
-    help="Train/validation split ratio for region-level data.",
+    "--config",
+    type=Path,
+    required=True,
+    help="Path to TS-TrajGen YAML experiment configuration.",
 )
 
 
@@ -120,8 +110,12 @@ args = parser.parse_args()
 local: bool = args.local
 dataset_name: str = args.dataset_name
 
+experiment_config = load_config(args.config)
+# Train/validation split ratio for region-level data.
+train_rate = experiment_config["data"]["splits"]["region_train_rate"]
+
 if local:
-    data_root: Path = Path(args.data_root)
+    data_root: Path = args.data_root
     # data_root = '../data/'
     data_dir: Path = data_root / dataset_name
 else:
@@ -134,7 +128,6 @@ output_dir.mkdir(parents=True, exist_ok=True)
 
 # inputs
 rid2region_path: Path = data_dir / args.rid2region_filename
-region_adjacent_path: Path = data_dir / args.region_adjacent_filename
 train_mm_path: Path = data_dir / args.train_mm_filename
 test_mm_path: Path = data_dir / args.test_mm_filename
 
@@ -148,8 +141,8 @@ if dataset_name == 'BJ_Taxi':
     with open('/mnt/data/jwj/TS_TrajGen_data_archive/kaffpa_tarjan_rid2region.json', 'r') as f:
         rid2region = json.load(f)
     # 读取区域邻接表
-    with open('/mnt/data/jwj/TS_TrajGen_data_archive/kaffpa_tarjan_region_adjacent_list.json', 'r') as f:
-        region_adjacent_list = json.load(f)
+    # with open('/mnt/data/jwj/TS_TrajGen_data_archive/kaffpa_tarjan_region_adjacent_list.json', 'r') as f:
+    #     region_adjacent_list = json.load(f)
     train_mm_traj = pd.read_csv('/mnt/data/jwj/BJ_Taxi/chaoyang_traj_mm_train.csv')
     test_mm_traj = pd.read_csv('/mnt/data/jwj/BJ_Taxi/chaoyang_traj_mm_test.csv')
     # 开始 Map
@@ -162,8 +155,8 @@ elif dataset_name == 'Porto_Taxi':
     with open('/mnt/data/jwj/TS_TrajGen_data_archive/porto_rid2region.json', 'r') as f:
         rid2region = json.load(f)
     # 读取区域邻接表
-    with open('/mnt/data/jwj/TS_TrajGen_data_archive/porto_region_adjacent_list.json', 'r') as f:
-        region_adjacent_list = json.load(f)
+    # with open('/mnt/data/jwj/TS_TrajGen_data_archive/porto_region_adjacent_list.json', 'r') as f:
+    #     region_adjacent_list = json.load(f)
     train_mm_traj = pd.read_csv('/mnt/data/jwj/Porto_Taxi/porto_mm_train.csv')
     test_mm_traj = pd.read_csv('/mnt/data/jwj/Porto_Taxi/porto_mm_test.csv')
     # 开始 Map
@@ -172,15 +165,15 @@ elif dataset_name == 'Porto_Taxi':
     eval_file = open('/mnt/data/jwj/TS_TrajGen_data_archive/porto_taxi_mm_region_eval.csv', 'w')
     test_file = open('/mnt/data/jwj/TS_TrajGen_data_archive/porto_taxi_mm_region_test.csv', 'w')
 else:
-    # Xian
+    # Custom dataset
+
     # 读取路段与区域之间的映射关系
     # with open(os.path.join(data_root, dataset_name, 'rid2region.json'), 'r') as f:
     with open(rid2region_path, 'r') as f:
         rid2region = json.load(f)
     # 读取区域邻接表
     # with open(os.path.join(data_root, dataset_name, 'region_adjacent_list.json'), 'r') as f:
-    with open(region_adjacent_path, 'r') as f:
-        region_adjacent_list = json.load(f)
+
     # train_mm_traj = pd.read_csv('/mnt/data/jwj/Xian/xianshi_partA_mm_train.csv')
     train_mm_traj = pd.read_csv(train_mm_path)
     # test_mm_traj = pd.read_csv('/mnt/data/jwj/Xian/xianshi_partA_mm_test.csv')
@@ -216,11 +209,18 @@ def write_row(write_file, write_row, region_list, time_list):
     write_file.write('{},\"{}\",\"{}\"\n'.format(traj_id, map_region_str, map_time_str))
 
 
-train_rate = 0.9
+# train_rate = 0.9
 total_data_num = train_mm_traj.shape[0]
 train_num = int(total_data_num * train_rate)
 
-for index, row in tqdm(train_mm_traj.iterrows(), total=train_mm_traj.shape[0], desc='map traj'):
+# for index, row in tqdm(train_mm_traj.iterrows(), total=train_mm_traj.shape[0], desc='map traj'):
+for i, (_, row) in enumerate(
+    tqdm(
+        train_mm_traj.iterrows(),
+        total=train_mm_traj.shape[0],
+        desc="map traj",
+    )
+):
     # map
     rid_list = row['rid_list'].split(',')
     time_list = row['time_list'].split(',')
@@ -233,7 +233,7 @@ for index, row in tqdm(train_mm_traj.iterrows(), total=train_mm_traj.shape[0], d
         if map_region != map_region_list[-1]:
             map_region_list.append(map_region)
             map_time_list.append(time_list[j+1])
-    if index <= train_num:
+    if i < train_num:
         write_row(train_file, row, map_region_list, map_time_list)
     else:
         write_row(eval_file, row, map_region_list, map_time_list)
