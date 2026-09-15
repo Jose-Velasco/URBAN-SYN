@@ -1,0 +1,107 @@
+# Shared road network
+road_network:
+  place: "New York City, New York, USA"
+
+  # OSMnx graph construction settings.
+  graph:
+    # When custom_filter is used, filter_network_types controls which OSM
+    # ways are retrieved. network_type is still supplied to OSMnx for graph
+    # behavior such as bidirectionality handling.
+    #
+    # Do not use "walk" here for the unified graph because OSMnx treats walk
+    # networks as fully bidirectional by default.
+    network_type: all_public
+
+    # Build one unified graph containing ways accepted by at least one of
+    # OSMnx's built-in drive, bike, or walk filters:
+    #
+    #     drive OR bike OR walk
+    #
+    # The Python preprocessing code converts these preset names into
+    # OSMnx custom-filter strings.
+    filter_network_types:
+      - drive
+      - bike
+      - walk
+
+    simplify: true
+    retain_all: false
+    truncate_by_edge: true
+
+    # Let OSMnx choose the matching geocoder result automatically.
+    which_result: null
+
+    # Maximum polygon area used when OSMnx subdivides large Overpass queries.
+    max_query_area_size: 2500000000
+
+
+  # Raw OSM way tags that should be retained when downloading the graph.
+  #
+  # These are added to ox.settings.useful_tags_way BEFORE graph download.
+  # Do not put generated/structural fields such as:
+  #
+  #     fid
+  #     u
+  #     v
+  #     key
+  #     geometry
+  #     length
+  #     osmid
+  #
+  # in this list.
+  useful_way_tags:
+
+    # General road identity/classification
+    - highway
+    - name
+    - ref
+    - service
+    - access
+    - junction
+
+    # Directionality
+    - oneway
+    - oneway:bicycle
+
+    # Vehicle/access restrictions
+    - vehicle
+    - motor_vehicle
+    - motorcar
+    - motorcycle
+    - bus
+    # - hgv
+    # - psv
+
+    # Bicycle access/infrastructure
+    - bicycle
+    - cycleway
+
+    # Pedestrian access/infrastructure
+    - foot                        # tells you whether pedestrians can access a way.
+    - sidewalk
+    # - pedestrian                # pedestrian=* is a relatively specialized refinement of pedestrian streets. primarily associated with: highway=pedestrian
+
+    # Physical road properties
+    - lanes
+    - maxspeed
+    - width
+    - surface
+    - smoothness
+    - tracktype
+    - incline
+
+    # Structural properties
+    - bridge
+    - tunnel
+    - covered
+    - layer
+
+    # Walking/path characteristics
+    - lit
+    - segregated
+
+    # Physical restrictions
+    # - maxheight
+    # - maxwidth
+    # - maxlength
+    # - maxweight
