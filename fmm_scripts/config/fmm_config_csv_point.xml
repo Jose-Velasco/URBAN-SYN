@@ -4,11 +4,14 @@
   <input>
     <ubodt>
     <!-- Ubodt file name -->
-      <file>./data/nyc_ubodt.txt</file>
+      <file>./data/nyc_ubodt.bin</file>
+      <!-- it is used as the distance estimate when a routing query isn't found in the UBODT. -->
+      <!-- set it to the same 0.01 as the ubodt_config used to generate the table. -->
+      <delta>0.01</delta>
     </ubodt>
     <network>
     <!-- network file name -->
-      <file>./data/fmm_nyc.shp</file>
+      <file>./data/fmm/fmm_nyc.shp</file>
       <!-- network id field name -->
       <id>fid</id>
       <source>u</source>
@@ -65,7 +68,7 @@
       <error/>
     </fields>
     <!-- Output file name -->
-    <file>./output/nyc_fmm_match.csv</file>
+    <file>./outputs/nyc_fmm_match.csv</file>
   </output>
   <other>
   <!-- log level: 0-trace,1-debug,2-info,3-warn,4-err,5-critical,6off -->
@@ -73,6 +76,6 @@
     <!-- If specified, run map matching in multiple thread -->
     <use_omp/>
     <!-- Number of trajectories to report the progress of matching -->
-    <step>1000</step>
+    <step>3000</step>
   </other>
 </config>
