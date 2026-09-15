@@ -206,3 +206,20 @@ data:
       # "Use random step encoding to reduce data size (mainly for long trajectories). "
       # "Region trajectories are short, so typically disabled."
       random_encode: false
+  
+  region_distance:
+    # Include test trajectories when building processed trajectory file (default: train only). (construct_region_dist.py)
+    include_test: false
+  
+  geo:
+    feature_columns:
+      - highway
+      - oneway
+      - length
+      - lanes
+      - bridge
+      - access
+      - maxspeed
+      - tunnel
+      - junction
+      - width

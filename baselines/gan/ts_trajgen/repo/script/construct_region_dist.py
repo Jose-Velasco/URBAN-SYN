@@ -5,10 +5,9 @@ import os
 from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
-import torch
 import numpy as np
-from geopy import distance
 import argparse
+from utils.refactor_utils import load_config
 
 # going off of https://github.com/WenMellors/TS-TrajGen/issues/10
 # in that issue list 1. The training set data is used ...
@@ -16,7 +15,7 @@ import argparse
 # just in case can toggle to include both train/test but might become data leak depending how this
 # file is used downstream
 # TODO: test this updated version
-def ensure_processed_traj_file(
+def build_processed_traj_file(
     data_dir: Path,
     processed_filename: str,
     train_filename: str,
@@ -30,12 +29,8 @@ def ensure_processed_traj_file(
     combine train and test for broader OD coverage.
     """
     processed_path = data_dir / processed_filename
-
-    if processed_path.exists():
-        print(f"[INFO] Using existing processed traj file: {processed_path}")
-        return processed_path
-
     train_path = data_dir / train_filename
+
     if not train_path.exists():
         raise FileNotFoundError(f"Missing train file: {train_path}")
 
@@ -166,7 +161,7 @@ parser.add_argument(
     "--rid2region_filename",
     type=str,
     default="rid2region.json",
-    help="Mapping from road id → region id.",
+    help="Mapping from road id -> region id.",
 )
 
 parser.add_argument(
@@ -176,32 +171,33 @@ parser.add_argument(
     help="Region centroid GPS coordinates.",
 )
 
+parser.add_argument(
+    "--config",
+    type=Path,
+    required=True,
+    help="Path to TS-TrajGen YAML experiment configuration.",
+)
+
 # ---- trajectory inputs ----
 parser.add_argument(
     "--processed_traj_filename",
     type=str,
-    default="xianshi_partA_traj_mm_processed.csv",
+    default="nyc_partA_traj_mm_processed.csv",
     help="Processed trajectory CSV used for OD distance estimation. Output processed trajectory file used for region distance computation.",
 )
 
 parser.add_argument(
     "--train_mm_filename",
     type=str,
-    default="xianshi_partA_mm_train.csv",
+    default="nyc_mm_train.csv",
     help="Map-matched training trajectories (fallback build source).",
 )
 
 parser.add_argument(
     "--test_mm_filename",
     type=str,
-    default="xianshi_partA_mm_test.csv",
+    default="nyc_mm_test.csv",
     help="Map-matched test trajectories (fallback build source).  (optional).",
-)
-
-parser.add_argument(
-    "--include_test",
-    action="store_true",
-    help="Include test trajectories when building processed trajectory file (default: train only).",
 )
 
 # ---- output ----
@@ -220,16 +216,15 @@ geo_path: Path = data_dir / args.geo_filename
 road_length_path: Path = data_dir / args.road_length_filename
 rid2region_path: Path = data_dir / args.rid2region_filename
 region_gps_path: Path = data_dir / args.region_gps_filename
-processed_traj_path: Path = data_dir / args.processed_traj_filename
-train_mm_path: Path = data_dir / args.train_mm_filename
-test_mm_path: Path = data_dir / args.test_mm_filename
 region_dist_path: Path = data_dir / args.region_dist_filename
 
 processed_traj_filename: str = args.processed_traj_filename
 train_mm_filename: str = args.train_mm_filename
 test_mm_filename: str = args.test_mm_filename
 
-include_test: bool = args.include_test
+experiment_config = load_config(args.config)
+# Include test trajectories when building processed trajectory file (default: train only).
+include_test: bool = experiment_config["data"]["region_distance"]["include_test"]
 
 # 内存可能会炸吗？
 
@@ -263,7 +258,7 @@ with open(rid2region_path, 'r') as f:
 # 开始遍历轨迹数据
 # traj = pd.read_csv('../data/Xian/xianshi_partA_traj_mm_processed.csv')
 
-traj_path = ensure_processed_traj_file(
+traj_path = build_processed_traj_file(
     data_dir=data_dir,
     processed_filename=processed_traj_filename,
     train_filename=train_mm_filename,

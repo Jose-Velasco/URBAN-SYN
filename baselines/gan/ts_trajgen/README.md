@@ -303,17 +303,18 @@ python prepare_region_feature.py \
 -  Since region_count_dist.npy becomes a learned/helper statistic used during training, using train+test can be considered mild test leakage. Maybe just try using xianshi_partA_mm_train.csv  instead of xianshi_partA_traj_mm_processed.
 
 ```bash
-python construct_region_dist.py \
-       --dataset_name Xian \
-       --data_root ../data \
-       --geo_filename xian.geo \
+python -m script.construct_region_dist \
+       --dataset_name nyc \
+       --data_root ../datasets \
+       --geo_filename nyc.geo \
        --road_length_filename road_length.json \
        --rid2region_filename rid2region.json \
        --region_gps_filename region_gps.json \
-       --train_mm_filename xianshi_partA_mm_train.csv \
-       --test_mm_filename xianshi_partA_mm_test.csv \
-       --processed_traj_filename xianshi_partA_traj_mm_processed.csv \
-       --region_dist_filename region_count_dist.npy
+       --train_mm_filename nyc_mm_train.csv \
+       --test_mm_filename nyc_mm_test.csv \
+       --processed_traj_filename nyc_traj_mm_processed.csv \
+       --region_dist_filename region_count_dist.npy \
+       --config ./configs/ts_trajgen_nyc.yaml
 ```
 
 15. (**INSIDE CONTAINER ts-trajgen**) to pretrain region-level function G.
