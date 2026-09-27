@@ -1,5 +1,5 @@
 """
-Creates a directed edge layer with columns fid, u, v, and geometry, which matches the common FMM pattern
+Creates a directed edge layer with columns edge_id, u, v, and geometry, which matches the common FMM pattern
 
 FMM accepts a CSV point file where each row is one observation with trajectory id,
 longitude, latitude, and optional timestamp; the file MUST already be sorted by id AND timestamp
@@ -61,7 +61,7 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help=(
             "Output path for the minimal FMM-compatible road-network Shapefile. "
-            "Contains only fid, u, v, and geometry. "
+            "Contains only edge_id, u, v, and geometry. "
             "Example: ./data/fmm/fmm_nyc.shp"
         ),
     )
@@ -167,7 +167,7 @@ def prepare_road_edges(
     Convert an OSMnx graph into the canonical edge table used by FMM.
 
     FMM requires:
-        fid, u, v, geometry
+        edge_id, u, v, geometry
 
     OSMnx's edge key is additionally preserved because its MultiDiGraph
     may contain multiple edges between the same (u, v) node pair.
@@ -184,13 +184,13 @@ def prepare_road_edges(
     edges_gdf = edges_gdf.reset_index()
 
     # FMM requires a unique integer edge identifier.
-    edges_gdf["fid"] = np.arange(
+    edges_gdf["edge_id"] = np.arange(
         len(edges_gdf),
         dtype="int64",
     )
 
     fmm_required_columns = [
-        "fid",
+        "edge_id",
         "u",
         "v",
         "geometry",
@@ -284,12 +284,12 @@ def write_canonical_network(
         use_arrow=True,
         index=False,
 
-        # GeoPackage normally reserves the name "fid" for its internal
-        # feature ID. Use a different internal name so our FMM `fid`
-        # remains an ordinary, readable attribute column.
-        layer_options={
-            "FID": "gpkg_fid",
-        },
+        # # GeoPackage normally reserves the name "fid" for its internal
+        # # feature ID. Use a different internal name so our FMM `fid`
+        # # remains an ordinary, readable attribute column.
+        # layer_options={
+        #     "FID": "gpkg_fid",
+        # },
     )
 
     logger.info(
@@ -306,7 +306,7 @@ def write_fmm_network(
     Write the minimal road-network schema required by FMM.
 
     FMM requires:
-        fid, u, v, geometry
+        edge_id, u, v, geometry
     """
     out_shp.parent.mkdir(
         parents=True,
@@ -316,7 +316,7 @@ def write_fmm_network(
     # FMM only needs edge ID, source node, target node, and geometry.
     fmm_edges_gdf = edges_gdf[
         [
-            "fid",
+            "edge_id",
             "u",
             "v",
             "geometry",
