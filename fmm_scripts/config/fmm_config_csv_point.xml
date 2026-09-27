@@ -13,7 +13,7 @@
     <!-- network file name -->
       <file>./data/fmm/fmm_nyc.shp</file>
       <!-- network id field name -->
-      <id>fid</id>
+      <id>edge_id</id>
       <source>u</source>
       <target>v</target>
     <!-- network mode name, only applies to OSM network, one of drive|walk|bike|all. -->
