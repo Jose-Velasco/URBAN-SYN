@@ -226,9 +226,10 @@ def prepare_road_edges(
             edges_gdf[col] = None
 
     # These are provided/derived by OSMnx rather than requested raw OSM tags.
+    # Intentionally distinguish raw requested OSM tags from OSMnx-derived fields
     osmnx_columns = [
         col
-        for col in ["osmid", "length"]
+        for col in ["osmid", "length", "speed_kph"]
         if col in edges_gdf.columns
     ]
 
@@ -391,6 +392,13 @@ def build_fmm_network_from_place(
         truncate_by_edge=truncate_by_edge,
         which_result=which_result,
         custom_filter=custom_filter,
+    )
+
+    logger.info("Deriving OSMnx speed_kph edge feature...")
+
+    graph = ox.routing.add_edge_speeds(
+        graph,
+        agg=np.mean,
     )
 
     edges_gdf = prepare_road_edges(
