@@ -84,6 +84,10 @@ road_network:
     # Physical road properties
     - lanes
     - maxspeed
+        # speed_kph is generated after downloading.
+          # OSMnx normalized/derived float during road network download
+          # OSMnx-derived road speed in km/h, using explicit OSM
+          # maxspeed values when available and imputing missing speeds from highway-class statistics.
     - width
     - surface
     - smoothness

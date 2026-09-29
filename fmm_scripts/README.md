@@ -68,7 +68,7 @@ The unified road network is configured in `config/nyc.yaml` and combines the con
 
 ### 2. Generate UBODT ("shortest path cache")
 
-    Run inside the urban-syn-fmm:ubuntu22 container:
+Run inside the urban-syn-fmm:ubuntu22 container:
 
 - A UBODT (Upper-bounded Origin Destination Table) is a precomputed hash table used in the Fast Map Matching (FMM) algorithm to store shortest paths between node pairs within a specific maximum distance (**delta** in `ubodt_config.xml`). It speeds up map matching by avoiding repeated Dijkstra algorithm runs.
 
@@ -82,15 +82,11 @@ UBODT (Upper-Bounded Origin Destination Table) precomputes shortest-path informa
 
 The maximum precomputed path distance is controlled by `delta` in:
 
-```text
-config/ubodt_config.xml
-```
+`config/ubodt_config.xml`
 
 Current NYC configuration uses:
 
-```xml
-<delta>0.01</delta>
-```
+`<delta>0.01</delta>`
 
 The UBODT configuration should use the same `fid`, `u`, and `v` fields as the generated FMM road network.
 
@@ -105,11 +101,11 @@ fmm ./config/fmm_config_csv_point.xml
 
 Current map-matching parameters:
 
-```xml
-<k>8</k>
-<r>0.003</r>
-<gps_error>0.0005</gps_error>
-```
+`<k>8</k>`
+
+`<r>0.003</r>`
+
+`<gps_error>0.0005</gps_error>`
 
 The road network and GPS coordinates use EPSG:4326, so FMM distance parameters such as `r`, `gps_error`, and `delta` are expressed in degrees.
 
