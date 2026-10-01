@@ -1,6 +1,17 @@
 # Shared road network
 road_network:
-  place: "New York City, New York, USA"
+  # derives road networ bounding box from provided min/max lat/log trajectories data
+  coverage:
+    type: trajectory_bbox
+    padding_meters: 2000
+
+  # uses osmnx place strings to download road network
+  # coverage:
+  #   type: place
+  #   place: "New York City, New York, USA"
+  #   # Let OSMnx choose the matching geocoder result automatically.
+  #   which_result: null
+  
 
   # OSMnx graph construction settings.
   graph:
@@ -27,9 +38,6 @@ road_network:
     simplify: true
     retain_all: false
     truncate_by_edge: true
-
-    # Let OSMnx choose the matching geocoder result automatically.
-    which_result: null
 
     # Maximum polygon area used when OSMnx subdivides large Overpass queries.
     max_query_area_size: 2500000000
@@ -103,9 +111,3 @@ road_network:
     # Walking/path characteristics
     - lit
     - segregated
-
-    # Physical restrictions
-    # - maxheight
-    # - maxwidth
-    # - maxlength
-    # - maxweight

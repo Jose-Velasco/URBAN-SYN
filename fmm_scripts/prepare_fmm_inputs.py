@@ -28,7 +28,7 @@ import logging
 import time
 import geopandas as gpd
 
-from utils import build_custom_filter, configure_osmnx, format_duration, load_config, normalize_multivalue_columns, setup_logging
+from utils import add_fmm_trajectory_ids, build_custom_filter, build_padded_trajectory_bbox, configure_osmnx, format_duration, load_config, log_downloaded_graph, normalize_multivalue_columns, prepare_fmm_points, setup_logging, write_canonical_network, write_fmm_network
 
 logger = logging.getLogger(__name__)
 
@@ -105,59 +105,6 @@ def parse_args() -> argparse.Namespace:
     )
 
     return parser.parse_args()
-
-def download_osmnx_graph(
-    place: str,
-    network_type: Literal[
-        "drive",
-        "drive_service",
-        "all_public",
-        "walk",
-        "bike",
-        "all",
-    ],
-    simplify: bool,
-    retain_all: bool,
-    truncate_by_edge: bool,
-    which_result: int | list[int | None] | None,
-    custom_filter: str | list[str] | None,
-):
-    """Download the configured OSMnx road/path network."""
-    start_time = time.perf_counter()
-
-    logger.info(
-        "Downloading '%s' network for %s...",
-        network_type,
-        place,
-    )
-
-    graph = ox.graph_from_place(
-        place,
-        network_type=network_type,
-        custom_filter=custom_filter,
-        simplify=simplify,
-        retain_all=retain_all,
-        truncate_by_edge=truncate_by_edge,
-        which_result=which_result,
-    )
-
-    logger.info(
-        "Downloaded graph CRS: %s",
-        graph.graph.get("crs"),
-    )
-
-    logger.info(
-        "Road network download completed in %s",
-        format_duration(time.perf_counter() - start_time),
-    )
-
-    logger.info(
-        "Downloaded graph: %d nodes, %d edges",
-        graph.number_of_nodes(),
-        graph.number_of_edges(),
-    )
-
-    return graph
 
 def prepare_road_edges(
     graph,
@@ -249,150 +196,28 @@ def prepare_road_edges(
 
     return edges_gdf
 
-def write_canonical_network(
-    edges_gdf: gpd.GeoDataFrame,
-    out_gpkg: Path,
-    layer: str = "roads",
-) -> None:
-    """Write the rich shared road network as a GeoPackage."""
-    out_gpkg.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    start_time = time.perf_counter()
-
-    logger.info(
-        "Preparing canonical road-network attributes for GeoPackage output...",
-    )
-
-    canonical_gdf = normalize_multivalue_columns(
-        edges_gdf
-    )
-
-    logger.info(
-        "Writing canonical road network to %s "
-        "(layer=%s)...",
-        out_gpkg,
-        layer,
-    )
-
-    canonical_gdf.to_file(
-        out_gpkg,
-        driver="GPKG",
-        layer=layer,
-        engine="pyogrio",
-        use_arrow=True,
-        index=False,
-
-        # # GeoPackage normally reserves the name "fid" for its internal
-        # # feature ID. Use a different internal name so our FMM `fid`
-        # # remains an ordinary, readable attribute column.
-        # layer_options={
-        #     "FID": "gpkg_fid",
-        # },
-    )
-
-    logger.info(
-        "Canonical road network write completed in %s",
-        format_duration(time.perf_counter() - start_time),
-    )
-
-
-def write_fmm_network(
-    edges_gdf: gpd.GeoDataFrame,
-    out_shp: Path,
-) -> None:
-    """
-    Write the minimal road-network schema required by FMM.
-
-    FMM requires:
-        edge_id, u, v, geometry
-    """
-    out_shp.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    # FMM only needs edge ID, source node, target node, and geometry.
-    fmm_edges_gdf = edges_gdf[
-        [
-            "edge_id",
-            "u",
-            "v",
-            "geometry",
-        ]
-    ].copy()
-
-    start_time = time.perf_counter()
-
-    logger.info(
-        "Writing minimal FMM road network to %s...",
-        out_shp,
-    )
-
-    fmm_edges_gdf.to_file(
-        out_shp,
-        driver="ESRI Shapefile",
-        engine="pyogrio",
-        use_arrow=True,
-        index=False,
-    )
-
-    logger.info(
-        "FMM road network write completed in %s",
-        format_duration(time.perf_counter() - start_time),
-    )
-
-
-def build_fmm_network_from_place(
-    place: str,
-    # out_shp: Path,
+def build_fmm_network(
+    graph,
     canonical_output: Path,
     canonical_layer: str,
     fmm_output: Path,
-    network_type: Literal[
-        "drive",
-        "drive_service",
-        "all_public",
-        "walk",
-        "bike",
-        "all",
-    ],
-    simplify: bool,
-    retain_all: bool,
-    truncate_by_edge: bool,
-    which_result: int | list[int | None] | None,
-    custom_filter: str | list[str] | None,
-    max_query_area_size: float,
     useful_way_tags: list[str],
 ) -> None:
     """
-    Build the shared road network and write both canonical and FMM artifacts.
+    Build canonical and FMM road-network artifacts from an OSMnx graph.
 
-    Outputs:
-        canonical_output:
-            Rich GeoPackage containing the complete shared network schema.
+    The graph acquisition strategy is handled separately so this function
+    remains independent of whether the graph came from a place, bounding box,
+    polygon, or another source.
 
-        fmm_output:
-            Minimal Shapefile containing only the fields required by FMM.
+    Outputs: Saves canonical_output and fmm_output to disk based on their respective paths
+    canonical_output:
+        Rich GeoPackage containing the complete shared network schema.
+
+    fmm_output:
+        Minimal Shapefile containing only the fields required by FMM.
     """
     total_start = time.perf_counter()
-
-    configure_osmnx(
-        max_query_area_size=max_query_area_size,
-        useful_way_tags=useful_way_tags,
-    )
-
-    graph = download_osmnx_graph(
-        place=place,
-        network_type=network_type,
-        simplify=simplify,
-        retain_all=retain_all,
-        truncate_by_edge=truncate_by_edge,
-        which_result=which_result,
-        custom_filter=custom_filter,
-    )
 
     logger.info("Deriving OSMnx speed_kph edge feature...")
 
@@ -427,80 +252,82 @@ def build_fmm_network_from_place(
         format_duration(time.perf_counter() - total_start),
     )
 
-def add_fmm_trajectory_ids(
-    df: pd.DataFrame,
-) -> pd.DataFrame:
-    """
-    Add integer FMM trajectory IDs and return their mapping.
-
-    The current dataset's `tid` is only unique within each user, so
-    `uid` and `tid` are combined into a unique trajectory key.
-    """
-    # Unique trip key
-    # tid is only unique within a user. NOTE: "tid is only unique within a user" this may not be for another NYC dateset 
-    df["trip_key"] = (
-        df["uid"].astype(str)
-        + "_"
-        + df["tid"].astype(str)
-    )
-
-    # factorize assigns each unique trip key a stable integer ID
-    # according to its first occurrence.
-    df["id"], unique_trip_keys = pd.factorize(
-        df["trip_key"],
-        sort=False,
-    )
-
-    trip_id_map = pd.DataFrame(
-        {
-            "trip_key": unique_trip_keys,
-            "id": range(len(unique_trip_keys)),
-        }
-    )
-
-    return trip_id_map
-
-
-def prepare_fmm_points(
-    df: pd.DataFrame,
-) -> pd.DataFrame:
-    """Convert GPS observations into FMM's point schema."""
+def download_graph_from_place(
+    place: str,
+    network_type: Literal[
+        "drive",
+        "drive_service",
+        "all_public",
+        "walk",
+        "bike",
+        "all",
+    ],
+    simplify: bool,
+    retain_all: bool,
+    truncate_by_edge: bool,
+    which_result: int | list[int | None] | None,
+    custom_filter: str | list[str] | None,
+):
+    """Download an OSMnx graph using a named place."""
     start_time = time.perf_counter()
 
     logger.info(
-        "Converting timestamps and sorting GPS observations..."
+        "Downloading '%s' network for place '%s'...",
+        network_type,
+        place,
     )
 
-
-    df["timestamp"] = (
-        pd.to_datetime(df["datetime"])
-        .astype("int64")
-        // 10**9
+    graph = ox.graph_from_place(
+        place,
+        network_type=network_type,
+        custom_filter=custom_filter,
+        simplify=simplify,
+        retain_all=retain_all,
+        truncate_by_edge=truncate_by_edge,
+        which_result=which_result,
     )
 
-    # FMM expects observations for each trajectory to be sequential.
-    # FMM expects points already ordered by trajectory then time.
-    df.sort_values(
-        ["id", "timestamp"],
-        inplace=True,
-    )
+    log_downloaded_graph(graph, start_time)
 
-    gps_df = pd.DataFrame(
-        {
-            "id": df["id"].astype("int64"),
-            "x": df["lng"].astype(float),
-            "y": df["lat"].astype(float),
-            "timestamp": df["timestamp"].astype("int64"),
-        }
-    )
+    return graph
+
+
+def download_graph_from_bbox(
+    bbox: tuple[float, float, float, float],
+    network_type: Literal[
+        "drive",
+        "drive_service",
+        "all_public",
+        "walk",
+        "bike",
+        "all",
+    ],
+    simplify: bool,
+    retain_all: bool,
+    truncate_by_edge: bool,
+    custom_filter: str | list[str] | None,
+):
+    """Download an OSMnx graph using a bounding box."""
+    start_time = time.perf_counter()
 
     logger.info(
-        "FMM point preparation completed in %s",
-        format_duration(time.perf_counter() - start_time),
+        "Downloading '%s' network from bbox %s...",
+        network_type,
+        bbox,
     )
 
-    return gps_df
+    graph = ox.graph_from_bbox(
+        bbox,
+        network_type=network_type,
+        custom_filter=custom_filter,
+        simplify=simplify,
+        retain_all=retain_all,
+        truncate_by_edge=truncate_by_edge,
+    )
 
+    log_downloaded_graph(graph, start_time)
+
+    return graph
 
 def build_fmm_points_csv(
     parquet_path: Path,
@@ -638,7 +465,7 @@ def main() -> None:
     dataset_config = load_config(args.config)
 
     road_config = dataset_config["road_network"]
-    place = road_config["place"]
+    coverage_config = road_config["coverage"]
 
     graph_config = road_config["graph"]
     useful_way_tags = road_config["useful_way_tags"]
@@ -648,26 +475,57 @@ def main() -> None:
     simplify = graph_config["simplify"]
     retain_all = graph_config["retain_all"]
     truncate_by_edge = graph_config["truncate_by_edge"]
-    which_result = graph_config["which_result"]
     max_query_area_size = graph_config["max_query_area_size"]
 
     custom_filter = build_custom_filter(
         graph_config["filter_network_types"]
     )
 
-    build_fmm_network_from_place(
-        place=place,
+    configure_osmnx(
+        max_query_area_size=max_query_area_size,
+        useful_way_tags=useful_way_tags,
+    )
+
+    coverage_type = coverage_config["type"]
+    if coverage_type == "place":
+        graph = download_graph_from_place(
+            place=coverage_config["place"],
+            network_type=network_type,
+            simplify=simplify,
+            retain_all=retain_all,
+            truncate_by_edge=truncate_by_edge,
+            which_result=coverage_config.get("which_result"),
+            custom_filter=custom_filter,
+        )
+
+    elif coverage_type == "trajectory_bbox":
+        bbox = build_padded_trajectory_bbox(
+            parquet_path=args.trajectory_parquet,
+            padding_meters=float(
+                coverage_config["padding_meters"]
+            ),
+        )
+
+        graph = download_graph_from_bbox(
+            bbox=bbox,
+            network_type=network_type,
+            simplify=simplify,
+            retain_all=retain_all,
+            truncate_by_edge=truncate_by_edge,
+            custom_filter=custom_filter,
+        )
+
+    else:
+        raise ValueError(
+            f"Unsupported road network coverage type: {coverage_type!r}"
+        )
+
+    build_fmm_network(
+        graph=graph,
         canonical_output=args.canonical_road_network_output,
         canonical_layer=args.canonical_road_network_layer,
         fmm_output=args.fmm_road_network_output,
-        network_type=network_type,
-        simplify=simplify,
-        retain_all=retain_all,
-        truncate_by_edge=truncate_by_edge,
-        which_result=which_result,
-        custom_filter=custom_filter,
-        max_query_area_size=max_query_area_size,
-        useful_way_tags=useful_way_tags
+        useful_way_tags=useful_way_tags,
     )
 
     build_fmm_points_csv(
