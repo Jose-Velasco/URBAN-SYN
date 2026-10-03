@@ -75,32 +75,32 @@ ___
     1.1 run b`build_tstrajgen_inputs.py` (in dev container) on your dataset: example command:
     ```bash
     uv run build_tstrajgen_inputs.py \
-           --network_path ../../../fmm_scripts/data/fmm_nyc.shp \
-           --fmm_match_path ../../../fmm_scripts/output/nyc_fmm_match.csv \
+           --network_path ../../../fmm_scripts/data/road_network/nyc.gpkg \
+           --fmm_match_path ../../../fmm_scripts/outputs/nyc_fmm_match.csv \
            --parquet_path ../../../data/nyc_output_tabular/output/traj_cleaned.parquet \
            --trip_id_map_csv ../../../fmm_scripts/data/nyc_gps_points_fmm_trip_id_map.csv \
+           --config ./repo/configs/ts_trajgen_nyc.yaml \
            --out_dir ./datasets/nyc \
            --log_dir ./datasets/logs \
            --dataset_name nyc \
            --min_len 2 \
            --min_delta_seconds 0.5 \
-           --train_ratio 0.8
+           --train_ratio 0.8 \
+           --no-interpolate_intermediate_edges
     ```
     **Outputs:** nyc_mm_test.csv, nyc_mm_train.csv, nyc.geo, nyc.rel
 2. (**INSIDE CONTAINER ts-trajgen**) Run  `preprocess_pretrain_input.py` ✅
 
 ```bash
-python ./script/preprocess_pretrain_input.py \
+python -m script.preprocess_pretrain_input \
        --dataset_name nyc \
        --data_root ../datasets/ \
        --dataset_prefix nyc \
-       --train_rate 0.9 \
-       --random_encode false
-    #    --max_step
+       --config ./configs/ts_trajgen_nyc.yaml
 ```
 **Output:** adjacent_list.json, rid_gps.json, nyc_pretrain_input_eval.csv, nyc_pretrain_input_test.csv, nyc_pretrain_input_train.csv
 
-3. (**INSIDE CONTAINER ts-trajgen**)  `ensure_geo_feature_columns.py` ✅
+3. (**INSIDE CONTAINER ts-trajgen**)  `ensure_geo_feature_columns.py` ⚠️⚠️⚠️(no longer needed with road network and yaml config setup)⚠️⚠️⚠️
 ```bash
 python ensure_geo_feature_columns.py \
    --geo_path ../datasets/nyc/nyc.geo \
@@ -111,7 +111,7 @@ python ensure_geo_feature_columns.py \
 
 **Outputs:**  nyc_features_processed.geo
 
-4. (**INSIDE CONTAINER ts-trajgen**) symlink you custom dataset EX nyc.geo -> xian.geo
+4. (**INSIDE CONTAINER ts-trajgen**) symlink you custom dataset EX nyc.geo -> xian.geo (soon no longer needed)⚠️⚠️⚠️⚠️
 ```bash
 cd /workspace/repo/data/Xian
 
@@ -140,7 +140,7 @@ python pretrain_gat_fc.py \
     --train True \
     --config ./configs/ts_trajgen_nyc.yaml \
     \
-    --geo_path ../datasets/nyc/nyc_features_processed.geo \
+    --geo_path ../datasets/nyc/nyc.geo \
     --rel_filename nyc.rel \
     --map_manager_cache_dir ../datasets/nyc \
     \
@@ -168,7 +168,7 @@ python pretrain_function_g_fc.py \
     --device cuda:0 \
     --train True \
     --config ./configs/ts_trajgen_nyc.yaml \
-    --geo_path ../datasets/nyc/nyc_features_processed.geo \
+    --geo_path ../datasets/nyc/nyc.geo \
     \
     --train_filename nyc_pretrain_input_train.csv \
     --eval_filename nyc_pretrain_input_eval.csv \
@@ -284,7 +284,7 @@ python prepare_region_feature.py \
        --dataset_name nyc \
        --device cuda:0 \
        --data_root ../datasets \
-       --geo_path ../datasets/nyc/nyc_features_processed.geo \
+       --geo_path ../datasets/nyc/nyc.geo \
        --map_manager_cache_dir ../datasets/nyc \
        --save_folder ./save/nyc \
        --save_file_name gat_fc.pt \
@@ -296,9 +296,9 @@ python prepare_region_feature.py \
        --config ./configs/ts_trajgen_nyc.yaml
 ```
 
-**Output:** region_feature.pt,
+**Output:** region_feature.pt
 
-14. (**INSIDE CONTAINER ts-trajgen**) to calculate gps distance between regions
+14. (**INSIDE CONTAINER ts-trajgen**) to calculate gps distance between regions ✅
 
 -  Since region_count_dist.npy becomes a learned/helper statistic used during training, using train+test can be considered mild test leakage. Maybe just try using xianshi_partA_mm_train.csv  instead of xianshi_partA_traj_mm_processed.
 
@@ -317,69 +317,83 @@ python -m script.construct_region_dist \
        --config ./configs/ts_trajgen_nyc.yaml
 ```
 
-15. (**INSIDE CONTAINER ts-trajgen**) to pretrain region-level function G.
+**Output:** road_length.json, nyc_traj_mm_processed.csv, region_count_dist.npy
+
+15. (**INSIDE CONTAINER ts-trajgen**) to pretrain region-level function G. ✅
 
 ```bash
 python pretrain_region_function_g_fc.py \
-       --dataset_name Xian \
-       --data_root ./data \
+       --dataset_name nyc \
+       --data_root ../datasets \
        --region2rid_filename region2rid.json \
-       --train_filename xianshi_region_pretrain_input_train.csv \
-       --eval_filename xianshi_region_pretrain_input_eval.csv \
-       --test_filename xianshi_region_pretrain_input_test.csv \
-       --save_dir ./save/Xian \
+       --train_filename nyc_region_pretrain_input_train.csv \
+       --eval_filename nyc_region_pretrain_input_eval.csv \
+       --test_filename nyc_region_pretrain_input_test.csv \
+       --save_dir ./save/nyc \
        --save_file_name region_function_g_fc.pt \
+       --temp_dir ./temp/nyc/region_function_g \
        --device cuda:0 \
+       --config ./configs/ts_trajgen_nyc.yaml \
        --train
 ```
 
-16. (**INSIDE CONTAINER ts-trajgen**) to pretrain region-level function H.
+**Output:** region_function_g_fc.pt
+
+16. (**INSIDE CONTAINER ts-trajgen**) to pretrain region-level function H. ✅
 
 ```bash
 python pretrain_region_gat_fc.py \
-       --dataset_name Xian \
-       --data_root ./data \
+       --dataset_name nyc \
+       --data_root ../datasets \
        --region2rid_filename region2rid.json \
        --adjacent_np_filename region_adj_mx.npz \
        --node_feature_filename region_feature.pt \
        --region_dist_filename region_count_dist.npy \
-       --train_filename xianshi_region_pretrain_input_train.csv \
-       --eval_filename xianshi_region_pretrain_input_eval.csv \
-       --test_filename xianshi_region_pretrain_input_test.csv \
-       --save_dir ./save/Xian \
+       --train_filename nyc_region_pretrain_input_train.csv \
+       --eval_filename nyc_region_pretrain_input_eval.csv \
+       --test_filename nyc_region_pretrain_input_test.csv \
+       --save_dir ./save/nyc \
        --save_file_name region_gat_fc.pt \
+       --temp_dir ./temp/nyc/region_gat \
        --device cuda:0 \
+       --config ./configs/ts_trajgen_nyc.yaml \
        --train
 ```
 
-18. (**INSIDE CONTAINER ts-trajgen**) to build od_distinct_route.json required for `train_gan.py`
+**Output:** `region_gat_fc.pt`
+
+17. (**INSIDE CONTAINER ts-trajgen**) to build od_distinct_route.json required for `train_gan.py` ✅
 
 -  Since od_distinct_route.json becomes a learned/helper statistic used during training, using train+test can be considered mild test leakage. Maybe just try using xianshi_partA_mm_train.csv instead of xianshi_partA_traj_mm_processed.
 
 ```bash
-python generate_od_distinct_route.py \
-       --dataset_name Xian \
-       --data_root ../data \
-       --traj_filename xianshi_partA_traj_mm_processed.csv \
-       --rid_gps_filename rid_gps.json \
+python -m script.generate_od_distinct_route \
+       --dataset_name nyc \
+       --data_root ../datasets \
+       --traj_filename nyc_mm_train.csv \
+       --route_column rid_list \
+       --gps_filename rid_gps.json \
        --output_filename od_distinct_route.json
-
 ```
 
-19. (**INSIDE CONTAINER ts-trajgen**) to build road_time_distribution.npy required for `train_gan.py`
+**Output:** `od_distinct_route.json`
+
+18. (**INSIDE CONTAINER ts-trajgen**) to build road_time_distribution.npy required for `train_gan.py` ✅
 
 -  Since od_distinct_route.json becomes a learned/helper statistic used during training, using train+test can be considered mild test leakage. Maybe just try using xianshi_partA_mm_train.csv instead of xianshi_partA_traj_mm_processed.
 
 ```bash
-python generate_time_distribution.py \
-       --dataset_name Xian \
-       --data_root ../data \
-       --traj_filename xianshi_partA_traj_mm_processed.csv \
-       --geo_filename xian.geo \
+python -m script.generate_time_distribution \
+       --dataset_name nyc \
+       --data_root ../datasets \
+       --traj_filename nyc_mm_train.csv \
+       --geo_filename nyc.geo \
        --output_filename road_time_distribution.npy
 ```
 
-20. (**INSIDE CONTAINER ts-trajgen**) to adversarial learning (road level?)
+**Output:** `road_time_distribution.npy`
+
+19. (**INSIDE CONTAINER ts-trajgen**) to adversarial learning (road level?)
 
 ```bash
 python train_gan.py \

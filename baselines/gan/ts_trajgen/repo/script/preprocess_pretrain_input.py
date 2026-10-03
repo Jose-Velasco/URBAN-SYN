@@ -13,6 +13,7 @@ from geopy import distance
 from shapely.geometry import LineString
 from tqdm import tqdm
 from collections import defaultdict
+from utils.refactor_utils import load_config
 
 
 def str2bool(value):
@@ -81,23 +82,33 @@ def parse_args() -> argparse.Namespace:
         help="Prefix for generic dataset files, e.g. 'nyc' -> nyc_mm_train.csv, nyc.geo, nyc.rel.",
     )
     parser.add_argument(
-        "--max_step",
-        type=int,
-        default=4,
-        help="Maximum random step size when random encoding is enabled.",
-    )
-    parser.add_argument(
-        "--random_encode",
-        type=str2bool,
+        "--config",
+        type=Path,
         default=True,
-        help="Randomly skip steps during encoding to reduce data volume and overfitting.",
+        help="Path to TS-TrajGen YAML configuration.",
     )
-    parser.add_argument(
-        "--train_rate",
-        type=float,
-        default=0.9,
-        help="Fraction of train_data rows written to train output; the rest go to eval.",
-    )
+    # parser.add_argument(
+    #     "--max_step",
+    #     type=int,
+    #     default=4,
+    #     help="Maximum random step size when random encoding is enabled.",
+    # )
+    # parser.add_argument(
+    #     "--random_encode",
+    #     type=str2bool,
+    #     default=True,
+    #     help="Randomly skip steps during encoding to reduce data volume and overfitting.",
+    # )
+    # parser.add_argument(
+    #     "--train_rate",
+    #     type=float,
+    #     default=0.9,
+    #     help="Fraction of train_data rows written to train output; the rest go to eval.",
+    # )
+    """
+    --train_rate 0.9 here is a second split, applied only to the already-created nyc_mm_train.csv: 
+    90% goes to pretrain-train and 10% to pretrain-eval, while nyc_mm_test.csv remains the test input.
+    """
 
     return parser.parse_args()
 
@@ -535,6 +546,11 @@ def main() -> None:
     Main entry point for building TS-TrajGen pretraining CSVs.
     """
     args = parse_args()
+    config_dict = load_config(args.config)
+    train_rate = float(config_dict["data"]["splits"]["road_train_rate"])
+    random_encode = bool(config_dict["data"]["encoding"]["road"]["random_encode"])
+    max_step = int(config_dict["data"]["encoding"]["road"]["max_step"])
+
     np.random.seed(101)
 
     paths = resolve_dataset_paths(args)
@@ -544,7 +560,7 @@ def main() -> None:
     rid_gps = load_rid_gps(paths)
 
     total_data_num = train_data.shape[0]
-    train_num = int(total_data_num * args.train_rate)
+    train_num = int(total_data_num * train_rate)
 
     train_output = paths["train_output"]
     if train_output is None:
@@ -577,8 +593,8 @@ def main() -> None:
                     fp=train_output,
                     adjacent_list=adjacent_list,
                     rid_gps=rid_gps,
-                    random_encode=args.random_encode,
-                    max_step=args.max_step,
+                    random_encode=random_encode,
+                    max_step=max_step,
                     stats=stats,
                 )
             else:
@@ -587,8 +603,8 @@ def main() -> None:
                     fp=eval_output,
                     adjacent_list=adjacent_list,
                     rid_gps=rid_gps,
-                    random_encode=args.random_encode,
-                    max_step=args.max_step,
+                    random_encode=random_encode,
+                    max_step=max_step,
                     stats=stats,
                 )
 
@@ -598,8 +614,8 @@ def main() -> None:
                 fp=test_output,
                 adjacent_list=adjacent_list,
                 rid_gps=rid_gps,
-                random_encode=args.random_encode,
-                max_step=args.max_step,
+                random_encode=random_encode,
+                max_step=max_step,
                 stats=stats,
             )
 

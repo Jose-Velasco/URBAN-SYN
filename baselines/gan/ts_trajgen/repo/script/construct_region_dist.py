@@ -14,7 +14,6 @@ from utils.refactor_utils import load_config
 #                       ^^^ google translation
 # just in case can toggle to include both train/test but might become data leak depending how this
 # file is used downstream
-# TODO: test this updated version
 def build_processed_traj_file(
     data_dir: Path,
     processed_filename: str,
