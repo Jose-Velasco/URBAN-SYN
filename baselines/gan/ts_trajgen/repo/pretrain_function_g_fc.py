@@ -60,7 +60,7 @@ parser.add_argument(
     "--geo_path",
     type=Path,
     required=True,
-    help="Path to the processed .geo file.",
+    help="Path to the .geo file.",
 )
 
 parser.add_argument(
@@ -178,7 +178,8 @@ clip = train_config["clip"]
 # can also maybe get it from rid_gps file? maybe its faster?
 road_num = pd.read_csv(geo_path).shape[0]
 # road_num = 17378
-time_size = 2880
+# time_size = 2880
+time_size = experiment_config["data"]["time_size"]
 loc_pad = road_num
 time_pad = time_size
 data_feature = {

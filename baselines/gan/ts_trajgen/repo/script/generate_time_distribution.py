@@ -18,8 +18,8 @@ parser = argparse.ArgumentParser(
 parser.add_argument(
     "--dataset_name",
     type=str,
-    default="Xian",
-    help="Dataset folder name (e.g., Xian, nyc via symlink).",
+    required=True,
+    help="Dataset folder name (e.g., Xian, nyc).",
 )
 
 parser.add_argument(
@@ -90,7 +90,12 @@ for index, row in tqdm(data.iterrows(), total=data.shape[0]):
     now_time = parse_time(time_list[0])
     for i in range(len(rid_list) - 1):
         next_time = parse_time(time_list[i+1])
-        cost_time = (next_time - now_time).seconds
+        # cost_time = (next_time - now_time).seconds
+        
+        # Use total_seconds() instead of timedelta.seconds because .seconds only
+        # returns the remainder after whole days and can turn negative intervals
+        # into large positive values, causing invalid travel times to pass validation.
+        cost_time = (next_time - now_time).total_seconds()
         assert cost_time >= 0
         if cost_time > 0:
             now_rid = rid_list[i]

@@ -81,7 +81,8 @@ training:
   # pretrain_function_g_fc.py
   # ----------------------------------------------------------
   road_function_g:
-    max_epoch: 25
+    # max_epoch: 25
+    max_epoch: 1
     batch_size: 64
 
     optimizer:
@@ -101,7 +102,8 @@ training:
   # pretrain_gat_fc.py
   # ----------------------------------------------------------
   road_function_h:
-    max_epoch: 50
+    # max_epoch: 50
+    max_epoch: 1
     batch_size: 32
 
     optimizer:
@@ -119,7 +121,8 @@ training:
   # pretrain_region_function_g_fc.py
   # ----------------------------------------------------------
   region_function_g:
-    max_epoch: 25
+    # max_epoch: 25
+    max_epoch: 1
     batch_size: 32
 
     optimizer:
@@ -129,6 +132,7 @@ training:
     scheduler:
       lr_patience: 2
       lr_decay_ratio: 0.001
+      early_stop_lr: 1.0e-6
 
 
   # ----------------------------------------------------------
@@ -136,7 +140,8 @@ training:
   # pretrain_region_gat_fc.py
   # ----------------------------------------------------------
   region_function_h:
-    max_epoch: 50
+    # max_epoch: 50
+    max_epoch: 1
     batch_size: 32
 
     optimizer:
@@ -154,8 +159,10 @@ training:
   # train_gan.py
   # ----------------------------------------------------------
   road_gan:
-    total_epoch: 20
-    pretrain_dis_epoch: 5
+    # total_epoch: 20
+    total_epoch: 1
+    # pretrain_dis_epoch: 5
+    pretrain_dis_epoch: 1
 
     batch_size: 64
     dis_train_rate: 0.8
@@ -176,8 +183,10 @@ training:
   # train_region_gan.py
   # ----------------------------------------------------------
   region_gan:
-    total_epoch: 10
-    pretrain_dis_epoch: 5
+    # total_epoch: 10
+    total_epoch: 1
+    # pretrain_dis_epoch: 5
+    pretrain_dis_epoch: 1
 
     batch_size: 64
     dis_train_rate: 0.8
@@ -197,9 +206,18 @@ data:
   time_size: 2880
 
   splits:
+    # Fraction of train_data rows written to train output; the rest go to eval.
+    road_train_rate: 0.9
+
     region_train_rate: 0.9
 
   encoding:
+    road:
+      # Randomly skip steps during encoding to reduce data volume and overfitting
+      random_encode: false
+      # Maximum random step size when random encoding is enabled
+      max_step: 4
+
     region:
       # "Maximum step size for encoding transitions used when random_encode=True.
       max_step: 4
@@ -219,7 +237,8 @@ data:
       - lanes
       - bridge
       - access
-      - maxspeed
+      # - maxspeed # We rename speed_kph to maxspeed to avoid refactoring TS-TrajGen but basically maxspeed = normalized/imputed(maxspeed)
+      - speed_kph
       - tunnel
       - junction
       - width

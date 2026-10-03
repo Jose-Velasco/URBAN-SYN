@@ -14,3 +14,5 @@ fastdtw==0.3.4
 # kahip==3.25
 
 PyYAML==6.0
+osmnx==2.0.7
+Pint==0.24.4

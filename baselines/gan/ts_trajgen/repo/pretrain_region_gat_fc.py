@@ -10,8 +10,8 @@ from utils.ListDataset import ListDataset
 from utils.utils import get_logger
 import json
 import numpy as np
-from utils.parser import str2bool
 import argparse
+from utils.refactor_utils import load_config
 
 
 parser = argparse.ArgumentParser(
@@ -21,15 +21,12 @@ parser = argparse.ArgumentParser(
     )
 )
 
-# parser.add_argument('--local', type=str2bool, default=True)
-# parser.add_argument('--debug', type=str2bool, default=False)
-
 # ---- dataset ----
 parser.add_argument(
     "--dataset_name",
     type=str,
-    default="Xian",
-    help="Dataset folder name (e.g., Xian, nyc via symlink).",
+    required=True,
+    help="Dataset folder name under --data_root (e.g., nyc).",
 )
 
 parser.add_argument(
@@ -96,6 +93,20 @@ parser.add_argument(
     help="Region-level pretrain test data.",
 )
 
+parser.add_argument(
+    "--config",
+    type=Path,
+    required=True,
+    help="Path to TS-TrajGen YAML experiment configuration.",
+)
+
+parser.add_argument(
+    "--temp_dir",
+    type=Path,
+    required=True,
+    help="Directory used for temporary epoch checkpoints.",
+)
+
 # ---- training control ----
 parser.add_argument(
     "--train",
@@ -120,15 +131,16 @@ parser.add_argument(
 )
 
 args = parser.parse_args()
-# local = args.local
 dataset_name: str = args.dataset_name
 device: str = args.device
-# debug = args.debug
 
 data_dir: Path = args.data_root / args.dataset_name
 save_dir: Path = args.save_dir
 
+temp_dir: Path = args.temp_dir
+
 save_dir.mkdir(parents=True, exist_ok=True)
+temp_dir.mkdir(parents=True, exist_ok=True)
 
 region2rid_path: Path = data_dir / args.region2rid_filename
 adjacent_np_path: Path = data_dir / args.adjacent_np_filename
@@ -139,47 +151,25 @@ eval_path: Path = data_dir / args.eval_filename
 test_path: Path = data_dir / args.test_filename
 save_path: Path = save_dir / args.save_file_name
 
-# archive_data_folder = 'TS_TrajGen_data_archive'
+experiment_config = load_config(args.config)
+model_config = experiment_config["region"]["generator"]["function_h"].copy()
+model_config["device"] = device
 
-# if local:
-#     data_root = './data/'
-# else:
-#     data_root = '/mnt/data/jwj/TS_TrajGen_data_archive/'
+train_config = experiment_config["training"]["region_function_h"]
+optimizer_config = train_config["optimizer"]
+scheduler_config = train_config["scheduler"]
 
-# 训练参数
-batch_size = 32
-if dataset_name == 'BJ_Taxi' or dataset_name == 'Porto_Taxi':
-    config = {
-        'embed_dim': 128,
-        'gps_emb_dim': 5,
-        'num_of_heads': 5,
-        'concat': False,
-        'device': device,
-        'distance_mode': 'l2',
-        'no_gps_emb': True
-    }
-else:
-    # Xian
-    config = {
-        'embed_dim': 68,
-        'gps_emb_dim': 5,
-        'num_of_heads': 4,
-        'concat': False,
-        'device': device,
-        'distance_mode': 'l2',
-        'no_gps_emb': True
-    }
-max_epoch = 50
-learning_rate = 0.0005
-weight_decay = 0.0001
-lr_patience = 2
-lr_decay_ratio = 0.01
-early_stop_lr = 1e-6
+max_epoch = train_config["max_epoch"]
+batch_size = train_config["batch_size"]
+learning_rate = optimizer_config["learning_rate"]
+weight_decay = optimizer_config["weight_decay"]
+lr_patience = scheduler_config["lr_patience"]
+lr_decay_ratio = scheduler_config["lr_decay_ratio"]
+early_stop_lr = scheduler_config["early_stop_lr"]
 
 # save_folder = './save/{}'.format(dataset_name)
-save_folder: Path = save_dir
 # save_file_name = 'region_gat_fc.pt'
-temp_folder = './temp/{}/gat/'.format(dataset_name)
+# temp_folder = './temp/{}/gat/'.format(dataset_name)
 train: bool = args.train
 
 logger = get_logger(name='RegionGatDis')
@@ -191,7 +181,6 @@ with open(region2rid_path, 'r') as f:
 road_num = len(region2rid)
 road_num_with_pad = road_num + 1
 # adjacent_np_file = os.path.join(data_root, dataset_name, 'region_adj_mx.npz')
-# adjacent_np_file: Path = adjacent_np_path
 
 adj_mx = sp.load_npz(adjacent_np_path)
 
@@ -206,25 +195,17 @@ data_feature = {
 }
 
 # 加载模型
-gat = DistanceGatFC(config=config, data_feature=data_feature).to(device)
+gat = DistanceGatFC(config=model_config, data_feature=data_feature).to(device)
 logger.info('init gat')
 logger.info(gat)
 optimizer = torch.optim.Adam(gat.parameters(), lr=learning_rate, weight_decay=weight_decay)
 lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode='max', patience=lr_patience, factor=lr_decay_ratio)
 # 加载训练数据
 # 读取训练输入数据
-if dataset_name == 'BJ_Taxi':
-    train_data = pd.read_csv('./data/201511_region_pretrain_input_train.csv')
-    eval_data = pd.read_csv('./data/201511_region_pretrain_input_eval.csv')
-    test_data = pd.read_csv('./data/201511_region_pretrain_input_test.csv')
-else:
-    # Xian
-    # train_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_region_pretrain_input_train.csv'))
-    train_data = pd.read_csv(train_path)
-    # eval_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_region_pretrain_input_eval.csv'))
-    eval_data = pd.read_csv(eval_path)
-    # test_data = pd.read_csv(os.path.join(data_root, dataset_name, 'xianshi_region_pretrain_input_test.csv'))
-    test_data = pd.read_csv(test_path)
+
+train_data = pd.read_csv(train_path)
+eval_data = pd.read_csv(eval_path)
+test_data = pd.read_csv(test_path)
 
 train_data = train_data.values.tolist()
 eval_data = eval_data.values.tolist()
@@ -288,8 +269,6 @@ test_loader = DataLoader(test_dataset, batch_size=1, shuffle=True, collate_fn=co
 
 
 if train:
-    if not os.path.exists(temp_folder):
-        os.makedirs(temp_folder)
     metrics = []
     for epoch in range(max_epoch):
         # train
@@ -318,17 +297,25 @@ if train:
         metrics.append(val_ac)
         lr_scheduler.step(val_ac)
         # store temp model
-        torch.save(gat.state_dict(), os.path.join(temp_folder, 'region_gat_{}.pt'.format(epoch)))
+        # torch.save(gat.state_dict(), os.path.join(temp_folder, 'region_gat_{}.pt'.format(epoch)))
+        temp_path = temp_dir / f"region_gat_{epoch}.pt"
+        torch.save(gat.state_dict(), temp_path)
         lr = optimizer.param_groups[0]['lr']
         logger.info('==> Train Epoch {}: Train Loss {:.6f}, val ac {}, lr {}'.format(epoch, train_loss, val_ac, lr))
         if lr < early_stop_lr:
             logger.info('early stop')
             break
     # load best epoch
-    best_epoch = np.argmin(metrics)
-    load_temp_file = 'region_gat_{}.pt'.format(best_epoch)
+    '''
+    original: best_epoch = np.argmin(metrics)
+    BUG selects the worst val_acc but scheduler uses mode="max"
+    '''
+    best_epoch = np.argmax(metrics)
+    # load_temp_file = 'region_gat_{}.pt'.format(best_epoch)
     logger.info('load best from {}'.format(best_epoch))
-    gat.load_state_dict(torch.load(os.path.join(temp_folder, load_temp_file)))
+    # gat.load_state_dict(torch.load(os.path.join(temp_folder, load_temp_file)))
+    temp_path = temp_dir / f"region_gat_{best_epoch}.pt"
+    gat.load_state_dict(torch.load(temp_path, map_location=device))
 else:
     # gat.load_state_dict(torch.load(os.path.join(save_folder, save_file_name), map_location=device))
     gat.load_state_dict(torch.load(save_path, map_location=device))
@@ -346,12 +333,10 @@ for des, candidate_set, candidate_distance, target in tqdm(test_loader, desc='te
 test_ac = test_hit / test_num
 logger.info('==> Test Result: test ac {}'.format(test_ac))
 # 保存模型
-if not os.path.exists(save_folder):
-    os.makedirs(save_folder)
 # torch.save(gat.state_dict(), os.path.join(save_folder, save_file_name))
 torch.save(gat.state_dict(), save_path)
 # 删除 temp 文件
-for rt, dirs, files in os.walk(temp_folder):
+for rt, dirs, files in os.walk(temp_dir):
     for name in files:
         remove_path = os.path.join(rt, name)
         os.remove(remove_path)

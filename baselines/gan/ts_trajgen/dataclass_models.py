@@ -1,8 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
 import pandas as pd
-
-import pandas as pd
 import logging
 from enum import StrEnum
 
@@ -10,19 +8,21 @@ from enum import StrEnum
 @dataclass(frozen=True)
 class EdgeTimePoint:
     """
-    Represents one road edge with its assigned timestamp.
 
+    Represents one TS-TrajGen road segment with its assigned timestamp.
+    
     Attributes
     ----------
-    edge_id : int
-        Road segment ID in geo_id space.
+    geo_id : int
+        TS-TrajGen road-segment identifier in ``geo_id`` space.
     timestamp : pd.Timestamp
         Timestamp assigned to this road segment.
     is_anchor : bool
         True if timestamp comes directly from GPS; False if interpolated.
     """
 
-    edge_id: int
+    # edge_id: int
+    geo_id: int
     timestamp: pd.Timestamp
     is_anchor: bool
 
@@ -43,6 +43,7 @@ class BuildConfig:
     fmm_match_path: Path
     parquet_path: Path
     trip_id_map_csv: Path
+    geo_feature_columns: tuple[str, ...]
     out_dir: Path
     log_dir: Path
     dataset_name: str
@@ -52,6 +53,7 @@ class BuildConfig:
     fmm_sep: str
     verbose: bool
     min_delta_seconds: float
+    interpolate_intermediate_edges: bool
 
 @dataclass
 class InterpolationStats:
@@ -96,7 +98,7 @@ class BuildCsvStats:
 
     total_rows: int = 0
     kept_rows: int = 0
-    skipped_empty_tpath: int = 0
+    skipped_empty_path: int = 0
     skipped_missing_times: int = 0
     skipped_short_path: int = 0
 
@@ -104,7 +106,7 @@ class BuildCsvStats:
     def skipped_total(self) -> int:
         """Return total skipped trajectory count."""
         return (
-            self.skipped_empty_tpath
+            self.skipped_empty_path
             + self.skipped_missing_times
             + self.skipped_short_path
         )
@@ -128,7 +130,7 @@ class BuildCsvStats:
         logger.info(f"Kept ratio:               {self.kept_ratio():.3f}")
         logger.info(f"Skipped trajectories:     {self.skipped_total:,}")
         logger.info("Skipped breakdown:")
-        logger.info(f"  Empty tpath:            {self.skipped_empty_tpath:,}")
+        logger.info(f"  Empty path:            {self.skipped_empty_path:,}")
         logger.info(f"  Missing GPS times:      {self.skipped_missing_times:,}")
         logger.info(f"  Too short final path:   {self.skipped_short_path:,}")
         logger.info(f"Train size:               {train_size:,}")

@@ -1,18 +1,26 @@
 """
-Each trajectory is represented as a sequence of road segment identifiers with one timestamp per segment.
+Tests for TS-TrajGen map-matched trajectory construction.
 
-Timestamps correspond to estimated entry times into each road segment.
+Two output modes are covered:
 
-Temporal interpolation is performed within observed GPS intervals using edge-length-based weighting.
+1. Interpolated mode (``interpolate_intermediate_edges=True``) uses FMM ``tpath``
+   to insert intermediate connected road segments and assigns edge-entry times
+   within observed GPS intervals using edge-length weighting. GPS timestamps are
+   preserved as anchors whenever representable.
 
-Observed GPS timestamps are preserved as anchors whenever representable under the one-timestamp-per-edge constraint.
+2. Anchor-only mode (``interpolate_intermediate_edges=False``) uses FMM ``opath``
+   directly. Each output road corresponds to one original GPS observation, so
+   road IDs, timestamps, and future point-level metadata remain one-to-one.
+   Consecutive repeated roads are intentionally preserved in this mode.
 
 No synthetic timestamps are generated outside the bounds of observed GPS data.
 
-Duplicate segment-time pairs are removed when they are redundant (same segment and same timestamp), while repeated segments with distinct timestamps are preserved.
-
-Sub-second temporal precision is maintained to prevent collapse of interpolated timestamps.
-
+PYTHONPATH=. uv run pytest tests/test_build_mm_csvs_updated.py -v
+from: baselines/gan/ts_trajgen
+That way Python can resolve:
+    import dataclass_models
+    import utils
+from the current directory.
 """
 
 import pandas as pd
@@ -72,7 +80,7 @@ def test_build_mm_csvs_preserves_anchors_and_skips_invalid_rows(tmp_path):
         ],
     )
 
-    fid_to_geo = {
+    edge_id_to_geo_id = {
         2: 102,
         5: 105,
         13: 113,
@@ -101,7 +109,7 @@ def test_build_mm_csvs_preserves_anchors_and_skips_invalid_rows(tmp_path):
 
     train_df, test_df = build_mm_csvs(
         fmm_path=fmm_path,
-        fid_to_geo=fid_to_geo,
+        edge_id_to_geo_id=edge_id_to_geo_id,
         geo_to_length=geo_to_length,
         trip_time_lookup=trip_time_lookup,
         train_ratio=1.0,
@@ -110,6 +118,7 @@ def test_build_mm_csvs_preserves_anchors_and_skips_invalid_rows(tmp_path):
         verbose=False,
         fmm_sep=";",
         min_delta_seconds=1.0,
+        interpolate_intermediate_edges=True,
     )
 
     assert len(train_df) == 1
@@ -139,6 +148,111 @@ def test_build_mm_csvs_preserves_anchors_and_skips_invalid_rows(tmp_path):
     assert time_list[1] < time_list[2] < time_list[3]
 
 
+def test_build_mm_csvs_anchor_only_preserves_one_road_per_gps_point(tmp_path):
+    """
+    Anchor-only mode should preserve the one-to-one FMM opath/GPS alignment.
+
+    Consecutive duplicate road assignments are real per-GPS observations in
+    this mode and must not be deduplicated. This is important for attaching
+    point-level GPS metadata to the resulting road sequence later.
+    """
+    original_gps_times = [
+        pd.Timestamp("2026-01-01T10:00:00Z"),
+        pd.Timestamp("2026-01-01T10:00:10Z"),
+        pd.Timestamp("2026-01-01T10:00:25Z"),
+        pd.Timestamp("2026-01-01T10:00:40Z"),
+        pd.Timestamp("2026-01-01T10:00:55Z"),
+    ]
+
+    fmm_path = _write_fmm_csv(
+        tmp_path,
+        [
+            {
+                "id": "trip_anchor_only",
+                # One map-matched road assignment per GPS observation.
+                # The repeated 2,2 must remain because these are two distinct
+                # GPS points that happened to map to the same road.
+                "opath": "2,2,13,14,23",
+            }
+        ],
+    )
+
+    edge_id_to_geo_id = {
+        2: 102,
+        13: 113,
+        14: 114,
+        23: 123,
+    }
+
+    train_df, test_df = build_mm_csvs(
+        fmm_path=fmm_path,
+        edge_id_to_geo_id=edge_id_to_geo_id,
+        # Not used by anchor-only mode, but retained by the shared API.
+        geo_to_length={},
+        trip_time_lookup={"trip_anchor_only": original_gps_times},
+        train_ratio=1.0,
+        random_state=101,
+        min_len=2,
+        verbose=False,
+        fmm_sep=";",
+        min_delta_seconds=1.0,
+        interpolate_intermediate_edges=False,
+    )
+
+    assert len(train_df) == 1
+    assert len(test_df) == 0
+
+    row = train_df.iloc[0]
+    rid_list = _split_rid_list(row["rid_list"])
+    time_list = _split_time_list(row["time_list"])
+
+    # FMM edge IDs are mapped to TS-TrajGen geo IDs without deduplication.
+    assert rid_list == [102, 102, 113, 114, 123]
+    assert rid_list[:2] == [102, 102]
+
+    # Explicit one-to-one alignment invariant for future GPS metadata.
+    assert len(rid_list) == len(time_list) == len(original_gps_times)
+
+    # Anchor-only mode should preserve the original GPS timestamps exactly
+    # at the millisecond serialization precision used by the pipeline.
+    assert time_list == [timestamp.floor("ms") for timestamp in original_gps_times]
+
+
+def test_build_mm_csvs_anchor_only_rejects_opath_gps_length_mismatch(tmp_path):
+    """Anchor-only mode must never silently misalign roads and GPS points."""
+    original_gps_times = [
+        pd.Timestamp("2026-01-01T10:00:00Z"),
+        pd.Timestamp("2026-01-01T10:00:10Z"),
+        pd.Timestamp("2026-01-01T10:00:20Z"),
+        pd.Timestamp("2026-01-01T10:00:30Z"),
+        pd.Timestamp("2026-01-01T10:00:40Z"),
+    ]
+
+    fmm_path = _write_fmm_csv(
+        tmp_path,
+        [{"id": "trip_mismatch", "opath": "2,13,14,23"}],
+    )
+
+    train_df, test_df = build_mm_csvs(
+        fmm_path=fmm_path,
+        edge_id_to_geo_id={2: 102, 13: 113, 14: 114, 23: 123},
+        geo_to_length={},
+        trip_time_lookup={"trip_mismatch": original_gps_times},
+        train_ratio=1.0,
+        random_state=101,
+        min_len=2,
+        verbose=False,
+        fmm_sep=";",
+        min_delta_seconds=1.0,
+        interpolate_intermediate_edges=False,
+    )
+
+    # The builder should drop the trajectory instead of truncating either side
+    # and creating a false road/GPS metadata alignment.
+    assert train_df.empty
+    assert test_df.empty
+
+
 def test_build_mm_csvs_interpolates_short_intervals_within_real_gps_bounds(tmp_path):
     """
     Test that short GPS intervals are not stretched beyond the real GPS anchors.
@@ -151,7 +265,7 @@ def test_build_mm_csvs_interpolates_short_intervals_within_real_gps_bounds(tmp_p
         [{"id": "trip_short_interval", "tpath": "1,2,3,4"}],
     )
 
-    fid_to_geo = {
+    edge_id_to_geo_id = {
         1: 101,
         2: 102,
         3: 103,
@@ -174,7 +288,7 @@ def test_build_mm_csvs_interpolates_short_intervals_within_real_gps_bounds(tmp_p
 
     train_df, test_df = build_mm_csvs(
         fmm_path=fmm_path,
-        fid_to_geo=fid_to_geo,
+        edge_id_to_geo_id=edge_id_to_geo_id,
         geo_to_length=geo_to_length,
         trip_time_lookup=trip_time_lookup,
         train_ratio=1.0,
@@ -183,6 +297,7 @@ def test_build_mm_csvs_interpolates_short_intervals_within_real_gps_bounds(tmp_p
         verbose=False,
         fmm_sep=";",
         min_delta_seconds=1.0,
+        interpolate_intermediate_edges=True,
     )
 
     assert len(train_df) == 1
@@ -215,7 +330,7 @@ def test_build_mm_csvs_preserves_millisecond_interpolation(tmp_path):
         [{"id": "trip_ms", "tpath": "1,2,3"}],
     )
 
-    fid_to_geo = {
+    edge_id_to_geo_id = {
         1: 101,
         2: 102,
         3: 103,
@@ -236,7 +351,7 @@ def test_build_mm_csvs_preserves_millisecond_interpolation(tmp_path):
 
     train_df, _ = build_mm_csvs(
         fmm_path=fmm_path,
-        fid_to_geo=fid_to_geo,
+        edge_id_to_geo_id=edge_id_to_geo_id,
         geo_to_length=geo_to_length,
         trip_time_lookup=trip_time_lookup,
         train_ratio=1.0,
@@ -245,6 +360,7 @@ def test_build_mm_csvs_preserves_millisecond_interpolation(tmp_path):
         verbose=False,
         fmm_sep=";",
         min_delta_seconds=1.0,
+        interpolate_intermediate_edges=True,
     )
 
     time_strings = train_df.iloc[0]["time_list"].split(",")
@@ -287,7 +403,7 @@ def test_build_mm_csvs_drops_redundant_same_edge_same_anchor_time(tmp_path):
         ],
     )
 
-    fid_to_geo = {
+    edge_id_to_geo_id = {
         1: 101,
         2: 102,
     }
@@ -307,7 +423,7 @@ def test_build_mm_csvs_drops_redundant_same_edge_same_anchor_time(tmp_path):
 
     train_df, _ = build_mm_csvs(
         fmm_path=fmm_path,
-        fid_to_geo=fid_to_geo,
+        edge_id_to_geo_id=edge_id_to_geo_id,
         geo_to_length=geo_to_length,
         trip_time_lookup=trip_time_lookup,
         train_ratio=1.0,
@@ -316,6 +432,7 @@ def test_build_mm_csvs_drops_redundant_same_edge_same_anchor_time(tmp_path):
         verbose=False,
         fmm_sep=";",
         min_delta_seconds=1.0,
+        interpolate_intermediate_edges=True,
     )
 
     rid_list = _split_rid_list(train_df.iloc[0]["rid_list"])
@@ -342,7 +459,7 @@ def test_build_mm_csvs_keeps_same_edge_different_anchor_times(tmp_path):
         ],
     )
 
-    fid_to_geo = {
+    edge_id_to_geo_id = {
         1: 101,
     }
 
@@ -361,7 +478,7 @@ def test_build_mm_csvs_keeps_same_edge_different_anchor_times(tmp_path):
 
     train_df, _ = build_mm_csvs(
         fmm_path=fmm_path,
-        fid_to_geo=fid_to_geo,
+        edge_id_to_geo_id=edge_id_to_geo_id,
         geo_to_length=geo_to_length,
         trip_time_lookup=trip_time_lookup,
         train_ratio=1.0,
@@ -370,6 +487,7 @@ def test_build_mm_csvs_keeps_same_edge_different_anchor_times(tmp_path):
         verbose=False,
         fmm_sep=";",
         min_delta_seconds=1.0,
+        interpolate_intermediate_edges=True,
     )
 
     rid_list = _split_rid_list(train_df.iloc[0]["rid_list"])
@@ -393,7 +511,7 @@ def test_build_mm_csvs_train_test_split_is_reproducible(tmp_path):
         ],
     )
 
-    fid_to_geo = {
+    edge_id_to_geo_id = {
         1: 101,
         2: 102,
     }
@@ -413,7 +531,7 @@ def test_build_mm_csvs_train_test_split_is_reproducible(tmp_path):
 
     kwargs = dict(
         fmm_path=fmm_path,
-        fid_to_geo=fid_to_geo,
+        edge_id_to_geo_id=edge_id_to_geo_id,
         geo_to_length=geo_to_length,
         trip_time_lookup=trip_time_lookup,
         train_ratio=0.5,
@@ -422,6 +540,7 @@ def test_build_mm_csvs_train_test_split_is_reproducible(tmp_path):
         verbose=False,
         fmm_sep=";",
         min_delta_seconds=1.0,
+        interpolate_intermediate_edges=True,
     )
 
     train_1, test_1 = build_mm_csvs(**kwargs) # pyright: ignore[reportArgumentType]
@@ -452,24 +571,24 @@ def test_build_mm_csvs_interpolated_times_stay_within_gps_bounds(
     """
     with TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
-        fids = list(range(1, edge_count + 1))
+        edge_ids = list(range(1, edge_count + 1))
 
         fmm_path = tmp_path / "fmm_output.csv"
         pd.DataFrame(
             [
                 {
                     "id": "trip_property",
-                    "tpath": ",".join(str(fid) for fid in fids),
+                    "tpath": ",".join(str(edge_id) for edge_id in edge_ids),
                 }
             ]
         ).to_csv(fmm_path, sep=";", index=False)
 
-        fid_to_geo = {fid: fid + 100 for fid in fids}
+        edge_id_to_geo_id = {edge_id: edge_id + 100 for edge_id in edge_ids}
 
         # Vary lengths so the test covers non-uniform interpolation.
         geo_to_length = {
-            fid + 100: float((fid % 5) + 1)
-            for fid in fids
+            edge_id + 100: float((edge_id % 5) + 1)
+            for edge_id in edge_ids
         }
 
         start = pd.Timestamp("2026-01-01T10:00:00Z")
@@ -477,7 +596,7 @@ def test_build_mm_csvs_interpolated_times_stay_within_gps_bounds(
 
         train_df, test_df = build_mm_csvs(
             fmm_path=fmm_path,
-            fid_to_geo=fid_to_geo,
+            edge_id_to_geo_id=edge_id_to_geo_id,
             geo_to_length=geo_to_length,
             trip_time_lookup={"trip_property": [start, end]},
             train_ratio=1.0,
@@ -486,6 +605,7 @@ def test_build_mm_csvs_interpolated_times_stay_within_gps_bounds(
             verbose=False,
             fmm_sep=";",
             min_delta_seconds=1.0,
+            interpolate_intermediate_edges=True,
         )
 
         assert len(train_df) == 1
@@ -520,7 +640,7 @@ def random_tpath_case(draw):
     next interval.
     """
     interval_count = draw(st.integers(min_value=1, max_value=8))
-    next_fid = 1
+    next_edge_id = 1
     segments: list[list[int]] = []
 
     for i in range(interval_count):
@@ -533,8 +653,8 @@ def random_tpath_case(draw):
             segment = []
 
         while len(segment) < segment_len:
-            segment.append(next_fid)
-            next_fid += 1
+            segment.append(next_edge_id)
+            next_edge_id += 1
 
         segments.append(segment)
 
@@ -569,7 +689,7 @@ def test_build_mm_csvs_monotonic_and_preserves_gps_anchor_bounds_for_random_tpat
         tmp_path = Path(tmp_dir)
 
         fmm_path = tmp_path / "fmm_output.csv"
-        tpath = "|".join(",".join(str(fid) for fid in segment) for segment in segments)
+        tpath = "|".join(",".join(str(edge_id) for edge_id in segment) for segment in segments)
 
         pd.DataFrame([{"id": "trip_random", "tpath": tpath}]).to_csv(
             fmm_path,
@@ -577,13 +697,13 @@ def test_build_mm_csvs_monotonic_and_preserves_gps_anchor_bounds_for_random_tpat
             index=False,
         )
 
-        all_fids = sorted({fid for segment in segments for fid in segment})
-        fid_to_geo = {fid: fid + 100 for fid in all_fids}
+        all_edge_ids = sorted({edge_id for segment in segments for edge_id in segment})
+        edge_id_to_geo_id = {edge_id: edge_id + 100 for edge_id in all_edge_ids}
 
         # Vary lengths so interpolation is not only uniform.
         geo_to_length = {
-            fid + 100: float((fid % 7) + 1)
-            for fid in all_fids
+            edge_id + 100: float((edge_id % 7) + 1)
+            for edge_id in all_edge_ids
         }
 
         start = pd.Timestamp("2026-01-01T10:00:00Z")
@@ -594,7 +714,7 @@ def test_build_mm_csvs_monotonic_and_preserves_gps_anchor_bounds_for_random_tpat
 
         train_df, test_df = build_mm_csvs(
             fmm_path=fmm_path,
-            fid_to_geo=fid_to_geo,
+            edge_id_to_geo_id=edge_id_to_geo_id,
             geo_to_length=geo_to_length,
             trip_time_lookup={"trip_random": point_times},
             train_ratio=1.0,
@@ -603,6 +723,7 @@ def test_build_mm_csvs_monotonic_and_preserves_gps_anchor_bounds_for_random_tpat
             verbose=False,
             fmm_sep=";",
             min_delta_seconds=1.0,
+            interpolate_intermediate_edges=True,
         )
 
         assert len(test_df) == 0
@@ -690,7 +811,7 @@ def test_duplicate_edge_resolution_policy_with_random_cases(case):
         tmp_path = Path(tmp_dir)
         fmm_path = tmp_path / "fmm_output.csv"
 
-        fid_to_geo = {
+        edge_id_to_geo_id = {
             1: 101,
             2: 102,
         }
@@ -754,7 +875,7 @@ def test_duplicate_edge_resolution_policy_with_random_cases(case):
 
         train_df, _ = build_mm_csvs(
             fmm_path=fmm_path,
-            fid_to_geo=fid_to_geo,
+            edge_id_to_geo_id=edge_id_to_geo_id,
             geo_to_length=geo_to_length,
             trip_time_lookup={"trip_dup": point_times},
             train_ratio=1.0,
@@ -763,6 +884,7 @@ def test_duplicate_edge_resolution_policy_with_random_cases(case):
             verbose=False,
             fmm_sep=";",
             min_delta_seconds=1.0,
+            interpolate_intermediate_edges=True,
         )
 
         assert len(train_df) == 1

@@ -1,7 +1,7 @@
 import ast
 import json
-from pathlib import Path
 from typing import Any
+import re
 
 import pandas as pd
 import geopandas as gpd
@@ -10,8 +10,108 @@ from pathlib import Path
 from datetime import datetime
 from tqdm import tqdm
 from dateutil import tz
+from collections.abc import Iterable
 
 from dataclass_models import BuildCsvStats, DuplicateAction, EdgeTimePoint, InterpolationStats
+
+from pint import UnitRegistry
+from pint.errors import DimensionalityError, UndefinedUnitError
+
+UNIT_REGISTRY = UnitRegistry()
+
+def _parse_single_osm_width(value: Any) -> float | None:
+    """
+    Parse one OSM width value and return meters.
+
+    Bare numeric OSM width values are interpreted as meters.
+    Explicit unit conversion is delegated to Pint.
+    """
+    if pd.isna(value):
+        return None
+
+    text = str(value).strip()
+
+    if not text:
+        return None
+
+    # OSM bare width values are meters.
+    try:
+        return float(text)
+    except ValueError:
+        pass
+
+    # OSM feet/inches syntax, e.g. 25'8"
+    match = re.fullmatch(
+        r"""(\d+(?:\.\d+)?)'\s*(\d+(?:\.\d+)?)"?""",
+        text,
+    )
+
+    if match:
+        feet = UNIT_REGISTRY.Quantity(
+            float(match.group(1)),
+            "foot",
+        )
+        inches = UNIT_REGISTRY.Quantity(
+            float(match.group(2)),
+            "inch",
+        )
+
+        return float(
+            (feet + inches).to("meter").magnitude # pyright: ignore[reportAttributeAccessIssue]
+        )
+
+    try:
+        quantity = UNIT_REGISTRY.Quantity(text)
+        return float(
+            quantity.to("meter").magnitude
+        )
+    except (
+        ValueError,
+        TypeError,
+        DimensionalityError,
+        UndefinedUnitError,
+    ):
+        return None
+
+def parse_osm_width(value: Any) -> float | None:
+    """
+    Convert an OSM width attribute to meters.
+
+    Serialized multi-valued widths are parsed individually and averaged.
+    """
+    if pd.isna(value):
+        return None
+
+    text = str(value).strip()
+
+    values: list[Any]
+
+    if text.startswith("[") and text.endswith("]"):
+        try:
+            parsed = ast.literal_eval(text)
+
+            if isinstance(parsed, (list, tuple)):
+                values = list(parsed)
+            else:
+                values = [value]
+
+        except (ValueError, SyntaxError):
+            values = [value]
+    else:
+        values = [value]
+
+    parsed_widths = [
+        width
+        for item in values
+        if (width := _parse_single_osm_width(item)) is not None
+    ]
+
+    if not parsed_widths:
+        return None
+
+    return float(
+        sum(parsed_widths) / len(parsed_widths)
+    )
 
 # Logging
 class TqdmLoggingHandler(logging.Handler):
@@ -112,38 +212,40 @@ def geometry_to_coordinate_string(geom) -> str:
     return json.dumps(coords, separators=(",", ":"))
 
 # .GEO
-def build_geo(network_path: Path):
+def build_geo(network_path: Path, feature_columns: Iterable[str]):
     """
-    Build `.geo` file and mapping from fid -> geo_id.
+    Build the TS-TrajGen `.geo` table and mapping from canonical edge_id -> geo_id mapping.
 
-    The `.geo` file represents road segments with geometry.
+    The `.geo` file represents road segments with geometry with added  feature_columns from road network road features.
 
     Parameters
     ----------
     network_path : Path
-        Path to shapefile / geopackage containing road edges.
+        Path to shapefile / geopackage containing road edges. (canonical road-network GeoPackage)
+    
+    feature_columns: Iterable[str]
+        iterable of road feature names in the road network to add to the output .geo file
 
     Returns
     -------
     geo_df : pd.DataFrame
         DataFrame ready to save as `.geo`.
     edges_df : pd.DataFrame
-        Original edges with added `geo_id`.
-    fid_to_geo : dict[int, int]
-        Mapping from FMM edge IDs (fid) to geo_id.
+        Original edges with added `geo_id`. Canonical road edges with an added TS-TrajGen `geo_id`.
+    edge_id_to_geo_id : dict[int, int]
+        Mapping from canonical/FMM `edge_id` values to TS-TrajGen `geo_id`.
     """
     edges = gpd.read_file(network_path).copy()
 
-    required = {"fid", "u", "v", "geometry"}
+    required = {"edge_id", "u", "v", "geometry"}
     missing = required - set(edges.columns)
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
 
-    edges = edges.sort_values("fid").reset_index(drop=True)
+    edges = edges.sort_values("edge_id").reset_index(drop=True)
     edges["geo_id"] = range(len(edges))
 
-    # fid_to_geo = dict(zip(edges["fid"], edges["geo_id"]))
-    fid_to_geo = dict(zip(edges["fid"].astype(int), edges["geo_id"].astype(int)))
+    edge_id_to_geo_id = dict(zip(edges["edge_id"].astype(int), edges["geo_id"].astype(int)))
 
     geo_df = pd.DataFrame({
         "geo_id": edges["geo_id"].astype(int),
@@ -151,7 +253,15 @@ def build_geo(network_path: Path):
         "coordinates": edges["geometry"].apply(geometry_to_coordinate_string),
     })
 
-    return geo_df, edges, fid_to_geo
+    for column in feature_columns:
+        if column not in edges.columns:
+            raise ValueError(
+                f"Configured .geo feature column is missing from road network: {column}"
+            )
+
+        geo_df[column] = edges[column]
+
+    return geo_df, edges, edge_id_to_geo_id
 
 
 # .REL
@@ -202,42 +312,6 @@ def build_rel(edges_df: pd.DataFrame):
     rel.insert(1, "type", "geo")
 
     return rel
-
-# def parse_cpath_like(value: Any) -> list[int]:
-    # """
-    # Parse a comma-separated or Python-list-like edge sequence.
-
-    # Supported formats
-    # -----------------
-    # - "1,2,3"
-    # - "[1, 2, 3]"
-    # - ""
-    # - NaN
-
-    # Parameters
-    # ----------
-    # value : Any
-    #     Raw serialized edge sequence.
-
-    # Returns
-    # -------
-    # list[int]
-    #     Parsed edge ID sequence.
-    # """
-    # if pd.isna(value):
-    #     return []
-
-    # s = str(value).strip()
-    # if not s:
-    #     return []
-
-    # if s.startswith("[") and s.endswith("]"):
-    #     try:
-    #         return [int(x) for x in ast.literal_eval(s)]
-    #     except Exception:
-    #         pass
-
-    # return [int(x.strip()) for x in s.split(",") if x.strip()]
 
 def _is_empty_sequence(value: Any) -> bool:
     """
@@ -320,45 +394,6 @@ def parse_cpath_like(value: Any) -> list[int]:
     # Fallback: simple comma-separated parsing
     return _parse_comma_separated(s)
 
-
-# def parse_tpath(value: Any) -> list[list[int]]:
-#     """
-#     Parse FMM `tpath` into per-GPS-interval edge segments.
-
-#     Example
-#     -------
-#     "2|2,5,13|13,14|14,23"
-#     ->
-#     [[2], [2, 5, 13], [13, 14], [14, 23]]
-
-#     Parameters
-#     ----------
-#     value : Any
-#         Raw tpath string from FMM output.
-
-#     Returns
-#     -------
-#     list[list[int]]
-#         One edge list per consecutive GPS-point interval.
-#     """
-#     if pd.isna(value):
-#         return []
-
-#     s = str(value).strip()
-#     if not s:
-#         return []
-
-#     segments: list[list[int]] = []
-#     for chunk in s.split("|"):
-#         chunk = chunk.strip()
-#         if not chunk:
-#             segments.append([])
-#             continue
-#         segments.append(parse_cpath_like(chunk))
-
-#     return segments
-
-
 def _is_empty_tpath(value: Any) -> bool:
     """
     Check whether a tpath value is empty or invalid.
@@ -440,7 +475,7 @@ def _safe_timestamp(value: Any) -> pd.Timestamp:
     return pd.to_datetime(value)
 
 def _get_edge_lengths(
-    edge_ids: list[int],
+    geo_ids: list[int],
     geo_to_length: dict[int, float],
     stats: InterpolationStats | None = None,
     ) -> list[float]:
@@ -450,8 +485,8 @@ def _get_edge_lengths(
     Missing lengths default to 1.0 so interpolation can still run.
     """
     lengths = [
-        max(float(geo_to_length.get(edge_id, 1.0)), 0.0)
-        for edge_id in edge_ids
+        max(float(geo_to_length.get(geo_id, 1.0)), 0.0)
+        for geo_id in geo_ids
     ]
 
     if sum(lengths) <= 0:
@@ -459,7 +494,7 @@ def _get_edge_lengths(
             stats.invalid_length_segments += 1
 
         # Equal weights avoid divide-by-zero while preserving ordering.
-        return [1.0] * len(edge_ids)
+        return [1.0] * len(geo_ids)
 
     return lengths
 
@@ -523,71 +558,10 @@ def _use_fallback_interval(
 
     return end_time, total_seconds
 
-
-# def _use_fallback_interval(
-#     start_time: pd.Timestamp,
-#     end_time: pd.Timestamp,
-#     edge_count: int,
-#     min_delta_seconds: float,
-#     stats: InterpolationStats | None,
-#     logger: logging.Logger | None,
-#     ) -> tuple[pd.Timestamp, float]:
-#     """
-#     Validate the GPS interval and return a usable end_time and total_seconds.
-
-#     If GPS timing is invalid or too short for the number of edges, this creates
-#     a synthetic minimum interval while tracking why fallback was needed.
-#     """
-#     total_seconds = (end_time - start_time).total_seconds()
-#     min_required_seconds = _minimum_required_seconds(edge_count, min_delta_seconds)
-
-#     # GPS timestamps are invalid (same or reversed order), so we cannot
-#     # derive a meaningful duration; fallback to synthetic minimum interval.
-#     if total_seconds <= 0:
-#         if stats is not None:
-#             stats.non_positive_time_segments += 1
-#             stats.fallback_segments += 1
-
-#         if logger is not None:
-#             logger.debug(
-#                 "Fallback: non-positive time segment | "
-#                 f"edges={edge_count}, total_seconds={total_seconds:.3f}, "
-#                 f"start={start_time}, end={end_time}"
-#             )
-
-#         fallback_end_time = start_time + pd.to_timedelta(
-#             min_required_seconds,
-#             unit="s",
-#         )
-#         return fallback_end_time, min_required_seconds
-
-#     # The GPS interval is too short to assign strictly increasing timestamps
-#     # across all edges; fallback ensures each edge gets at least min_delta spacing.
-#     if total_seconds < min_required_seconds:
-#         if stats is not None:
-#             stats.short_time_segments += 1
-#             stats.fallback_segments += 1
-
-#         if logger is not None:
-#             logger.debug(
-#                 "Fallback: short-time segment | "
-#                 f"edges={edge_count}, total_seconds={total_seconds:.3f}, "
-#                 f"min_required_seconds={min_required_seconds:.3f}, "
-#                 f"start={start_time}, end={end_time}"
-#             )
-
-#         fallback_end_time = start_time + pd.to_timedelta(
-#             min_required_seconds,
-#             unit="s",
-#         )
-#         return fallback_end_time, min_required_seconds
-
-#     return end_time, total_seconds
-
 def _interpolate_middle_edge_points(
     start_time: pd.Timestamp,
     total_seconds: float,
-    edge_ids: list[int],
+    geo_ids: list[int],
     lengths: list[float],
     ) -> list[EdgeTimePoint]:
     """
@@ -596,7 +570,7 @@ def _interpolate_middle_edge_points(
     First and last edges are handled separately because they preserve GPS
     anchor timestamps.
     """
-    if len(edge_ids) <= 2:
+    if len(geo_ids) <= 2:
         return []
 
     total_length = sum(lengths)
@@ -606,7 +580,7 @@ def _interpolate_middle_edge_points(
     cumulative_length = lengths[0]
     middle_points: list[EdgeTimePoint] = []
 
-    for edge_id, length in zip(edge_ids[1:-1], lengths[1:-1]):
+    for edge_id, length in zip(geo_ids[1:-1], lengths[1:-1]):
         # Middle edge time is based on distance traveled before entering it.
         fraction = cumulative_length / total_length
 
@@ -619,7 +593,7 @@ def _interpolate_middle_edge_points(
 
         middle_points.append(
             EdgeTimePoint(
-                edge_id=edge_id,
+                geo_id=edge_id,
                 timestamp=timestamp,
                 is_anchor=False,
             )
@@ -631,24 +605,24 @@ def _interpolate_middle_edge_points(
 def interpolate_edge_time_points_by_length(
     start_time: pd.Timestamp,
     end_time: pd.Timestamp,
-    edge_ids: list[int],
+    geo_ids: list[int],
     geo_to_length: dict[int, float],
     min_delta_seconds: float = 1.0,
     stats: InterpolationStats | None = None,
     logger: logging.Logger | None = None,
     ) -> list[EdgeTimePoint]:
     """
-    Assign timestamps to road edges while preserving GPS timestamps as anchors.
+    Assign timestamps to road segments while preserving GPS timestamps as anchors.
 
-    The first edge receives `start_time` as a GPS anchor. The last edge receives
-    `end_time` as a GPS anchor when the segment has two or more edges. Middle
-    edges receive length-weighted interpolated timestamps.
+    The first road segment receives `start_time` as a GPS anchor. The last segment
+    receives `end_time` as a GPS anchor when the segment contains two or more roads.
+    Middle segments receive length-weighted interpolated timestamps.
 
-    If the GPS interval is invalid or too short to create strictly increasing
-    timestamps, the function creates a minimum-length synthetic interval and
-    records the fallback reason in `stats`.
+    If the GPS interval is non-positive or shorter than the diagnostic
+    `min_delta_seconds` threshold, the original GPS bounds are preserved and the
+    condition is recorded in `stats`.
     """
-    if not edge_ids:
+    if not geo_ids:
         return []
 
     if stats is not None:
@@ -657,29 +631,29 @@ def interpolate_edge_time_points_by_length(
     start_time = _safe_timestamp(start_time)
     end_time = _safe_timestamp(end_time)
 
-    if len(edge_ids) == 1:
-        return [EdgeTimePoint(edge_ids[0], start_time, is_anchor=True)]
+    if len(geo_ids) == 1:
+        return [EdgeTimePoint(geo_ids[0], start_time, is_anchor=True)]
 
     end_time, total_seconds = _use_fallback_interval(
         start_time=start_time,
         end_time=end_time,
-        edge_count=len(edge_ids),
+        edge_count=len(geo_ids),
         min_delta_seconds=min_delta_seconds,
         stats=stats,
         logger=logger,
     )
 
-    lengths = _get_edge_lengths(edge_ids, geo_to_length, stats=stats)
+    lengths = _get_edge_lengths(geo_ids, geo_to_length, stats=stats)
 
     return [
-        EdgeTimePoint(edge_ids[0], start_time, is_anchor=True),
+        EdgeTimePoint(geo_ids[0], start_time, is_anchor=True),
         *_interpolate_middle_edge_points(
             start_time=start_time,
             total_seconds=total_seconds,
-            edge_ids=edge_ids,
+            geo_ids=geo_ids,
             lengths=lengths,
         ),
-        EdgeTimePoint(edge_ids[-1], end_time, is_anchor=True),
+        EdgeTimePoint(geo_ids[-1], end_time, is_anchor=True),
     ]
 
 # Duplicate policy helpers
@@ -698,7 +672,7 @@ def _resolve_consecutive_duplicate(
     - Anchor-anchor duplicates are kept only when timestamps differ.
     """
     # If edges are different, no duplication: keep normally
-    if prev.edge_id != curr.edge_id:
+    if prev.geo_id != curr.geo_id:
         return DuplicateAction.APPEND
 
     # Prefer real GPS timestamp over inferred timestamp
@@ -773,17 +747,21 @@ def _append_with_duplicate_policy(
 
 # tpath helpers
 
-def _map_fids_to_geo_ids(
-    fids: list[int],
-    fid_to_geo: dict[int, int],
-    ) -> list[int]:
+def _map_edge_ids_to_geo_ids(
+    edge_ids: list[int],
+    edge_id_to_geo_id: dict[int, int],
+) -> list[int]:
     """
-    Convert FMM edge IDs to geo_id values.
+    Convert canonical/FMM edge IDs to TS-TrajGen geo_id values.
 
-    Unknown FMM IDs are skipped so one missing edge does not discard the entire
-    trajectory.
+    Unknown edge IDs are skipped so one missing edge does not discard the
+    entire trajectory.
     """
-    return [fid_to_geo[fid] for fid in fids if fid in fid_to_geo]
+    return [
+        edge_id_to_geo_id[edge_id]
+        for edge_id in edge_ids
+        if edge_id in edge_id_to_geo_id
+    ]
 
 def _format_timestamp(ts: pd.Timestamp) -> str:
     """
@@ -800,7 +778,7 @@ def _format_time_points(
     """
     Convert stitched EdgeTimePoint objects into rid_list and time_list.
     """
-    rid_list = [point.edge_id for point in points]
+    rid_list = [point.geo_id for point in points]
     time_list = [
         _format_timestamp(point.timestamp)
         for point in points
@@ -813,7 +791,7 @@ def _format_time_points(
     return rid_list, time_list
 
 def _iter_usable_tpath_intervals(
-    tpath_segments_fid: list[list[int]],
+    tpath_segments_edge_id: list[list[int]],
     point_times: list[pd.Timestamp],
     ):
     """
@@ -822,16 +800,16 @@ def _iter_usable_tpath_intervals(
     FMM and raw GPS counts can disagree, so this safely truncates to the
     smallest valid interval count.
     """
-    usable_intervals = min(len(tpath_segments_fid), len(point_times) - 1)
+    usable_intervals = min(len(tpath_segments_edge_id), len(point_times) - 1)
 
     for i in range(usable_intervals):
-        yield i, tpath_segments_fid[i], point_times[i], point_times[i + 1]
+        yield i, tpath_segments_edge_id[i], point_times[i], point_times[i + 1]
 
 def build_rid_and_time_lists_from_tpath(
     traj_id: str,
     tpath_value: Any,
     trip_time_lookup: dict[str, list[pd.Timestamp]],
-    fid_to_geo: dict[int, int],
+    edge_id_to_geo_id: dict[int, int],
     geo_to_length: dict[int, float],
     min_delta_seconds: float = 1.0,
     stats: InterpolationStats | None = None,
@@ -850,30 +828,30 @@ def build_rid_and_time_lists_from_tpath(
     - Interpolated duplicate edges are dropped.
     - Anchor-anchor duplicates are kept only when timestamps differ.
     """
-    tpath_segments_fid = parse_tpath(tpath_value)
+    tpath_segments_edge_id = parse_tpath(tpath_value)
     point_times = trip_time_lookup.get(str(traj_id), [])
 
-    if len(point_times) < 2 or not tpath_segments_fid:
+    if len(point_times) < 2 or not tpath_segments_edge_id:
         return [], []
 
     stitched_points: list[EdgeTimePoint] = []
 
-    for _, seg_fids, start_time, end_time in _iter_usable_tpath_intervals(
-        tpath_segments_fid,
+    for _, seg_edge_ids, start_time, end_time in _iter_usable_tpath_intervals(
+        tpath_segments_edge_id,
         point_times,
     ):
-        if not seg_fids:
+        if not seg_edge_ids:
             continue
 
-        seg_geo = _map_fids_to_geo_ids(seg_fids, fid_to_geo)
+        seg_geo_ids = _map_edge_ids_to_geo_ids(seg_edge_ids, edge_id_to_geo_id)
 
-        if not seg_geo:
+        if not seg_geo_ids:
             continue
 
         segment_points = interpolate_edge_time_points_by_length(
             start_time=start_time,
             end_time=end_time,
-            edge_ids=seg_geo,
+            geo_ids=seg_geo_ids,
             geo_to_length=geo_to_length,
             min_delta_seconds=min_delta_seconds,
             stats=stats,
@@ -885,14 +863,69 @@ def build_rid_and_time_lists_from_tpath(
 
     return _format_time_points(stitched_points)
 
-# build_mm_csvs helpers
+def build_rid_and_time_lists_from_opath(
+    traj_id: str,
+    opath_value: Any,
+    trip_time_lookup: dict[str, list[pd.Timestamp]],
+    edge_id_to_geo_id: dict[int, int],
+    logger: logging.Logger | None = None,
+) -> tuple[list[int], list[str]]:
+    """
+    Build anchor-only road/time sequences from FMM `opath`.
 
-def _has_valid_tpath(row: Any) -> bool:
+    Each FMM `opath` road corresponds directly to one GPS observation.
+    Consecutive duplicate roads are intentionally preserved to maintain
+    one-to-one alignment with GPS timestamps and future point metadata.
     """
-    Return True if an FMM row has a non-empty tpath field.
-    """
-    tpath_value = getattr(row, "tpath", "")
-    return not (pd.isna(tpath_value) or str(tpath_value).strip() == "")
+    edge_ids = parse_cpath_like(opath_value)
+    point_times = trip_time_lookup.get(str(traj_id), [])
+
+    if not edge_ids or not point_times:
+        return [], []
+
+    # For anchor-only mode we require exact alignment. Silently truncating
+    # would break future GPS-feature alignment.
+    if len(edge_ids) != len(point_times):
+        if logger is not None:
+            logger.warning(
+                "Trajectory %s has opath/GPS length mismatch: "
+                "opath=%d, gps_points=%d",
+                traj_id,
+                len(edge_ids),
+                len(point_times),
+            )
+
+        return [], []
+
+    missing_edge_ids = [
+        edge_id
+        for edge_id in edge_ids
+        if edge_id not in edge_id_to_geo_id
+    ]
+
+    if missing_edge_ids:
+        if logger is not None:
+            logger.warning(
+                "Trajectory %s contains %d opath edges missing from canonical network",
+                traj_id,
+                len(missing_edge_ids),
+            )
+
+        return [], []
+
+    geo_ids = [
+        edge_id_to_geo_id[edge_id]
+        for edge_id in edge_ids
+    ]
+
+    time_list = [
+        _format_timestamp(_safe_timestamp(timestamp))
+        for timestamp in point_times
+    ]
+
+    return geo_ids, time_list
+
+# build_mm_csvs helpers
 
 def _has_valid_times(
     traj_id: str,
@@ -902,6 +935,11 @@ def _has_valid_times(
     Return True if a trajectory has at least two GPS timestamps.
     """
     return traj_id in trip_time_lookup and len(trip_time_lookup[traj_id]) >= 2
+
+def _has_valid_path(row: Any, path_column: str) -> bool:
+    """Return True if the selected FMM path field is non-empty."""
+    value = getattr(row, path_column, "")
+    return not (pd.isna(value) or not str(value).strip())
 
 def _make_mm_row(
     traj_id: str,
@@ -913,7 +951,7 @@ def _make_mm_row(
     """
     return {
         "traj_id": traj_id,
-        "rid_list": ",".join(str(edge_id) for edge_id in rid_list),
+        "rid_list": ",".join(str(geo_id) for geo_id in rid_list),
         "time_list": ",".join(time_list),
     }
 
@@ -963,8 +1001,8 @@ def _print_build_summary(
     print(f"Kept ratio:               {build_stats.kept_ratio():.3f}")
     print()
     print("Skipped breakdown:")
-    print(f"  Empty tpath:            {build_stats.skipped_empty_tpath:,}")
-    print(f"  Missing GPS times:      {build_stats.skipped_missing_times:,}")
+    print(f"  Empty path:            {build_stats.skipped_empty_path:,}")
+    print(f"  Single-point trajectories:      {build_stats.skipped_missing_times:,}")
     print(f"  Too short final path:   {build_stats.skipped_short_path:,}")
     print()
     print("INTERPOLATION SUMMARY")
@@ -981,11 +1019,12 @@ def _print_build_summary(
 
 def build_mm_csvs(
     fmm_path: Path | str,
-    fid_to_geo: dict[int, int],
+    edge_id_to_geo_id: dict[int, int],
     geo_to_length: dict[int, float],
     trip_time_lookup: dict[str, list[pd.Timestamp]],
     train_ratio: float,
     random_state: int,
+    interpolate_intermediate_edges: bool,
     min_len: int = 2,
     verbose: bool = False,
     fmm_sep: str = ";",
@@ -1004,8 +1043,8 @@ def build_mm_csvs(
     ----------
     fmm_path : Path | str
         Path to the FMM output CSV.
-    fid_to_geo : dict[int, int]
-        Mapping from FMM edge ID (`fid`) to dataset road ID (`geo_id`).
+    edge_id_to_geo_id : dict[int, int]
+        Mapping from canonical/FMM `edge_id` to TS-TrajGen dataset road ID `geo_id`.
     geo_to_length : dict[int, float]
         Mapping from `geo_id` to road segment length.
     trip_time_lookup : dict[str, list[pd.Timestamp]]
@@ -1052,24 +1091,39 @@ def build_mm_csvs(
         build_stats.total_rows += 1
         traj_id = str(row.id)
 
-        if not _has_valid_tpath(row):
-            build_stats.skipped_empty_tpath += 1
+        path_column = (
+            "tpath"
+            if interpolate_intermediate_edges
+            else "opath"
+        )
+
+        if not _has_valid_path(row, path_column):
+            build_stats.skipped_empty_path += 1
             continue
 
         if not _has_valid_times(traj_id, trip_time_lookup):
             build_stats.skipped_missing_times += 1
             continue
 
-        rid_list, time_list = build_rid_and_time_lists_from_tpath(
-            traj_id=traj_id,
-            tpath_value=getattr(row, "tpath"),
-            trip_time_lookup=trip_time_lookup,
-            fid_to_geo=fid_to_geo,
-            geo_to_length=geo_to_length,
-            min_delta_seconds=min_delta_seconds,
-            stats=interp_stats,
-            logger=logger,
-        )
+        if interpolate_intermediate_edges:
+            rid_list, time_list = build_rid_and_time_lists_from_tpath(
+                traj_id=traj_id,
+                tpath_value=getattr(row, "tpath"),
+                trip_time_lookup=trip_time_lookup,
+                edge_id_to_geo_id=edge_id_to_geo_id,
+                geo_to_length=geo_to_length,
+                min_delta_seconds=min_delta_seconds,
+                stats=interp_stats,
+                logger=logger,
+            )
+        else:
+            rid_list, time_list = build_rid_and_time_lists_from_opath(
+                traj_id=traj_id,
+                opath_value=getattr(row, "opath"),
+                trip_time_lookup=trip_time_lookup,
+                edge_id_to_geo_id=edge_id_to_geo_id,
+                logger=logger,
+            )
 
         if len(rid_list) < min_len:
             build_stats.skipped_short_path += 1
@@ -1106,654 +1160,6 @@ def build_mm_csvs(
 
     return train, test
 
-
-
-# Time interpolation helpers
-# def _get_edge_lengths(
-#     edge_ids: list[int],
-#     geo_to_length: dict[int, float],
-#     stats: InterpolationStats | None = None,
-# ) -> list[float]:
-#     """
-#     Return non-negative edge lengths.
-
-#     Missing edges default to 1.0 so interpolation can still proceed.
-#     If all lengths are invalid, equal weights are used.
-#     """
-#     lengths = [
-#         max(float(geo_to_length.get(edge_id, 1.0)), 0.0)
-#         for edge_id in edge_ids
-#     ]
-
-#     if sum(lengths) <= 0:
-#         if stats is not None:
-#             stats.invalid_length_segments += 1
-
-#         # Equal weights are safer than returning zeros because weights need a
-#         # positive denominator.
-#         return [1.0] * len(edge_ids)
-
-#     return lengths
-
-
-# def _compute_gap_weights(lengths: list[float]) -> list[float]:
-#     """
-#     Compute weights for gaps between edge-entry timestamps.
-
-#     For N edge-entry timestamps, there are N-1 gaps.
-#     """
-#     if len(lengths) <= 1:
-#         return []
-
-#     # We return edge-entry timestamps, so the final edge does not need a
-#     # following gap.
-#     gap_lengths = lengths[:-1]
-#     total_gap_length = sum(gap_lengths)
-
-#     if total_gap_length <= 0:
-#         return [1.0 / (len(lengths) - 1)] * (len(lengths) - 1)
-
-#     return [length / total_gap_length for length in gap_lengths]
-
-# def _build_weighted_timeline(
-#     start_time: pd.Timestamp,
-#     gap_weights: list[float],
-#     total_seconds: float,
-#     min_delta_seconds: float,
-# ) -> list[pd.Timestamp]:
-#     """
-#     Build timestamps from gap weights while enforcing minimum spacing.
-#     """
-#     times = [start_time]
-#     elapsed_seconds = 0.0
-
-#     for weight in gap_weights:
-#         # Enforces strictly increasing timestamps even when weighted time is
-#         # smaller than timestamp resolution.
-#         gap_seconds = max(min_delta_seconds, total_seconds * weight)
-
-#         elapsed_seconds += gap_seconds
-#         times.append(start_time + pd.to_timedelta(elapsed_seconds, unit="s"))
-
-#     return times
-
-# def length_weighted_min_step_times(
-#     start_time: pd.Timestamp,
-#     edge_ids: list[int],
-#     geo_to_length: dict[int, float],
-#     min_delta_seconds: float = 1.0,
-#     stats: InterpolationStats | None = None,
-# ) -> list[pd.Timestamp]:
-#     """
-#     Generate a synthetic strictly increasing timeline using edge-length weights.
-
-#     This is used when the real GPS interval cannot support normal interpolation,
-#     such as equal/reversed timestamps or too many inferred edges for a short
-#     time interval.
-#     """
-#     if not edge_ids:
-#         return []
-
-#     if len(edge_ids) == 1:
-#         return [start_time]
-
-#     # Need N-1 gaps between N edge-entry timestamps.
-#     min_total_seconds = (len(edge_ids) - 1) * min_delta_seconds
-
-#     lengths = _get_edge_lengths(edge_ids, geo_to_length, stats=stats)
-#     gap_weights = _compute_gap_weights(lengths)
-
-#     return _build_weighted_timeline(
-#         start_time=start_time,
-#         gap_weights=gap_weights,
-#         total_seconds=min_total_seconds,
-#         min_delta_seconds=min_delta_seconds,
-#     )
-
-# def interpolate_times_by_length(
-#     start_time: pd.Timestamp,
-#     end_time: pd.Timestamp,
-#     edge_ids: list[int],
-#     geo_to_length: dict[int, float],
-#     min_delta_seconds: float = 1.0,
-#     stats: InterpolationStats | None = None,
-#     logger: logging.Logger | None = None,
-# ) -> list[pd.Timestamp]:
-#     """
-#     Interpolate timestamps across a sequence of road edges using edge length as weight.
-
-#     For a given GPS interval (start_time -> end_time) and a sequence of edges,
-#     this function assigns one timestamp per edge (edge-entry time).
-
-#     Interpolation behavior:
-#     - Standard case:
-#         Distributes time proportionally based on edge lengths.
-#     - Fallback cases:
-#         - If timestamps are equal or reversed -> synthetic timeline.
-#         - If interval is too short for number of edges -> minimum-step timeline.
-
-#     Parameters
-#     ----------
-#     start_time : pd.Timestamp
-#         Timestamp of the starting GPS point.
-#     end_time : pd.Timestamp
-#         Timestamp of the ending GPS point.
-#     edge_ids : list[int]
-#         Sequence of road segment IDs (geo_id).
-#     geo_to_length : dict[int, float]
-#         Mapping from geo_id to edge length.
-#     min_delta_seconds : float, optional
-#         Minimum enforced time difference between consecutive edges.
-#     stats : InterpolationStats, optional
-#         Tracks fallback usage and problematic segments.
-#     logger : logging.Logger, optional
-#         Logs debug information for fallback conditions.
-
-#     Returns
-#     -------
-#     list[pd.Timestamp]
-#         List of timestamps aligned to each edge (edge-entry times).
-
-#     Notes
-#     -----
-#     - Edge-entry timestamps represent the time at which traversal of each
-#     edge begins.
-#     - Fallback logic ensures strictly increasing timestamps and prevents
-#     duplicates when GPS resolution is insufficient.
-#     - This function is critical for maintaining temporal consistency in
-#     downstream trajectory generation models.
-#     """
-#     if not edge_ids:
-#         return []
-
-#     if stats is not None:
-#         stats.total_segments += 1
-
-#     start_time = pd.to_datetime(start_time)
-#     end_time = pd.to_datetime(end_time)
-
-#     if len(edge_ids) == 1:
-#         return [start_time]
-
-#     total_seconds = (end_time - start_time).total_seconds()
-#     min_required_seconds = (len(edge_ids) - 1) * min_delta_seconds
-
-#     if total_seconds <= 0:
-#         if stats is not None:
-#             stats.non_positive_time_segments += 1
-#             stats.fallback_segments += 1
-
-#         if logger is not None:
-#             logger.debug(
-#                 "Fallback: non-positive time segment | "
-#                 f"edges={len(edge_ids)}, total_seconds={total_seconds:.3f}, "
-#                 f"start={start_time}, end={end_time}"
-#             )
-
-#         return length_weighted_min_step_times(
-#             start_time=start_time,
-#             edge_ids=edge_ids,
-#             geo_to_length=geo_to_length,
-#             min_delta_seconds=min_delta_seconds,
-#             stats=stats,
-#         )
-
-#     if total_seconds < min_required_seconds:
-#         if stats is not None:
-#             stats.short_time_segments += 1
-#             stats.fallback_segments += 1
-
-#         if logger is not None:
-#             logger.debug(
-#                 "Fallback: short-time segment | "
-#                 f"edges={len(edge_ids)}, total_seconds={total_seconds:.3f}, "
-#                 f"min_required_seconds={min_required_seconds:.3f}, "
-#                 f"start={start_time}, end={end_time}"
-#             )
-
-#         return length_weighted_min_step_times(
-#             start_time=start_time,
-#             edge_ids=edge_ids,
-#             geo_to_length=geo_to_length,
-#             min_delta_seconds=min_delta_seconds,
-#             stats=stats,
-#         )
-
-#     lengths = _get_edge_lengths(edge_ids, geo_to_length, stats=stats)
-#     total_length = sum(lengths)
-
-#     edge_times: list[pd.Timestamp] = []
-#     cumulative_length = 0.0
-
-#     for length in lengths:
-#         # Edge-entry time depends on distance already traveled before entering
-#         # the current edge.
-#         fraction = cumulative_length / total_length
-#         edge_time = start_time + pd.to_timedelta(total_seconds * fraction, unit="s")
-
-#         edge_times.append(edge_time)
-#         cumulative_length += length
-
-#     return edge_times
-
-# # tpath -> rid_list/time_list builder
-# def build_rid_and_time_lists_from_tpath(
-#     traj_id: str,
-#     tpath_value: Any,
-#     trip_time_lookup: dict[str, list[pd.Timestamp]],
-#     fid_to_geo: dict[int, int],
-#     geo_to_length: dict[int, float],
-#     min_delta_seconds: float = 1.0,
-#     stats: InterpolationStats | None = None,
-#     logger: logging.Logger | None = None,
-#     ) -> tuple[list[int], list[str]]:
-#     """
-#     Build aligned rid_list/time_list while preserving GPS anchor timestamps.
-
-#     Duplicate road IDs are resolved by timestamp fidelity:
-#     - anchor beats interpolated
-#     - interpolated duplicates are dropped
-#     - anchor-anchor duplicates are preserved
-#     """
-#     tpath_segments_fid = parse_tpath(tpath_value)
-#     point_times = trip_time_lookup.get(str(traj_id), [])
-
-#     if len(point_times) < 2 or not tpath_segments_fid:
-#         return [], []
-
-#     usable_intervals = min(len(tpath_segments_fid), len(point_times) - 1)
-
-#     stitched_points: list[EdgeTimePoint] = []
-
-#     for i in range(usable_intervals):
-#         seg_fids = tpath_segments_fid[i]
-
-#         if not seg_fids:
-#             continue
-
-#         # Drop unknown FMM edge IDs instead of failing the whole trajectory.
-#         seg_geo = [fid_to_geo[fid] for fid in seg_fids if fid in fid_to_geo]
-
-#         if not seg_geo:
-#             continue
-
-#         segment_points = interpolate_edge_time_points_by_length(
-#             start_time=point_times[i],
-#             end_time=point_times[i + 1],
-#             edge_ids=seg_geo,
-#             geo_to_length=geo_to_length,
-#             min_delta_seconds=min_delta_seconds,
-#             stats=stats,
-#             logger=logger,
-#         )
-
-#         for point in segment_points:
-#             _append_with_duplicate_policy(stitched_points, point)
-
-#     rid_list = [point.edge_id for point in stitched_points]
-#     time_list = [
-#         point.timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
-#         for point in stitched_points
-#     ]
-
-#     return rid_list, time_list
-
-
-# tpath -> rid_list/time_list builder
-# def build_rid_and_time_lists_from_tpath(
-#     traj_id: str,
-#     tpath_value: Any,
-#     trip_time_lookup: dict[str, list[pd.Timestamp]],
-#     fid_to_geo: dict[int, int],
-#     geo_to_length: dict[int, float],
-#     min_delta_seconds: float = 1.0,
-#     stats: InterpolationStats | None = None,
-#     logger: logging.Logger | None = None,
-# ) -> tuple[list[int], list[str]]:
-#     """
-#     Construct aligned `rid_list` and `time_list` from a single FMM trajectory.
-
-#     This function converts FMM `tpath` output into:
-#     - `rid_list`: sequence of geo_ids (road segments)
-#     - `time_list`: timestamps aligned to each road segment
-
-#     Processing steps:
-#     1. Parse `tpath` into per-interval edge segments.
-#     2. Align segments with original GPS timestamps.
-#     3. Map FMM edge IDs (fid) to dataset road IDs (geo_id).
-#     4. Interpolate timestamps per edge using length-weighted timing.
-#     5. Stitch segments into a single trajectory.
-#     6. Remove duplicate boundary edges between segments.
-
-#     Parameters
-#     ----------
-#     traj_id : str
-#         Unique trajectory identifier.
-#     tpath_value : Any
-#         Raw `tpath` field from FMM output.
-#     trip_time_lookup : dict[str, list[pd.Timestamp]]
-#         Mapping from trajectory ID to ordered GPS timestamps.
-#     fid_to_geo : dict[int, int]
-#         Mapping from FMM fid to geo_id.
-#     geo_to_length : dict[int, float]
-#         Mapping from geo_id to edge length.
-#     min_delta_seconds : float, optional
-#         Minimum enforced time difference between consecutive edges.
-#     stats : InterpolationStats, optional
-#         Object tracking interpolation quality metrics.
-#     logger : logging.Logger, optional
-#         Logger for debug output (e.g., fallback segments).
-
-#     Returns
-#     -------
-#     tuple[list[int], list[str]]
-#         - rid_list: list of geo_ids
-#         - time_list: list of ISO-formatted timestamps
-
-#     Notes
-#     -----
-#     - Each `tpath` segment corresponds to a GPS interval:
-#     GPS[i] → GPS[i+1].
-#     - If segment counts and timestamp counts do not match, the function
-#     truncates safely to the minimum valid length.
-#     - Duplicate edges at segment boundaries are removed to maintain
-#     alignment between `rid_list` and `time_list`.
-#     """
-#     tpath_segments_fid = parse_tpath(tpath_value)
-#     point_times = trip_time_lookup.get(str(traj_id), [])
-
-#     if len(point_times) < 2 or not tpath_segments_fid:
-#         return [], []
-
-#     # Truncate safely because FMM tpath segment counts and GPS timestamp counts
-#     # can occasionally disagree.
-#     usable_intervals = min(len(tpath_segments_fid), len(point_times) - 1)
-
-#     stitched_rids: list[int] = []
-#     stitched_times: list[str] = []
-
-#     for i in range(usable_intervals):
-#         seg_fids = tpath_segments_fid[i]
-
-#         if not seg_fids:
-#             continue
-
-#         # Drop unknown FMM ids instead of failing the whole trajectory.
-#         seg_geo = [fid_to_geo[fid] for fid in seg_fids if fid in fid_to_geo]
-
-#         if not seg_geo:
-#             continue
-
-#         seg_times = interpolate_times_by_length(
-#             start_time=point_times[i],
-#             end_time=point_times[i + 1],
-#             edge_ids=seg_geo,
-#             geo_to_length=geo_to_length,
-#             min_delta_seconds=min_delta_seconds,
-#             stats=stats,
-#             logger=logger,
-#         )
-
-#         # Adjacent FMM segments can repeat the boundary edge, so remove the
-#         # duplicate to keep rid_list and time_list aligned one-to-one.
-#         if stitched_rids and seg_geo and stitched_rids[-1] == seg_geo[0]:
-#             seg_geo = seg_geo[1:]
-#             seg_times = seg_times[1:]
-
-#         stitched_rids.extend(seg_geo)
-#         stitched_times.extend(
-#             ts.strftime("%Y-%m-%dT%H:%M:%SZ")
-#             for ts in seg_times
-#         )
-
-#     return stitched_rids, stitched_times
-
-# Main MM CSV builder
-# def build_mm_csvs(
-#     fmm_path,
-#     fid_to_geo: dict[int, int],
-#     geo_to_length: dict[int, float],
-#     trip_time_lookup: dict[str, list[pd.Timestamp]],
-#     train_ratio: float,
-#     random_state: int,
-#     min_len: int = 2,
-#     verbose: bool = False,
-#     fmm_sep: str = ";",
-#     min_delta_seconds: float = 1.0,
-#     logger: logging.Logger | None = None,
-# ) -> tuple[pd.DataFrame, pd.DataFrame]:
-#     """
-#     Build TS-TrajGen-compatible train/test CSVs from FMM map-matching output.
-
-#     This function processes FMM trajectories (`tpath`) and reconstructs:
-#     - `rid_list`: sequence of road segment IDs (geo_id space)
-#     - `time_list`: aligned timestamps per road segment
-
-#     The pipeline:
-#     1. Loads FMM output.
-#     2. Filters invalid trajectories (missing tpath or timestamps).
-#     3. Converts `tpath` → `rid_list` using fid→geo mapping.
-#     4. Interpolates timestamps per edge using length-weighted timing.
-#     5. Filters short trajectories.
-#     6. Splits into train/test sets.
-
-#     Additionally, this function:
-#     - Tracks preprocessing statistics (skipped trajectories).
-#     - Tracks interpolation quality (fallback usage, bad segments).
-#     - Logs progress and summary metrics.
-
-#     Parameters
-#     ----------
-#     fmm_path : Path | str
-#         Path to FMM output CSV file.
-#     fid_to_geo : dict[int, int]
-#         Mapping from FMM edge IDs (fid) to dataset road IDs (geo_id).
-#     geo_to_length : dict[int, float]
-#         Mapping from geo_id to edge length (used for time interpolation).
-#     trip_time_lookup : dict[str, list[pd.Timestamp]]
-#         Mapping from trajectory ID to ordered original GPS timestamps.
-#     train_ratio : float
-#         Fraction of trajectories to assign to the training set.
-#     random_state : int
-#         Random seed for reproducible train/test split.
-#     min_len : int, optional
-#         Minimum number of edges required for a valid trajectory.
-#     verbose : bool, optional
-#         If True, prints summary stats in addition to logging.
-#     fmm_sep : str, optional
-#         Delimiter used in the FMM CSV file.
-#     min_delta_seconds : float, optional
-#         Minimum enforced time difference between consecutive edges.
-#     logger : logging.Logger, optional
-#         Logger for progress, debug, and summary output.
-
-#     Returns
-#     -------
-#     tuple[pd.DataFrame, pd.DataFrame]
-#         Train and test DataFrames with columns:
-#         - traj_id
-#         - rid_list (comma-separated geo_ids)
-#         - time_list (comma-separated ISO timestamps)
-
-#     Notes
-#     -----
-#     - Interpolation may fall back to synthetic timelines when GPS timestamps
-#     are insufficient (e.g., equal timestamps or too many edges).
-#     - Logging includes detailed statistics on fallback usage and skipped data.
-#     """
-#     if logger is None:
-#         logger = logging.getLogger(__name__)
-
-#     logger.info(f"Loading FMM file: {fmm_path}")
-#     fmm = pd.read_csv(fmm_path, sep=fmm_sep, engine="python")
-#     logger.info(f"Loaded {len(fmm):,} FMM rows")
-
-#     rows: list[dict[str, str]] = []
-
-#     total = 0
-#     skipped_empty_tpath = 0
-#     skipped_short = 0
-#     skipped_missing_times = 0
-
-#     interp_stats = InterpolationStats()
-
-#     progress = tqdm(
-#         fmm.itertuples(index=False),
-#         total=len(fmm),
-#         desc="Building MM CSVs",
-#         unit="traj",
-#     )
-
-#     for i, row in enumerate(progress):
-#         total += 1
-#         traj_id = str(row.id)
-
-#         tpath_val = getattr(row, "tpath", "")
-
-#         if pd.isna(tpath_val) or str(tpath_val).strip() == "":
-#             skipped_empty_tpath += 1
-#             continue
-
-#         if traj_id not in trip_time_lookup or len(trip_time_lookup[traj_id]) < 2:
-#             skipped_missing_times += 1
-#             continue
-
-#         rid_list, time_list = build_rid_and_time_lists_from_tpath(
-#             traj_id=traj_id,
-#             tpath_value=tpath_val,
-#             trip_time_lookup=trip_time_lookup,
-#             fid_to_geo=fid_to_geo,
-#             geo_to_length=geo_to_length,
-#             min_delta_seconds=min_delta_seconds,
-#             stats=interp_stats,
-#             logger=logger,
-#         )
-
-#         if len(rid_list) < min_len:
-#             skipped_short += 1
-#             continue
-
-#         rows.append(
-#             {
-#                 "traj_id": traj_id,
-#                 "rid_list": ",".join(str(x) for x in rid_list),
-#                 "time_list": ",".join(time_list),
-#             }
-#         )
-
-#         if i % 100 == 0:
-#             skipped_total = (
-#                 skipped_empty_tpath
-#                 + skipped_missing_times
-#                 + skipped_short
-#             )
-
-#             # set_postfix gives a live mini-dashboard without spamming logs.
-#             progress.set_postfix(
-#                 kept=len(rows),
-#                 skipped=skipped_total,
-#                 fallback=interp_stats.fallback_segments,
-#                 fb_rate=f"{interp_stats.fallback_rate():.2%}",
-#             )
-
-#     progress.close()
-
-#     df = pd.DataFrame(rows)
-
-#     if df.empty:
-#         logger.warning("No valid trajectories were kept. Returning empty train/test dataframes.")
-#         interp_stats.log_summary(logger)
-#         return df, df.copy()
-
-#     train = df.sample(frac=train_ratio, random_state=random_state)
-#     test = df.drop(train.index)
-
-#     kept = len(df)
-#     skipped_total = skipped_empty_tpath + skipped_missing_times + skipped_short
-
-#     logger.info("=== MM CSV BUILD STATS ===")
-#     logger.info(f"Total input trajectories: {total:,}")
-#     logger.info(f"Kept trajectories:        {kept:,}")
-#     logger.info(f"Kept ratio:               {kept / total:.3f}" if total else "Kept ratio: N/A")
-#     logger.info(f"Skipped trajectories:     {skipped_total:,}")
-#     logger.info("Skipped breakdown:")
-#     logger.info(f"  Empty tpath:            {skipped_empty_tpath:,}")
-#     logger.info(f"  Missing GPS times:      {skipped_missing_times:,}")
-#     logger.info(f"  Too short final path:   {skipped_short:,}")
-#     logger.info(f"Train size:               {len(train):,}")
-#     logger.info(f"Test size:                {len(test):,}")
-
-#     interp_stats.log_summary(logger)
-
-#     if verbose:
-#         print("\nMM CSV BUILD STATS")
-#         print(f"Total input trajectories: {total:,}")
-#         print(f"Kept trajectories:        {kept:,}")
-#         print(f"Kept ratio:               {kept / total:.3f}" if total else "Kept ratio: N/A")
-#         print()
-#         print("Skipped breakdown:")
-#         print(f"  Empty tpath:            {skipped_empty_tpath:,}")
-#         print(f"  Missing GPS times:      {skipped_missing_times:,}")
-#         print(f"  Too short final path:   {skipped_short:,}")
-#         print()
-#         print("INTERPOLATION SUMMARY")
-#         print(f"  Total segments:         {interp_stats.total_segments:,}")
-#         print(f"  Fallback segments:      {interp_stats.fallback_segments:,}")
-#         print(f"  Fallback rate:          {interp_stats.fallback_rate():.3%}")
-#         print(f"  Zero/reversed-time:     {interp_stats.non_positive_time_segments:,}")
-#         print(f"  Short-time segments:    {interp_stats.short_time_segments:,}")
-#         print(f"  Invalid-length:         {interp_stats.invalid_length_segments:,}")
-
-#     return train.reset_index(drop=True), test.reset_index(drop=True)
-
-# def interpolate_times_by_length(
-#     start_time: pd.Timestamp,
-#     end_time: pd.Timestamp,
-#     edge_ids: list[int],
-#     geo_to_length: dict[int, float],
-# ) -> list[pd.Timestamp]:
-#     """
-#     Interpolate timestamps across a traversed edge segment using edge lengths as time weight.
-
-#     The returned timestamps are edge-entry times. If the segment contains N edges,
-#     this returns N timestamps aligned to those edges.
-
-#     Parameters
-#     ----------
-#     start_time : pd.Timestamp
-#         Timestamp of the starting GPS point.
-#     end_time : pd.Timestamp
-#         Timestamp of the ending GPS point.
-#     edge_ids : list[int]
-#         Traversed edge IDs for one GPS interval, already in geo_id space.
-#     geo_to_length : dict[int, float]
-#         Mapping from geo_id to edge length.
-
-#     Returns
-#     -------
-#     list[pd.Timestamp]
-#         One timestamp per edge in `edge_ids`.
-#     """
-#     if not edge_ids:
-#         return []
-
-#     if len(edge_ids) == 1:
-#         return [start_time]
-
-#     total_seconds = (end_time - start_time).total_seconds()
-
-#     # Guard against equal or reversed timestamps.
-#     if total_seconds <= 0:
-#         return [start_time for _ in edge_ids]
-
-#     lengths = [float(geo_to_length.get(edge_id, 1.0)) for edge_id in edge_ids]
-#     total_length = sum(lengths)
-
-#     # Fall back to equal spacing if lengths are invalid.
-#     if total_length <= 0:
-#         timeline = pd.date_range(start=start_time, end=end_time, periods=len(edge_ids) + 1)
-#         return list(timeline[:-1])
-
 #     edge_times: list[pd.Timestamp] = []
 #     cumulative_length = 0.0
 
@@ -1773,94 +1179,6 @@ def build_mm_csvs(
 #  0.0403167746580273578113750899928 = D
 # total len = 1389
 
-
-# def build_rid_and_time_lists_from_tpath(
-#     traj_id: str,
-#     tpath_value: Any,
-#     trip_time_lookup: dict[str, list[pd.Timestamp]],
-#     fid_to_geo: dict[int, int],
-#     geo_to_length: dict[int, float],
-# ) -> tuple[list[int], list[str]]:
-#     """
-#     Build aligned `rid_list` and `time_list` for one trajectory from FMM `tpath`.
-
-#     This function:
-#     1. Parses `tpath` into per-GPS-interval edge segments.
-#     2. Retrieves original GPS timestamps for the trajectory.
-#     3. Maps FMM edge ids (fid) to dataset road ids (geo_id).
-#     4. Interpolates one timestamp per edge using length-weighted timing.
-#     5. Stitches all segments together while removing duplicated boundary edges.
-
-#     Parameters
-#     ----------
-#     traj_id : str
-#         FMM trajectory id.
-#     tpath_value : Any
-#         Raw `tpath` field from one FMM row.
-#     trip_time_lookup : dict[str, list[pd.Timestamp]]
-#         Mapping from trajectory id to ordered original GPS timestamps.
-#     fid_to_geo : dict[int, int]
-#         Mapping from FMM fid to geo_id.
-#     geo_to_length : dict[int, float]
-#         Mapping from geo_id to edge length.
-
-#     Returns
-#     -------
-#     tuple[list[int], list[str]]
-#         Final stitched rid_list and ISO-formatted time_list.
-
-#     Notes
-#     -----
-#     `tpath` has one segment per GPS interval, so for N GPS points we expect
-#     approximately N-1 segments. If counts do not align exactly, this function
-#     safely truncates to the smaller usable count.
-#     """
-#     tpath_segments_fid = parse_tpath(tpath_value)
-#     point_times = trip_time_lookup.get(str(traj_id), [])
-
-#     # Need at least two GPS timestamps to define one interval.
-#     if len(point_times) < 2 or not tpath_segments_fid:
-#         return [], []
-
-#     # Each tpath segment corresponds to interval i: GPS[i] -> GPS[i+1]
-#     # so align lengths for both tpath_segments_fid with its gps timestamps
-#     # if one is longer than other then these get truncated, to keep the 
-#     # constraint that each edge gets a timestamp and vice versa 
-#     usable_intervals = min(len(tpath_segments_fid), len(point_times) - 1)
-
-#     stitched_rids: list[int] = []
-#     stitched_times: list[str] = []
-
-#     for i in range(usable_intervals):
-#         seg_fids = tpath_segments_fid[i]
-#         if not seg_fids:
-#             continue
-
-#         # Map FMM fids to geo_ids and drop any unknowns.
-#         seg_geo = [fid_to_geo[fid] for fid in seg_fids if fid in fid_to_geo]
-#         if not seg_geo:
-#             continue
-
-#         seg_start = point_times[i]
-#         seg_end = point_times[i + 1]
-
-#         seg_times = interpolate_times_by_length(
-#             start_time=seg_start,
-#             end_time=seg_end,
-#             edge_ids=seg_geo,
-#             geo_to_length=geo_to_length,
-#         )
-
-#         # Remove duplicated boundary edge if this segment starts with the same edge
-#         # the previous segment ended with.
-#         if stitched_rids and seg_geo and stitched_rids[-1] == seg_geo[0]:
-#             seg_geo = seg_geo[1:]
-#             seg_times = seg_times[1:]
-
-#         stitched_rids.extend(seg_geo)
-#         stitched_times.extend(ts.strftime("%Y-%m-%dT%H:%M:%SZ") for ts in seg_times)
-
-#     return stitched_rids, stitched_times
 
 def build_trip_time_lookup(
     parquet_path: Path,
@@ -1900,11 +1218,11 @@ def build_trip_time_lookup(
 
     return lookup
 
-def build_geo_and_length_lookups(network_path: Path):
+def build_geo_and_length_lookups(network_path: Path, feature_columns: Iterable[str]):
     """
-    Build geo-related lookup structures from the road network file.
+    Build geo-related lookup structures from the canonical road-network GeoPackage.
 
-    Build `.geo` file and mapping from fid -> geo_id.
+    Build `.geo` file and mapping from edge_id -> geo_id.
 
     The `.geo` file represents road segments with geometry.
 
@@ -1918,19 +1236,13 @@ def build_geo_and_length_lookups(network_path: Path):
     geo_df : pd.DataFrame
         DataFrame ready to save as `.geo`.
     edges_df : pd.DataFrame
-        Original edges with added `geo_id`.
-    fid_to_geo : dict[int, int]
-        Mapping from FMM edge IDs (fid) to geo_id.
+        Canonical road-network edges with added `geo_id`.
+    edge_id_to_geo_id : dict[int, int]
+        Mapping from project/FMM `edge_id` to TS-TrajGen `geo_id`.
     geo_to_length : dict[int, float]]
-        geo_to_length mappings
+        geo_to_length mappings. Mapping from TS-TrajGen `geo_id` to road length.
     """
-    # edges = gpd.read_file(network_path).copy()
-    # edges = edges.sort_values("fid").reset_index(drop=True)
-    # edges["geo_id"] = range(len(edges))
-
-    # fid_to_geo = dict(zip(edges["fid"].astype(int), edges["geo_id"].astype(int)))
-
-    geo_df, edges_df, fid_to_geo = build_geo(network_path)
+    geo_df, edges_df, edge_id_to_geo_id = build_geo(network_path, feature_columns)
 
     if "length" in edges_df.columns:
         geo_to_length = dict(zip(edges_df["geo_id"].astype(int), edges_df["length"].astype(float)))
@@ -1938,5 +1250,5 @@ def build_geo_and_length_lookups(network_path: Path):
         # Fallback if length is missing.
         geo_to_length = {int(geo_id): 1.0 for geo_id in edges_df["geo_id"]}
 
-    # return fid_to_geo, geo_to_length
-    return geo_df, edges_df, fid_to_geo, geo_to_length
+    # return edge_id_to_geo, geo_to_length
+    return geo_df, edges_df, edge_id_to_geo_id, geo_to_length
