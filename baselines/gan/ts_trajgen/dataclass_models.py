@@ -2,8 +2,18 @@ from dataclasses import dataclass
 from pathlib import Path
 import pandas as pd
 import logging
-from enum import StrEnum
 
+try:
+    from enum import StrEnum
+except ImportError:
+    # Python < 3.11 compatibility.
+    from enum import Enum
+
+    class StrEnum(str, Enum):
+        """Backport-compatible subset of enum.StrEnum used by this project."""
+
+        def __str__(self) -> str:
+            return self.value
 
 @dataclass(frozen=True)
 class EdgeTimePoint:

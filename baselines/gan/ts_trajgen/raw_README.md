@@ -66,6 +66,24 @@ ___
 1. **Pre-preprocesses** data ✅
     
     1.1 run b`build_tstrajgen_inputs.py` (in dev container) on your dataset: example command:
+```bash
+python /workspace/build_tstrajgen_inputs.py \
+    --network_path /workspace/upstream/fmm/data/road_network/nyc.gpkg \
+    --fmm_match_path /workspace/upstream/fmm/outputs/nyc_fmm_match.csv \
+    --parquet_path /workspace/upstream/data/nyc_output_tabular/output/traj_cleaned.parquet \
+    --trip_id_map_csv /workspace/upstream/fmm/data/nyc_gps_points_fmm_trip_id_map.csv \
+    --config /workspace/repo/configs/ts_trajgen_nyc.yaml \
+    --out_dir /workspace/datasets/nyc \
+    --log_dir /workspace/datasets/logs \
+    --dataset_name nyc \
+    --min_len 2 \
+    --min_delta_seconds 0.5 \
+    --train_ratio 0.8 \
+    --no-interpolate_intermediate_edges
+```
+
+**OLD** version runner
+
     ```bash
     uv run build_tstrajgen_inputs.py \
            --network_path ../../../fmm_scripts/data/road_network/nyc.gpkg \
@@ -82,6 +100,7 @@ ___
            --no-interpolate_intermediate_edges
     ```
     **Outputs:** nyc_mm_test.csv, nyc_mm_train.csv, nyc.geo, nyc.rel
+
 2. (**INSIDE CONTAINER ts-trajgen**) Run  `preprocess_pretrain_input.py` ✅
 
 ```bash
