@@ -21,6 +21,8 @@ from utils.data_util import encode_time
 from utils.evaluate_funcs import edit_distance, hausdorff_metric, dtw_metric
 import argparse
 from pathlib import Path
+from copy import deepcopy
+from utils.refactor_utils import load_config
 
 def str2bool(value):
     """
@@ -197,6 +199,13 @@ parser.add_argument(
     default="region_time_distribution.npy",
     help="Region-level time distribution (hourly), used in region-level search.",
 )
+parser.add_argument(
+    "--config",
+    type=Path,
+    required=True,
+    help="Path to TS-TrajGen YAML experiment configuration.",
+)
+
 args = parser.parse_args()
 
 data_dir: Path = args.data_root / args.dataset_name
@@ -229,6 +238,10 @@ pretrain_h_path = args.pretrain_region_gat_file
 disc_path: Path = save_dir / "adversarial_region_discriminator.pt"
 generator_path: Path = save_dir / "adversarial_region_generator.pt"
 
+experiment_config = load_config(args.config)
+train_config = experiment_config["training"]["region_gan"]
+optimizer_config = train_config["optimizer"]
+
 # save_folder = './save/our_region_gan'
 # NOTE:
 # kaffpa_tarjan_region_generatorv5.pt is likely a missing file from the original repo:
@@ -241,14 +254,19 @@ generator_path: Path = save_dir / "adversarial_region_generator.pt"
 # trajectory_file = './data/201511_week1_mm_region_test.csv'
 
 device: str = args.device
-learning_rate = 0.0005
-weight_decay = 0.0001
-lr_patience = 2
-lr_decay_ratio = 0.1
-dis_train_rate = 0.8
-batch_size = 64
-clip = 5.0
+learning_rate = optimizer_config["learning_rate"]
+weight_decay = optimizer_config["weight_decay"]
+clip = train_config["clip"]
 pretrain_discriminator: bool = args.pretrain_discriminator
+
+total_epoch = train_config["total_epoch"]
+pretrain_dis_epoch = train_config["pretrain_dis_epoch"]
+batch_size = train_config["batch_size"]
+dis_sample_num = train_config["dis_sample_num"]
+dis_train_rate = train_config["dis_train_rate"]
+gen_sample_num = train_config["gen_sample_num"]  # 生成器训练的时间复杂度很高
+rollout_times = train_config["rollout_times"]
+
 debug: bool = args.debug
 if debug:
     total_epoch = 1
@@ -256,56 +274,61 @@ if debug:
     dis_sample_num = 10
     gen_sample_num = 1
     rollout_times = 1
-else:
-    total_epoch = 10
-    pretrain_dis_epoch = 5
-    dis_sample_num = 5000
-    gen_sample_num = 2000  # 生成器训练的时间复杂度很高
-    rollout_times = 8
+
 # 生成器 config
 # NOTE:
 #  function_g: road_emb_size, time_emb_size, hidden_size, lstm_layer_num
 #              parameters must match the pretrained model that will be loaded
 #  function_h: embed_dim, gps_emb_dim, num_of_heads, lstm_layer_num
 #              parameters must match the pretrained model that will be loaded
-region_gen_config = {
-    "function_g": {
-        # "road_emb_size": 128,  # 这里下调一下网络参数，因为区域数目比较少
-        "road_emb_size": 64,  # 这里下调一下网络参数，因为区域数目比较少
-        # "time_emb_size": 32,
-        "time_emb_size": 16,
-        # "hidden_size": 128,
-        "hidden_size": 64,
-        "dropout_p": 0.6,
-        "lstm_layer_num": 2,
-        "pretrain_road_rep": None,
-        "dis_weight": 0.5,
-        "device": device
-    },
-    "function_h": {
-        # 'embed_dim': 128,
-        'embed_dim': 68,
-        'gps_emb_dim': 5,
-        # 'num_of_heads': 5,
-        'num_of_heads': 4,
-        'concat': False,
-        'device': device,
-        'distance_mode': 'l2',
-        'no_gps_emb': True
-    },
-    'dis_weight': 0.45
-}
+# region_gen_config = {
+#     "function_g": {
+#         # "road_emb_size": 128,  # 这里下调一下网络参数，因为区域数目比较少
+#         "road_emb_size": 64,  # 这里下调一下网络参数，因为区域数目比较少
+#         # "time_emb_size": 32,
+#         "time_emb_size": 16,
+#         # "hidden_size": 128,
+#         "hidden_size": 64,
+#         "dropout_p": 0.6,
+#         "lstm_layer_num": 2,
+#         "pretrain_road_rep": None,
+#         "dis_weight": 0.5,
+#         "device": device
+#     },
+#     "function_h": {
+#         # 'embed_dim': 128,
+#         'embed_dim': 68,
+#         'gps_emb_dim': 5,
+#         # 'num_of_heads': 5,
+#         'num_of_heads': 4,
+#         'concat': False,
+#         'device': device,
+#         'distance_mode': 'l2',
+#         'no_gps_emb': True
+#     },
+#     'dis_weight': 0.45
+# }
+
+region_gen_config = deepcopy(experiment_config["region"]["generator"])
+region_gen_config["function_g"]["device"] = device
+region_gen_config["function_h"]["device"] = device
+
+
 # 判别器参数
 # must match discriminator parameters with the road network pre-training part
 # I think when pretrain_discriminator=False else its trained then saved
-region_dis_config = {
-    "road_emb_size": 64,  # 需要和路网表征预训练部分维度一致
-    "hidden_size": 64,
-    "dropout_p": 0.6,
-    "lstm_layer_num": 2,
-    "pretrain_road_rep": None,
-    "device": device
-}
+# region_dis_config = {
+#     "road_emb_size": 64,  # 需要和路网表征预训练部分维度一致
+#     "hidden_size": 64,
+#     "dropout_p": 0.6,
+#     "lstm_layer_num": 2,
+#     "pretrain_road_rep": None,
+#     "device": device
+# }
+
+region_dis_config = deepcopy(experiment_config["region"]["discriminator"])
+region_dis_config["device"] = device
+# region_dis_config.setdefault("pretrain_road_rep", None)
 
 # 加载区域级别 region_feature
 # region_adjacent_np_file = './data/kaffpa_tarjan_region_adj_mx.npz'
@@ -357,7 +380,7 @@ with open(region_gps_path, 'r') as f:
 with open(region_od_path, 'r') as f:
     od_distinct_route = json.load(f)
 
-time_size = 2880
+time_size = experiment_config["data"]["time_size"]
 time_pad = time_size
 region_num = len(region2rid)
 loc_pad = region_num
@@ -533,7 +556,8 @@ def train_generator(stage):
             input_trace_tim = neg_trace_tim[:i]
             now_region = input_trace_loc[-1]
             candidate_region_dict = region_adjacent_list[str(now_region)]
-            candidate_set = [eval(k) for k in candidate_region_dict.keys()]
+            # eval() is unsafe so casting explicitly to its dtype (int)
+            candidate_set = [int(k) for k in candidate_region_dict.keys()]
             candidate_dis = []
             for c in candidate_set:
                 candidate_dis.append(region_dist[now_region][c] / 100)  # 单位百米
@@ -577,11 +601,25 @@ def train_generator(stage):
         total_hausdorff += hausdorff_metric(true_gps_list, generate_gps_list)
         total_dtw += dtw_metric(true_gps_list, generate_gps_list)
         total_cnt += 1
+    if total_cnt == 0:
+        logger.warning(
+            "No valid generated trajectories in this generator-training iteration."
+        )
+        return float("inf")
+    
+    avg_edit_distance = total_edit_distance / total_cnt
+    avg_hausdorff = total_hausdorff / total_cnt
+    avg_dtw = total_dtw / total_cnt
+    
     logger.info('evaluate generator:')
-    logger.info('avg EDT {}, avg hausdorff {}, avg dtw {}'.format(total_edit_distance / total_cnt,
-                                                                  total_hausdorff / total_cnt,
-                                                                  total_dtw / total_cnt))
-    return total_hausdorff / total_cnt
+    logger.info(
+        "avg EDT {}, avg hausdorff {}, avg dtw {}".format(
+            avg_edit_distance,
+            avg_hausdorff,
+            avg_dtw,
+        )
+    )
+    return avg_hausdorff
 
 
 if __name__ == '__main__':
@@ -627,13 +665,17 @@ if __name__ == '__main__':
     for epoch in range(total_epoch):
         logger.info('start train generator at epoch {}'.format(epoch))
         now_hausdorff = train_generator(stage=1)
-        if prev_hausdorff is None:
-            prev_hausdorff = now_hausdorff
-        elif prev_hausdorff < now_hausdorff:
-            # 增加了
-            patience -= 1
-        else:
-            patience = 2
+        # stop after two consecutive degradations in Hausdorff
+        # original code had a bug where prev_hausdorff was never updated after the first epoch
+        # thus every later epoch is being compared against the first epoch's Hausdorff,
+        # not the immediately previous epoch.
+        if prev_hausdorff is not None:
+            if now_hausdorff > prev_hausdorff:
+                patience -= 1
+            else:
+                patience = 2
+
+        prev_hausdorff = now_hausdorff
         if patience == 0:
             logger.info('early stop')
             break

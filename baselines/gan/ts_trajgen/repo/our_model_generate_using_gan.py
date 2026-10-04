@@ -8,29 +8,34 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 import torch
-import yaml
 from tqdm import tqdm
 
 from generator.generator_v4 import GeneratorV4
 from search import DoubleLayerSearcher
 from utils.data_util import encode_time
 from utils.map_manager import MapManager
-
+from copy import deepcopy
+from utils.refactor_utils import load_config
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate trajectories using GAN-trained TS-TrajGen full-generator checkpoints."
     )
 
-    parser.add_argument("--dataset_name", type=str, default="Xian")
+    parser.add_argument(
+        "--dataset_name",
+        type=str,
+        required=True,
+         help="Dataset folder name (Xian, nyc, etc.).",
+    )
     parser.add_argument("--data_root", type=Path, default=Path("./data"))
     parser.add_argument("--device", type=str, default="cuda:0")
 
     parser.add_argument(
-        "--model_config",
+        "--config",
         type=Path,
         required=True,
-        help="YAML file containing road_gen_config and region_gen_config.",
+        help="Path to TS-TrajGen YAML experiment configuration.",
     )
 
     parser.add_argument("--true_traj_file", type=str, default="xianshi_partA_mm_test.csv")
@@ -77,22 +82,6 @@ def load_json(path: Path) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
-
-def load_model_config(path: Path, device: str) -> tuple[dict, dict]:
-    with open(path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
-
-    road_gen_config = config["road_gen_config"]
-    region_gen_config = config["region_gen_config"]
-
-    road_gen_config["function_g"]["device"] = device
-    road_gen_config["function_h"]["device"] = device
-    region_gen_config["function_g"]["device"] = device
-    region_gen_config["function_h"]["device"] = device
-
-    return road_gen_config, region_gen_config
-
-
 def main() -> None:
     args = parse_args()
     data_dir = args.data_root / args.dataset_name
@@ -109,7 +98,15 @@ def main() -> None:
         cache_dir=args.map_manager_cache_dir,
     )
 
-    road_gen_config, region_gen_config = load_model_config(args.model_config, device)
+    experiment_config = load_config(args.config)
+
+    road_gen_config = deepcopy(experiment_config["road"]["generator"])
+    road_gen_config["function_g"]["device"] = device
+    road_gen_config["function_h"]["device"] = device
+
+    region_gen_config = deepcopy(experiment_config["region"]["generator"])
+    region_gen_config["function_g"]["device"] = device
+    region_gen_config["function_h"]["device"] = device
 
     node_features = torch.load(data_dir / args.node_feature_file, map_location=device).to(device)
     adj_mx = sp.load_npz(data_dir / args.adjacent_np_file)
@@ -118,7 +115,7 @@ def main() -> None:
     region_adj_mx = sp.load_npz(data_dir / args.region_adjacent_np_file)
 
     road_num = pd.read_csv(args.geo_path).shape[0]
-    time_size = 2880
+    time_size = experiment_config["data"]["time_size"]
 
     data_feature = {
         "road_num": road_num + 1,
