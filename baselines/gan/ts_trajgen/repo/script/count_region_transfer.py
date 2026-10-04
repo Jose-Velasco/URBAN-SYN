@@ -12,7 +12,7 @@ parser = argparse.ArgumentParser(
     )
 )
 
-parser.add_argument("--dataset_name", type=str, default="Xian")
+parser.add_argument("--dataset_name", type=str, required=True)
 parser.add_argument("--data_root", type=Path, default=Path("../data"))
 
 parser.add_argument(
@@ -100,13 +100,14 @@ f_not_exist = 0
 cnt = 0
 # 需要检查是否存在邻接的区域之间没有转移的
 for region_f in region_adjacent_list:
-    region_f = eval(region_f)
+    # eval() is unnecessary and potentially unsafe replaced with int
+    region_f = int(region_f)
     if region_f not in final_result:
         # 应该很少
         final_result[region_f] = {}
         f_not_exist += 1
     for region_t in region_adjacent_list[str(region_f)]:
-        region_t = eval(region_t)
+        region_t = int(region_t)
         if region_t not in final_result[region_f]:
             # 给均等的频次
             border_rid_set = region_adjacent_list[str(region_f)][str(region_t)]

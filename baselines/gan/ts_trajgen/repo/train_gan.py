@@ -23,6 +23,8 @@ from utils.evaluate_funcs import edit_distance, hausdorff_metric, dtw_metric
 import argparse
 from pathlib import Path
 from utils.map_manager import MapManager
+from copy import deepcopy
+from utils.refactor_utils import load_config
 
 
 def str2bool(value):
@@ -63,8 +65,8 @@ parser = argparse.ArgumentParser(
 parser.add_argument(
     "--dataset_name",
     type=str,
-    default="Xian",
-    help="Dataset folder name (use Xian if using symlink).",
+    required=True,
+    help="Dataset folder name (Xian, nyc, etc).",
 )
 
 parser.add_argument(
@@ -192,10 +194,17 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    "--map_manger_cache_dir",
+    "--map_manager_cache_dir",
     type=Path,
     required=True,
     help="Path to save MapManger's computed city lat/long bonding boxes.",
+)
+
+parser.add_argument(
+    "--config",
+    type=Path,
+    required=True,
+    help="Path to TS-TrajGen YAML experiment configuration.",
 )
 
 
@@ -203,6 +212,7 @@ args = parser.parse_args()
 
 data_dir: Path = args.data_root / args.dataset_name
 save_dir: Path = args.save_dir
+device = args.device
 
 save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -218,11 +228,15 @@ geo_path: Path =  data_dir / args.geo_filename
 pretrain_g_path: Path =  args.pretrain_g_file
 pretrain_gat_path: Path =  args.pretrain_gat_file
 
-map_manger_cache_dir: Path = args.map_manger_cache_dir
+map_manager_cache_dir: Path = args.map_manager_cache_dir
 dataset_name = args.dataset_name
 
 disc_path: Path = save_dir / "adversarial_discriminator.pt"
 
+experiment_config = load_config(args.config)
+train_config = experiment_config["training"]["road_gan"]
+optimizer_config = train_config["optimizer"]
+scheduler_config = train_config["scheduler"]
 
 # save_folder = './save/our_gan'
 # Files used to distinguish the saved results from different parameter tuning iterations
@@ -235,28 +249,36 @@ exp_id: int = args.exp_id
 # https://github.com/WenMellors/TS-TrajGen/issues/10
 # trajectory_file = './data/201511_week1_short_traj.csv'
 
-device = args.device
-learning_rate = 0.0005
-weight_decay = 0.0001
-lr_patience = 2
-lr_decay_ratio = 0.1
-dis_train_rate = 0.8
-batch_size = 64
+learning_rate = optimizer_config["learning_rate"]
+weight_decay = optimizer_config["weight_decay"]
+lr_patience = scheduler_config["lr_patience"]
+lr_decay_ratio = scheduler_config["lr_decay_ratio"]
+dis_train_rate = train_config["dis_train_rate"]
 pretrain_discriminator: bool = args.pretrain_discriminator
 debug: bool = args.debug
-clip = 5.0
+clip = train_config["clip"]
+
+total_epoch = train_config["total_epoch"]
+pretrain_dis_epoch = train_config["pretrain_dis_epoch"]
+batch_size = train_config["batch_size"]
+
+dis_sample_num = train_config["dis_sample_num"]
+gen_sample_num = train_config["gen_sample_num"]  # 生成器训练的时间复杂度很高 the time complexity of generator is very high
+rollout_times = train_config["rollout_times"]
+
+
 if debug:
     total_epoch = 1
     pretrain_dis_epoch = 1
     dis_sample_num = 10
     gen_sample_num = 1
     rollout_times = 1
-else:
-    total_epoch = 20
-    pretrain_dis_epoch = 5
-    dis_sample_num = 5000
-    gen_sample_num = 2000  # 生成器训练的时间复杂度很高 the time complexity of generator is very high
-    rollout_times = 8
+# else:
+#     total_epoch = 20
+#     pretrain_dis_epoch = 5
+#     dis_sample_num = 5000
+#     gen_sample_num = 2000  # 生成器训练的时间复杂度很高 the time complexity of generator is very high
+#     rollout_times = 8
 # 生成器 config
 # generator config
 # NOTE:
@@ -264,33 +286,38 @@ else:
 #              parameters must match the pretrained model that will be loaded
 #  function_h: embed_dim, gps_emb_dim, num_of_heads, lstm_layer_num
 #              parameters must match the pretrained model that will be loaded
-gen_config = {
-    "function_g": {
-        # "road_emb_size": 256,  # 需要和路网表征预训练部分维度一致
-        "road_emb_size": 128,  # 需要和路网表征预训练部分维度一致
-        # "time_emb_size": 50,
-        "time_emb_size": 32,
-        # "hidden_size": 256,
-        "hidden_size": 128,
-        "dropout_p": 0.6,
-        "lstm_layer_num": 2,
-        "pretrain_road_rep": None,
-        "dis_weight": 0.5,
-        "device": device
-    },
-    "function_h": {
-        # 'embed_dim': 256,
-        'embed_dim': 128,
-        # 'gps_emb_dim': 10,
-        'gps_emb_dim': 5,
-        # 'num_of_heads': 5,
-        'num_of_heads': 4,
-        'concat': False,
-        'device': device,
-        'distance_mode': 'l2'
-    },
-    'dis_weight': 0.45
-}
+# gen_config = {
+#     "function_g": {
+#         # "road_emb_size": 256,  # 需要和路网表征预训练部分维度一致
+#         "road_emb_size": 128,  # 需要和路网表征预训练部分维度一致
+#         # "time_emb_size": 50,
+#         "time_emb_size": 32,
+#         # "hidden_size": 256,
+#         "hidden_size": 128,
+#         "dropout_p": 0.6,
+#         "lstm_layer_num": 2,
+#         "pretrain_road_rep": None,
+#         "dis_weight": 0.5,
+#         "device": device
+#     },
+#     "function_h": {
+#         # 'embed_dim': 256,
+#         'embed_dim': 128,
+#         # 'gps_emb_dim': 10,
+#         'gps_emb_dim': 5,
+#         # 'num_of_heads': 5,
+#         'num_of_heads': 4,
+#         'concat': False,
+#         'device': device,
+#         'distance_mode': 'l2'
+#     },
+#     'dis_weight': 0.45
+# }
+
+gen_config = deepcopy(experiment_config["road"]["generator"])
+gen_config["function_g"]["device"] = device
+gen_config["function_h"]["device"] = device
+
 # 加载 node_feature
 # node_feature_file = './data/node_feature.pt'
 # node_features = torch.load(node_feature_file).to(device)
@@ -303,14 +330,18 @@ adj_mx = sp.load_npz(adjacent_np_path)
 # discriminator config
 # must match discriminator parameters with the road network pre-training part
 # I think when pretrain_discriminator=False else its trained then saved
-dis_config = {
-    "road_emb_size": 256,  # 需要和路网表征预训练部分维度一致
-    "hidden_size": 256,
-    "dropout_p": 0.6,
-    "lstm_layer_num": 2,
-    "pretrain_road_rep": None,
-    "device": device
-}
+# dis_config = {
+#     "road_emb_size": 256,  # 需要和路网表征预训练部分维度一致
+#     "hidden_size": 256,
+#     "dropout_p": 0.6,
+#     "lstm_layer_num": 2,
+#     "pretrain_road_rep": None,
+#     "device": device
+# }
+
+dis_config = deepcopy(experiment_config["road"]["discriminator"])
+dis_config["device"] = device
+# dis_config.setdefault("pretrain_road_rep", None)
 
 # init logger
 logger = get_logger()
@@ -338,13 +369,13 @@ road_time_distribution = np.load(road_time_dist_path)
 # road_num = 40306
 # dynamic road_num
 road_num = pd.read_csv(geo_path).shape[0]
-time_size = 2880
+time_size = experiment_config["data"]["time_size"]
 loc_pad = road_num
 time_pad = time_size
 map_manager = MapManager(
     dataset_name=dataset_name,
     geo_path=geo_path,
-    cache_dir=map_manger_cache_dir
+    cache_dir=map_manager_cache_dir
 )
 
 data_feature = {
@@ -520,9 +551,12 @@ def train_generator(stage):
         gen_candidate = torch.tensor(gen_candidate).to(device)
         loss = gan_loss(candidate_prob=candidate_prob_list, gen_candidate=gen_candidate, reward=reward,
                         yaw_loss=yaw_distance)
-        torch.nn.utils.clip_grad_norm_(generator.parameters(), clip)
         gen_optimizer.zero_grad()
         loss.backward()
+        
+        # Gradient clipping must happen after backward() has populated the gradients
+        # and before optimizer.step() updates the model parameters.
+        torch.nn.utils.clip_grad_norm_(generator.parameters(), clip)
         gen_optimizer.step()
         # 更新模型的 gat cache
         generator.function_h.update_node_emb()
@@ -541,10 +575,23 @@ def train_generator(stage):
         total_hausdorff += hausdorff_metric(true_gps_list, generate_gps_list)
         total_dtw += dtw_metric(true_gps_list, generate_gps_list)
         total_cnt += 1
-    logger.info('evaluate generator:')
-    logger.info('avg EDT {}, avg hausdorff {}, avg dtw {}'.format(total_edit_distance / total_cnt,
-                                                                  total_hausdorff / total_cnt,
-                                                                  total_dtw / total_cnt))
+    if total_cnt > 0:
+        logger.info("evaluate generator:")
+        logger.info(
+            "avg EDT {}, avg hausdorff {}, avg dtw {}".format(
+                total_edit_distance / total_cnt,
+                total_hausdorff / total_cnt,
+                total_dtw / total_cnt,
+            )
+        )
+    else:
+        logger.warning(
+            "No valid generated trajectories in this generator-training iteration."
+        )
+    # logger.info('evaluate generator:')
+    # logger.info('avg EDT {}, avg hausdorff {}, avg dtw {}'.format(total_edit_distance / total_cnt,
+    #                                                               total_hausdorff / total_cnt,
+    #                                                               total_dtw / total_cnt))
 
 
 if __name__ == '__main__':

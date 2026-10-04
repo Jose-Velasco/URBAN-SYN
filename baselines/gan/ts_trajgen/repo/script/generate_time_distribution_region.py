@@ -11,7 +11,9 @@ from pathlib import Path
 parser = argparse.ArgumentParser(
     description=(
         "Compute average travel time per region per hour from region-level "
-        "trajectories (TS-TrajGen region_time_distribution)."
+        "trajectories (TS-TrajGen region_time_distribution). "
+        "Using eval and test trajectories to construct region_time_distribution.npy maybe data leakage"
+        "Recommend only using train with include_eval_test=False"
     )
 )
 
@@ -19,8 +21,8 @@ parser = argparse.ArgumentParser(
 parser.add_argument(
     "--dataset_name",
     type=str,
-    default="Xian",
-    help="Dataset folder name (use Xian if using symlink).",
+    required=True,
+    help="Dataset folder name (Xian, nyc ,etc).",
 )
 
 parser.add_argument(
@@ -41,21 +43,24 @@ parser.add_argument(
 parser.add_argument(
     "--train_region_filename",
     type=str,
-    default="xianshi_mm_region_train.csv",
+    required=True,
+    # default="xianshi_mm_region_train.csv",
     help="Region-level training trajectories.",
 )
 
 parser.add_argument(
     "--eval_region_filename",
     type=str,
-    default="xianshi_mm_region_eval.csv",
+    default="",
+    # default="xianshi_mm_region_eval.csv",
     help="Region-level validation trajectories.",
 )
 
 parser.add_argument(
     "--test_region_filename",
     type=str,
-    default="xianshi_mm_region_test.csv",
+    default="",
+    # default="xianshi_mm_region_test.csv",
     help="Region-level test trajectories.",
 )
 
@@ -84,6 +89,7 @@ test_path: Path = data_dir / args.test_region_filename
 output_path: Path = data_dir / args.output_filename
 
 include_eval_test: bool = args.include_eval_test
+print(f"{include_eval_test = }")
 
 # with open('../data/Xian/region2rid.json', 'r') as f:
 with open(region2rid_path, 'r') as f:
@@ -107,6 +113,8 @@ def parse_time(time_in: str) -> pd.Timestamp:
     """
     return pd.Timestamp(time_in)
 
+# The original generate_time_distribution_region.py uses all three region splits
+# eval and test trajectories to construct region_time_distribution.npy maybe data leakage
 # data_file = ['../data/Xian/xianshi_mm_region_train.csv',
 #              '../data/Xian/xianshi_mm_region_eval.csv',
 #              '../data/Xian/xianshi_mm_region_test.csv']

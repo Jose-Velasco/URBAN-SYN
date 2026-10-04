@@ -38,6 +38,7 @@ road:
     hidden_size: 256
     dropout_p: 0.6
     lstm_layer_num: 2
+    pretrain_road_rep: null
 
 
 # ------------------------------------------------------------
@@ -69,6 +70,7 @@ region:
     hidden_size: 64
     dropout_p: 0.6
     lstm_layer_num: 2
+    pretrain_road_rep: null
 
 
 # ------------------------------------------------------------
@@ -174,6 +176,11 @@ training:
     optimizer:
       learning_rate: 0.0005
       weight_decay: 0.0001
+    
+    scheduler:
+      lr_patience: 2
+      lr_decay_ratio: 0.1
+      early_stop_lr: 1.0e-6
 
     clip: 5.0
 
@@ -198,6 +205,11 @@ training:
     optimizer:
       learning_rate: 0.0005
       weight_decay: 0.0001
+
+    scheduler:
+      lr_patience: 2
+      lr_decay_ratio: 0.1
+      early_stop_lr: 1.0e-6
 
     clip: 5.0
 

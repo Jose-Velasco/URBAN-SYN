@@ -360,7 +360,7 @@ python pretrain_region_gat_fc.py \
        --train
 ```
 
-**Output:** `region_gat_fc.pt`
+**Output:** region_gat_fc.pt
 
 17. (**INSIDE CONTAINER ts-trajgen**) to build od_distinct_route.json required for `train_gan.py` ✅
 
@@ -376,7 +376,7 @@ python -m script.generate_od_distinct_route \
        --output_filename od_distinct_route.json
 ```
 
-**Output:** `od_distinct_route.json`
+**Output:** od_distinct_route.json
 
 18. (**INSIDE CONTAINER ts-trajgen**) to build road_time_distribution.npy required for `train_gan.py` ✅
 
@@ -391,19 +391,19 @@ python -m script.generate_time_distribution \
        --output_filename road_time_distribution.npy
 ```
 
-**Output:** `road_time_distribution.npy`
+**Output:** road_time_distribution.npy
 
-19. (**INSIDE CONTAINER ts-trajgen**) to adversarial learning (road level?)
+19. (**INSIDE CONTAINER ts-trajgen**) to adversarial learning (road level) ✅
 
 ```bash
 python train_gan.py \
-       --dataset_name Xian \
-       --data_root ./data \
+       --dataset_name nyc \
+       --data_root ../datasets  \
        --exp_id 1 \
-       --save_dir ./save/our_gan \
-       --pretrain_g_file ./save/Xian/function_g_fc.pt \
-       --pretrain_gat_file ./save/Xian/gat_fc.pt \
-       --trajectory_filename xianshi_partA_mm_train.csv \
+       --save_dir ./save/nyc/gan \
+       --pretrain_g_file ./save/nyc/function_g_fc.pt \
+       --pretrain_gat_file ./save/nyc/gat_fc.pt \
+       --trajectory_filename nyc_mm_train.csv \
        --node_feature_filename node_feature.pt \
        --adjacent_np_filename adjacent_mx.npz \
        --adjacent_list_filename adjacent_list.json \
@@ -411,46 +411,33 @@ python train_gan.py \
        --road_length_filename road_length.json \
        --od_distinct_route_filename od_distinct_route.json \
        --road_time_dist_filename road_time_distribution.npy \
-       --geo_filename xian.geo \
-       --map_manger_cache_dir ./data/Xian/ \
+       --geo_filename nyc.geo \
+       --map_manager_cache_dir ../datasets/nyc \
        --device cuda:0 \
+       --config ./configs/ts_trajgen_nyc.yaml \
        --pretrain_discriminator True \
        --debug True
 ```
 
-21. (**INSIDE CONTAINER ts-trajgen**) to build region_transfer_prob.json required for `train_region_gan.py`
+**Outputs:** adversarial_3_generator_1.pt, adversarial_discriminator.pt
+
+20. (**INSIDE CONTAINER ts-trajgen**) to build region_transfer_prob.json required for `train_region_gan.py` ✅
 
 -  Since region_transfer_prob.json becomes a learned/helper statistic used during training, using train+test can be considered mild test leakage. Maybe just try using xianshi_partA_mm_train.csv instead of xianshi_partA_traj_mm_processed.
 
 ```bash
-python count_region_transfer.py \
-       --dataset_name Xian \
-       --data_root ../data \
+python -m script.count_region_transfer \
+       --dataset_name nyc \
+       --data_root ../datasets \
        --rid2region_filename rid2region.json \
        --region_adjacent_filename region_adjacent_list.json \
        --output_filename region_transfer_prob.json \
-       --traj_filename xianshi_partA_traj_mm_processed.csv
-
-       # --traj_filename xianshi_partA_mm_train.csv
+       --traj_filename nyc_mm_train.csv
 ```
 
-22. (**INSIDE CONTAINER ts-trajgen**) to build xianshi_region_traj_mm_processed.csv *"required"* for `generate_od_distinct_route.py` (**region version**) and `generate_time_distribution_region`
+**Outputs:** region_transfer_prob.json
 
-- *"required"*: Region-level auxiliary statistics and OD route mappings can be constructed using the training split (**xianshi_mm_region_train.csv**) to avoid data leakage instead of xianshi_region_traj_mm_processed.csv but it depends on
-down stream usage
-- The output file of this script is for region-level utilities that require `region_list`, such as region-level OD route generation and generate_time_distribution_region. It should not replace the road-level `xianshi_partA_traj_mm_processed.csv`, which contains `rid_list`.
-
-```bash
-python build_region_processed_traj.py \
-       --dataset_name Xian \
-       --data_root ../data \
-       --processed_filename xianshi_region_traj_mm_processed.csv \
-       --train_filename xianshi_mm_region_train.csv \
-       --eval_filename xianshi_mm_region_eval.csv \
-       --test_filename xianshi_mm_region_test.csv
-```
-
-23. (**INSIDE CONTAINER ts-trajgen**) to build region_od_distinct_route.json required for `train_region_gan.py`
+21. (**INSIDE CONTAINER ts-trajgen**) to build region_od_distinct_route.json required for `train_region_gan.py` ✅
 
 -  Since region_od_distinct_route.json becomes a learned/helper statistic used during training, using train+test can be considered mild test leakage. Maybe just try using xianshi_mm_region_train.csv instead of xianshi_region_traj_mm_processed.
 - Two cases:
@@ -459,41 +446,42 @@ python build_region_processed_traj.py \
        - currently the script does not allow origin == destination
 
 ```bash
-python generate_od_distinct_route.py \
-       --dataset_name Xian \
-       --data_root ../data \
-       --traj_filename xianshi_region_traj_mm_processed.csv \
+python -m script.generate_od_distinct_route \
+       --dataset_name nyc \
+       --data_root ../datasets \
+       --traj_filename nyc_mm_region_train.csv \
        --route_column region_list \
        --gps_filename region_gps.json \
        --output_filename region_od_distinct_route.json
 ```
 
-24. (**INSIDE CONTAINER ts-trajgen**) to build region_time_distribution.npy required for `train_region_gan.py`
+**Outputs:** region_od_distinct_route.json
+
+22. (**INSIDE CONTAINER ts-trajgen**) to build region_time_distribution.npy required for `train_region_gan.py` ✅
 
 -  Since region_od_distinct_route.json becomes a learned/helper statistic used during training, using train+test can be considered mild test leakage. Maybe just try using xianshi_mm_region_train.csv instead of xianshi_region_traj_mm_processed.
 
 ```bash
-python generate_time_distribution_region.py \
-       --dataset_name Xian \
-       --data_root ../data \
+python -m script.generate_time_distribution_region \
+       --dataset_name nyc \
+       --data_root ../datasets \
        --region2rid_filename region2rid.json \
-       --train_region_filename xianshi_mm_region_train.csv \
-       --eval_region_filename xianshi_mm_region_eval.csv \
-       --test_region_filename xianshi_mm_region_test.csv \
-       --output_filename region_time_distribution.npy \
-       --include_eval_test
+       --train_region_filename nyc_mm_region_train.csv \
+       --output_filename region_time_distribution.npy
 ```
 
-25. (**INSIDE CONTAINER ts-trajgen**) to adversarial learning (region level)
+**Outputs:** region_time_distribution.npy
+
+23. (**INSIDE CONTAINER ts-trajgen**) to adversarial learning (region level) ✅
 
 ```bash
 python train_region_gan.py \
-       --dataset_name Xian \
-       --data_root ./data \
-       --trajectory_file xianshi_mm_region_train.csv \
-       --pretrain_region_function_g_file ./save/Xian/region_function_g_fc.pt \
-       --pretrain_region_gat_file ./save/Xian/region_gat_fc.pt \
-       --save_folder ./save/our_region_gan \
+       --dataset_name nyc \
+       --data_root ../datasets \
+       --trajectory_file nyc_mm_region_train.csv \
+       --pretrain_region_function_g_file ./save/nyc/region_function_g_fc.pt \
+       --pretrain_region_gat_file ./save/nyc/region_gat_fc.pt \
+       --save_folder ./save/nyc/gan_region \
        --adjacent_list_file adjacent_list.json \
        --rid_gps_file rid_gps.json \
        --road_length_file road_length.json \
@@ -509,25 +497,32 @@ python train_region_gan.py \
        --road_time_dist_file road_time_distribution.npy \
        --region_time_dist_file region_time_distribution.npy \
        --device cuda:0 \
+       --config ./configs/ts_trajgen_nyc.yaml \
        --debug True \
        --pretrain_discriminator True
 ```
 
-26. (**INSIDE CONTAINER ts-trajgen**) to generate trajectories (using only the pretrained weight checkpoints) based on the OD-input from the test dataset, .e.g, xianshi_mm_test.csv.
+**Outputs:** adversarial_region_generator.pt, adversarial_region_discriminator.pt
+
+---
+
+### **NOTE:** use step 24 or 25 and most likely not 24 and 25 because **24** generates trajectories from only the pertained weight not the ones trained in GAN (If im correct based on original authors code). In contrast, **25** generated trajectories using GAN trained model weights. The original GitHub is our_model_generate.py but our_model_generate_gan.py has been added and its flow follows our_model_generate.py except our_model_generate_gan.py uses the GAN trained weights
+
+24. (**INSIDE CONTAINER ts-trajgen**) to generate trajectories (using only the pretrained weight checkpoints) based on the OD-input from the test dataset, .e.g, xianshi_mm_test.csv. ✅
 ```bash
 python our_model_generate.py \
-       --dataset_name Xian \
-       --data_root ./data \
-       --true_traj_file xianshi_partA_mm_test.csv \
-       --generated_trace_output_file TS_TrajGen_generated_output.csv \
+       --dataset_name nyc \
+       --data_root ../datasets \
+       --true_traj_file nyc_mm_test.csv \
+       --generated_trace_output_file TS_TrajGen_non_gan_generated_output.csv \
        \
-       --pretrain_gen_file ./save/Xian/function_g_fc.pt \
-       --pretrain_gat_file ./save/Xian/gat_fc.pt \
-       --pretrain_region_gen_file ./save/Xian/region_function_g_fc.pt \
-       --pretrain_region_gat_file ./save/Xian/region_gat_fc.pt \
+       --pretrain_gen_file ./save/nyc/function_g_fc.pt \
+       --pretrain_gat_file ./save/nyc/gat_fc.pt \
+       --pretrain_region_gen_file ./save/nyc/region_function_g_fc.pt \
+       --pretrain_region_gat_file ./save/nyc/region_gat_fc.pt \
        \
-       --geo_path ./data/Xian/xian.geo \
-       --map_manager_cache_dir ./data/Xian \
+       --geo_path ../datasets/nyc/nyc.geo \
+       --map_manager_cache_dir ../datasets/nyc \
        \
        --node_feature_file node_feature.pt \
        --adjacent_np_file adjacent_mx.npz \
@@ -545,21 +540,39 @@ python our_model_generate.py \
        \
        --road_time_distribution_file road_time_distribution.npy \
        --region_time_distribution_file region_time_distribution.npy \
+       --config ./configs/ts_trajgen_nyc.yaml \
        --device cuda:0
 ```
 
-26. (**INSIDE CONTAINER ts-trajgen**) to generate trajectories (using only the the GAN trained checkpoints) based on the OD-input from the test dataset, .e.g, xianshi_mm_test.csv.
+**Outputs:** TS_TrajGen_generated_output.csv
+
+25. (**INSIDE CONTAINER ts-trajgen**) to generate trajectories (using only the the GAN trained checkpoints) based on the OD-input from the test dataset, .e.g, xianshi_mm_test.csv.
 
 ```bash
-python our_model_generate_gan.py \
-  --dataset_name Xian \
-  --data_root ./data \
-  --device cuda:0 \
-  --model_config ./configs/ts_trajgen_nyc.yaml \
-  --true_traj_file xianshi_partA_mm_test.csv \
-  --generated_trace_output_file TS_TrajGen_GAN_generate.csv \
-  --road_gan_generator_file ./save/our_gan/adversarial_3_generator_1.pt \
-  --region_gan_generator_file ./save/our_region_gan/adversarial_region_generator.pt \
-  --geo_path ./data/Xian/xian.geo \
-  --map_manager_cache_dir ./data/Xian
+python our_model_generate_using_gan.py \
+    --dataset_name nyc \
+    --data_root ../datasets \
+    --true_traj_file nyc_mm_test.csv \
+    --generated_trace_output_file TS_TrajGen_GAN_generated_output.csv \
+    --road_gan_generator_file ./save/nyc/gan/adversarial_3_generator_1.pt \
+    --region_gan_generator_file ./save/nyc/gan_region/adversarial_region_generator.pt \
+    --geo_path ../datasets/nyc/nyc.geo \
+    --map_manager_cache_dir ../datasets/nyc \
+    --node_feature_file node_feature.pt \
+    --adjacent_np_file adjacent_mx.npz \
+    --region_adjacent_np_file region_adj_mx.npz \
+    --region_feature_file region_feature.pt \
+    --region2rid_file region2rid.json \
+    --rid2region_file rid2region.json \
+    --adjacent_list_file adjacent_list.json \
+    --rid_gps_file rid_gps.json \
+    --road_length_file road_length.json \
+    --region_adjacent_list_file region_adjacent_list.json \
+    --region_dist_file region_count_dist.npy \
+    --region_transfer_file region_transfer_prob.json \
+    --road_time_distribution_file road_time_distribution.npy \
+    --region_time_distribution_file region_time_distribution.npy \
+    --config ./configs/ts_trajgen_nyc.yaml \
+    --device cuda:0
 ```
+**Output:** TS_TrajGen_GAN_generated_output.csv
