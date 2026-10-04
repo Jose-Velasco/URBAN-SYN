@@ -408,6 +408,9 @@ python train_gan.py \
 20. (**INSIDE CONTAINER ts-trajgen**) to build region_transfer_prob.json required for `train_region_gan.py` ✅
 
 -  Since region_transfer_prob.json becomes a learned/helper statistic used during training, using train+test can be considered mild test leakage. Maybe just try using xianshi_partA_mm_train.csv instead of xianshi_partA_traj_mm_processed.
+- must use road-level trajectories, not region-level trajectories.
+- although it produces region transition probabilities, its input must be a road-level trajectory file containing rid_list
+- maps each road ID through rid2region to detect when the trajectory crosses from one region to another
 
 ```bash
 python -m script.count_region_transfer \

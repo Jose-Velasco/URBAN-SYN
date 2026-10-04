@@ -200,10 +200,17 @@ logger.info('read data')
 
 # 读取训练输入数据 <-- old comment
 
+pretrain_dtypes = {
+    "trace_loc": str,
+    "trace_time": str,
+    "candidate_set": str,
+    "candidate_dis": str,
+}
+
 # custom dataset
-train_data = pd.read_csv(train_path)
-eval_data = pd.read_csv(eval_path)
-test_data = pd.read_csv(test_path)
+train_data = pd.read_csv(train_path, dtype=pretrain_dtypes)
+eval_data = pd.read_csv(eval_path, dtype=pretrain_dtypes)
+test_data = pd.read_csv(test_path, dtype=pretrain_dtypes)
 
 train_data = train_data.values.tolist()
 eval_data = eval_data.values.tolist()

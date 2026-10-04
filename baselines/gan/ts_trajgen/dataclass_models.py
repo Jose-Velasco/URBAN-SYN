@@ -64,6 +64,8 @@ class BuildConfig:
     verbose: bool
     min_delta_seconds: float
     interpolate_intermediate_edges: bool
+    max_train_trajectories: int | None
+    max_test_trajectories: int | None
 
 @dataclass
 class InterpolationStats:

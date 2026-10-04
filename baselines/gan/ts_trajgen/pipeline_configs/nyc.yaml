@@ -1,0 +1,64 @@
+# TS-TrajGen wrapper configuration for the NYC dataset.
+#
+# This file contains orchestration/runtime settings only.
+# Model architecture and training hyperparameters remain in:
+#   /workspace/repo/configs/ts_trajgen_nyc.yaml
+
+dataset:
+  name: nyc
+
+paths:
+  # Paths inside the ts-trajgen container.
+  workspace: /workspace
+  repo: /workspace/repo
+  datasets: /workspace/datasets
+  outputs: /workspace/outputs
+
+  # Read-only upstream artifacts mounted into the container.
+  network: /workspace/upstream/fmm/data/road_network/nyc.gpkg
+  fmm_match: /workspace/upstream/fmm/outputs/nyc_fmm_match.csv
+  parquet: /workspace/upstream/data/nyc_output_tabular/output/traj_cleaned.parquet
+  trip_id_map: /workspace/upstream/fmm/data/nyc_gps_points_fmm_trip_id_map.csv
+
+# TS-TrajGen experiment/model configuration.
+model_config: /workspace/repo/configs/ts_trajgen_nyc.yaml
+
+runtime:
+  device: cuda:0
+
+# build_tstrajgen_inputs.py settings.
+build:
+  min_len: 2
+  min_delta_seconds: 0.5
+  train_ratio: 0.8
+  interpolate_intermediate_edges: false
+
+  # # full dataset
+  # max_train_trajectories: null
+  # max_test_trajectories: null
+
+  # smoke test
+  # Set either value to null for the full dataset.
+  max_train_trajectories: 200
+  max_test_trajectories: 4
+
+# KaHIP road-graph partitioning settings.
+partition:
+  k: 100
+  preconfiguration: strong
+
+# GAN script runtime options.
+#
+# debug=true matches the current smoke-test workflow.
+# Set debug=false for the final/full experiment.
+gan:
+  exp_id: 1
+  debug: true
+  pretrain_discriminator: true
+
+# Generation mode:
+#   pretrained -> run the original-style pretrained Function G/H generator
+#   gan        -> run the full GAN-trained road + region generators
+#   both       -> run both generation paths
+generation:
+  mode: gan
