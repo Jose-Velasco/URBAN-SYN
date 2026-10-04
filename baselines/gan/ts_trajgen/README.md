@@ -1,95 +1,121 @@
 # Baseline: TS-TrajGen
 
-This baseline is based on:
-https://github.com/WenMellors/TS-TrajGen
+This directory contains the adapted TS-TrajGen baseline used for the NYC trajectory-generation experiments.
 
-## Source: 
-- Repo: https://github.com/WenMellors/TS-TrajGen/tree/master
-- Source commit/tag: a71502d3a834f0069475ba3c71bb56f851e32a62
+The implementation is based on the original TS-TrajGen repository and keeps the model architecture and overall pipeline as close to the authors' code as practical, while replacing hardcoded Xian-specific assumptions with explicit dataset paths, CLI arguments, and YAML-driven configuration.
 
-## Undocumented preprocessing mismatch
+## Source
 
-...
+- Original repository: https://github.com/WenMellors/TS-TrajGen
+- Source commit/tag used for this baseline: `a71502d3a834f0069475ba3c71bb56f851e32a62`
+- Local baseline path: `baselines/gan/ts_trajgen/repo/`
 
-## Local baseline path
-- `baselines/gan/ts_trajgen/repo/`
+## NYC adaptation notes
 
-## Environment
-- N/A
+The original TS-TrajGen code is heavily tied to its original datasets and filenames. This refactor keeps the model logic intact while making the NYC pipeline explicit and reproducible.
 
+Important project-specific changes include:
 
+- Direct NYC dataset paths instead of pretending NYC files are Xian files.
+- A feature-complete `nyc.geo` produced directly by `build_tstrajgen_inputs.py`; the older `ensure_geo_feature_columns.py` compatibility step is no longer needed.
+- Config-driven model/training parameters through `configs/ts_trajgen_nyc.yaml`.
+- Explicit road-level and region-level train/eval/test files.
+- Training-derived helper statistics are built from the training split only where possible to avoid evaluation/test leakage.
+- Two generation paths are retained:
+  - `our_model_generate.py` follows the original authors' generation behavior and loads the separately pretrained Function G / Function H checkpoints.
+  - `our_model_generate_using_gan.py` loads the full road-level and region-level GAN-trained `GeneratorV4` checkpoints.
 
+## Data-split policy
 
+The pipeline uses separate training, validation/evaluation, and test data.
 
-## Build & Run TODO: fix this section code
-```bash
-# docker build -t fmm-cli .
-# docker run -it --rm -v "%CD%:/workspace" fmm:ubuntu22
+- **Train:** used to fit model parameters and construct training-derived helper statistics such as OD-route histories, time distributions, and region-transition frequencies.
+- **Eval/validation:** used during model development/pretraining for validation behavior and checkpoint selection where supported.
+- **Test:** kept separate from training-derived statistics and used as the held-out OD/reference input for final generation/evaluation.
+
+The pretraining scripts still accept explicit train/eval/test filenames because that mirrors the TS-TrajGen workflow. Do not use test-set metrics to tune model or hyperparameter decisions.
+
+## Execution locations
+
+There are two execution contexts in this README.
+
+**Project/dev environment:** Step 1 runs from the `baselines/gan/ts_trajgen/` directory, where `build_tstrajgen_inputs.py`, `repo/`, and `datasets/` are available.
+
+**TS-TrajGen container:** Steps 2 onward run from the TS-TrajGen repository working directory, typically `/workspace/repo`.
+
+Expected container mounts are conceptually:
+
+```text
+/workspace/repo      # TS-TrajGen repository
+/workspace/datasets  # project datasets, including NYC
+/workspace/outputs   # generated outputs
 ```
 
-So inside the container the files are under (TODO: once docker container is implemented):
-
-<!-- `/workspace` -->
+Scripts under `script/` that import project modules should be run with `python -m script.<name>` when shown below.
 
 ## Container
-- GPU-enabled via `gpus: all`
+
+The Docker setup is GPU-enabled through `gpus: all`.
 
 ### Build
+
 ```bash
 docker compose build
 ```
 
-### Rebuild Build
+### Rebuild
+
 ```bash
 docker compose down
 docker compose build
 ```
 
-### Open shell
+### Open a shell
+
 ```bash
 docker compose run --rm ts-trajgen
 ```
 
+## Pipeline
 
-## Preprocess Data:
-There are major steps:
+The commands below are intentionally explicit. Arguments are shown in full so each step can be reproduced or later wrapped without relying on hidden defaults.
 
-I. **Pre-preprocesses** data into format TS-TrajGen `preprocess_pretrain_input.py` expects
+> **Smoke-test note:** the GAN commands currently use `--debug True`, which intentionally reduces epochs/sample counts for a fast pipeline test. Use `--debug False` for a full training run after the pipeline is verified.
 
-II. Run  `preprocess_pretrain_input.py` on the *Pre-preprocesses* data
+### 1. Build TS-TrajGen road-network and map-matched trajectory inputs
 
-III. algin TS-TrajGen `.geo` file to have the expect columns
+Run this in the project/dev environment, not from `/workspace/repo` inside the TS-TrajGen container.
 
-IIII.  (**INSIDE CONTAINER ts-trajgen**) symlink/compatible file with expected columns (hacky workaround instead of refactoring TS-TrajGen fully)
+This converts the canonical NYC road network and FMM map-matching output into TS-TrajGen-compatible road-level inputs.
 
+```bash
+uv run build_tstrajgen_inputs.py \
+       --network_path ../../../fmm_scripts/data/road_network/nyc.gpkg \
+       --fmm_match_path ../../../fmm_scripts/outputs/nyc_fmm_match.csv \
+       --parquet_path ../../../data/nyc_output_tabular/output/traj_cleaned.parquet \
+       --trip_id_map_csv ../../../fmm_scripts/data/nyc_gps_points_fmm_trip_id_map.csv \
+       --config ./repo/configs/ts_trajgen_nyc.yaml \
+       --out_dir ./datasets/nyc \
+       --log_dir ./datasets/logs \
+       --dataset_name nyc \
+       --min_len 2 \
+       --min_delta_seconds 0.5 \
+       --train_ratio 0.8 \
+       --no-interpolate_intermediate_edges
+```
 
-- symlink you custom dataset EX nyc.geo -> xian.geo
-- or one can rename thier files to xian instead
+**Persistent outputs:**
 
-IIIII. run `pretrain_gat_fc.py`
+- `nyc_mm_train.csv`
+- `nyc_mm_test.csv`
+- `nyc.geo`
+- `nyc.rel`
 
-___
+### 2. Build road-level TS-TrajGen preprocessing artifacts
 
-1. **Pre-preprocesses** data ✅
-    
-    1.1 run b`build_tstrajgen_inputs.py` (in dev container) on your dataset: example command:
-    ```bash
-    uv run build_tstrajgen_inputs.py \
-           --network_path ../../../fmm_scripts/data/road_network/nyc.gpkg \
-           --fmm_match_path ../../../fmm_scripts/outputs/nyc_fmm_match.csv \
-           --parquet_path ../../../data/nyc_output_tabular/output/traj_cleaned.parquet \
-           --trip_id_map_csv ../../../fmm_scripts/data/nyc_gps_points_fmm_trip_id_map.csv \
-           --config ./repo/configs/ts_trajgen_nyc.yaml \
-           --out_dir ./datasets/nyc \
-           --log_dir ./datasets/logs \
-           --dataset_name nyc \
-           --min_len 2 \
-           --min_delta_seconds 0.5 \
-           --train_ratio 0.8 \
-           --no-interpolate_intermediate_edges
-    ```
-    **Outputs:** nyc_mm_test.csv, nyc_mm_train.csv, nyc.geo, nyc.rel
-2. (**INSIDE CONTAINER ts-trajgen**) Run  `preprocess_pretrain_input.py` ✅
+Run inside the TS-TrajGen container.
+
+This creates the road adjacency/GPS lookup artifacts and road-level pretraining examples consumed by the Function G and Function H pretraining stages.
 
 ```bash
 python -m script.preprocess_pretrain_input \
@@ -98,38 +124,18 @@ python -m script.preprocess_pretrain_input \
        --dataset_prefix nyc \
        --config ./configs/ts_trajgen_nyc.yaml
 ```
-**Output:** adjacent_list.json, rid_gps.json, nyc_pretrain_input_eval.csv, nyc_pretrain_input_test.csv, nyc_pretrain_input_train.csv
 
-3. (**INSIDE CONTAINER ts-trajgen**)  `ensure_geo_feature_columns.py` ⚠️⚠️⚠️(no longer needed with road network and yaml config setup)⚠️⚠️⚠️
-```bash
-python ensure_geo_feature_columns.py \
-   --geo_path ../datasets/nyc/nyc.geo \
-   --output_path ../datasets/nyc/nyc_features_processed.geo
-```
-- Ensures a TS-TrajGen .geo file has the road feature columns expected 
-    by the original Xian preprocessing code (pretrain_gat_fc.py).
+**Persistent outputs:**
 
-**Outputs:**  nyc_features_processed.geo
+- `adjacent_list.json`
+- `rid_gps.json`
+- `nyc_pretrain_input_train.csv`
+- `nyc_pretrain_input_eval.csv`
+- `nyc_pretrain_input_test.csv`
 
-4. (**INSIDE CONTAINER ts-trajgen**) symlink you custom dataset EX nyc.geo -> xian.geo (soon no longer needed)⚠️⚠️⚠️⚠️
-```bash
-cd /workspace/repo/data/Xian
+### 3. Pretrain road-level Function H / GAT
 
-ln -sf /workspace/data/nyc/nyc_features_processed.geo xian.geo
-ln -sf /workspace/data/nyc/nyc.rel xian.rel
-ln -sf /workspace/data/nyc/nyc_mm_train.csv xianshi_partA_mm_train.csv
-ln -sf /workspace/data/nyc/nyc_mm_test.csv xianshi_partA_mm_test.csv
-ln -sf /workspace/data/nyc/nyc_pretrain_input_train.csv xianshi_partA_pretrain_input_train.csv
-ln -sf /workspace/data/nyc/nyc_pretrain_input_eval.csv xianshi_partA_pretrain_input_eval.csv
-ln -sf /workspace/data/nyc/nyc_pretrain_input_test.csv xianshi_partA_pretrain_input_test.csv
-
-ln -sf /workspace/data/nyc/rid_gps.json rid_gps.json
-ln -sf /workspace/data/nyc/adjacent_list.json adjacent_list.json
-```
-- to verify it worked
-`ls -l`
-
-5. (**INSIDE CONTAINER ts-trajgen**) run `pretrain_gat_fc.py` for function H ✅
+This stage learns the road-level graph representation and also produces the road adjacency matrix and node-feature tensor required by later stages.
 
 ```bash
 python pretrain_gat_fc.py \
@@ -157,9 +163,16 @@ python pretrain_gat_fc.py \
     --temp_dir ./temp/nyc/gat
 ```
 
-**Outputs:** node_feature.pt, adjacent_mx.npz, gat_fc.pt, nyc_features_processed.bounds.json
+**Persistent outputs:**
 
-6. (**INSIDE CONTAINER ts-trajgen**) run `pretrain_function_g_fc.py` for function G ✅
+- `node_feature.pt`
+- `adjacent_mx.npz`
+- `gat_fc.pt`
+- MapManager bounds cache under the configured cache directory
+
+### 4. Pretrain road-level Function G
+
+This stage pretrains the road-level sequential generator using the encoded road trajectories.
 
 ```bash
 python pretrain_function_g_fc.py \
@@ -179,9 +192,9 @@ python pretrain_function_g_fc.py \
     --temp_dir ./temp/nyc/function_g
 ```
 
-**Outputs:** function_g_fc.pt
+**Persistent output:** `function_g_fc.pt`
 
-7. (**INSIDE CONTAINER ts-trajgen**) run `process_kahip_graph_format.py` to generate KaHIP's input ✅
+### 5. Convert the road graph to KaHIP input format
 
 ```bash
 python ./script/process_kahip_graph_format.py \
@@ -194,9 +207,15 @@ python ./script/process_kahip_graph_format.py \
        --new2rid_filename new2rid.json
 ```
 
-**Outputs:** nyc.graph, rid2new.json, new2rid.json
+**Persistent outputs:**
 
-8. (**INSIDE CONTAINER ts-trajgen**) run to conduct graph partition ✅
+- `nyc.graph`
+- `rid2new.json`
+- `new2rid.json`
+
+### 6. Partition the road graph with KaHIP
+
+The current NYC configuration partitions the graph into 100 initial KaHIP partitions. Later processing may split disconnected components into additional regions.
 
 ```bash
 /opt/KaHIP/build/kaffpa ../datasets/nyc/nyc.graph \
@@ -205,9 +224,11 @@ python ./script/process_kahip_graph_format.py \
                         --output_filename ../datasets/nyc/tmppartition100
 ```
 
-**Outputs:** tmppartition100
+**Persistent output:** `tmppartition100`
 
-9. (**INSIDE CONTAINER ts-trajgen**) to process KaHIP's output and generate regions. ✅
+### 7. Convert the KaHIP partition into TS-TrajGen regions
+
+This maps roads back from KaHIP IDs to road IDs and produces the final road-to-region / region-to-road mappings used by hierarchical generation.
 
 ```bash
 python ./script/process_kaffpa_res.py \
@@ -220,9 +241,15 @@ python ./script/process_kaffpa_res.py \
     --rid2region_filename rid2region.json
 ```
 
-**Outputs:** region2rid.json, rid2region.json
+**Persistent outputs:**
 
-10. (**INSIDE CONTAINER ts-trajgen**) to calculate regions' adjacent relationships.✅
+- `region2rid.json`
+- `rid2region.json`
+
+### 8. Build region-level adjacency relationships
+
+This derives the region graph and records boundary roads connecting neighboring regions.
+
 ```bash
 python ./script/construct_traffic_zone_relation.py \
        --dataset_name nyc \
@@ -235,9 +262,14 @@ python ./script/construct_traffic_zone_relation.py \
        --region_adjacent_filename_output region_adjacent_list.json
 ```
 
-**Outputs:** region_adj_mx.npz, region_adjacent_list.json
+**Persistent outputs:**
 
-11. (**INSIDE CONTAINER ts-trajgen**) to map the road-level traj to region level. ✅
+- `region_adj_mx.npz`
+- `region_adjacent_list.json`
+
+### 9. Map road-level trajectories to region-level trajectories
+
+This converts the road-level train/test trajectories into region sequences and creates the region-level train/eval/test split used by region pretraining and region GAN training.
 
 ```bash
 python -m script.map_region_traj \
@@ -251,11 +283,18 @@ python -m script.map_region_traj \
     --test_region_filename nyc_mm_region_test.csv \
     --config ./configs/ts_trajgen_nyc.yaml
 ```
-- python -m script.map_region_traj run it as a module to resolve relative imports like *from utils.refactor_utils import load_config*
 
-**Outputs:** nyc_mm_region_eval.csv, nyc_mm_region_test.csv, nyc_mm_region_train.csv
+Run this as a module (`python -m script.map_region_traj`) so imports such as `from utils.refactor_utils import load_config` resolve consistently from the repository root.
 
-12. (**INSIDE CONTAINER ts-trajgen**) to encode the region-level trajectories to pretrain input of models. ✅
+**Persistent outputs:**
+
+- `nyc_mm_region_train.csv`
+- `nyc_mm_region_eval.csv`
+- `nyc_mm_region_test.csv`
+
+### 10. Encode region-level trajectories for pretraining
+
+This converts region trajectories into the examples expected by the region-level Function G and Function H pretraining scripts and creates `region_gps.json`.
 
 ```bash
 python -m script.encode_region_traj \
@@ -275,9 +314,16 @@ python -m script.encode_region_traj \
        --config ./configs/ts_trajgen_nyc.yaml
 ```
 
-**Output:** region_gps.json, nyc_region_pretrain_input_train.csv, nyc_region_pretrain_input_test.csv, nyc_region_pretrain_input_eval.csv
+**Persistent outputs:**
 
-13. (**INSIDE CONTAINER ts-trajgen**)  to calculate region GAT node feature based on road-level node ✅
+- `region_gps.json`
+- `nyc_region_pretrain_input_train.csv`
+- `nyc_region_pretrain_input_eval.csv`
+- `nyc_region_pretrain_input_test.csv`
+
+### 11. Build region-level node features
+
+This aggregates the road-level graph/node representation into region-level features required by the region GAT.
 
 ```bash
 python prepare_region_feature.py \
@@ -296,11 +342,13 @@ python prepare_region_feature.py \
        --config ./configs/ts_trajgen_nyc.yaml
 ```
 
-**Output:** region_feature.pt
+**Persistent output:** `region_feature.pt`
 
-14. (**INSIDE CONTAINER ts-trajgen**) to calculate gps distance between regions ✅
+### 12. Build region-distance and road-length artifacts
 
--  Since region_count_dist.npy becomes a learned/helper statistic used during training, using train+test can be considered mild test leakage. Maybe just try using xianshi_partA_mm_train.csv  instead of xianshi_partA_traj_mm_processed.
+This computes region-to-region distance information used by region-level candidate scoring and produces the road-length lookup used by the searcher.
+
+For strict split isolation, the NYC YAML currently uses `data.region_distance.include_test: false`. The test filename remains explicit in the CLI for compatibility, but test trajectories should not contribute to the training-derived region-distance statistic while this setting is disabled.
 
 ```bash
 python -m script.construct_region_dist \
@@ -317,9 +365,13 @@ python -m script.construct_region_dist \
        --config ./configs/ts_trajgen_nyc.yaml
 ```
 
-**Output:** road_length.json, nyc_traj_mm_processed.csv, region_count_dist.npy
+**Persistent outputs:**
 
-15. (**INSIDE CONTAINER ts-trajgen**) to pretrain region-level function G. ✅
+- `road_length.json`
+- `nyc_traj_mm_processed.csv`
+- `region_count_dist.npy`
+
+### 13. Pretrain region-level Function G
 
 ```bash
 python pretrain_region_function_g_fc.py \
@@ -337,9 +389,9 @@ python pretrain_region_function_g_fc.py \
        --train
 ```
 
-**Output:** region_function_g_fc.pt
+**Persistent output:** `region_function_g_fc.pt`
 
-16. (**INSIDE CONTAINER ts-trajgen**) to pretrain region-level function H. ✅
+### 14. Pretrain region-level Function H / GAT
 
 ```bash
 python pretrain_region_gat_fc.py \
@@ -360,11 +412,11 @@ python pretrain_region_gat_fc.py \
        --train
 ```
 
-**Output:** region_gat_fc.pt
+**Persistent output:** `region_gat_fc.pt`
 
-17. (**INSIDE CONTAINER ts-trajgen**) to build od_distinct_route.json required for `train_gan.py` ✅
+### 15. Build road-level historical OD-route helper data
 
--  Since od_distinct_route.json becomes a learned/helper statistic used during training, using train+test can be considered mild test leakage. Maybe just try using xianshi_partA_mm_train.csv instead of xianshi_partA_traj_mm_processed.
+`od_distinct_route.json` is consumed by road GAN rollout/yaw-loss logic. Because it is a training-derived helper statistic, it is built from `nyc_mm_train.csv` only.
 
 ```bash
 python -m script.generate_od_distinct_route \
@@ -376,11 +428,11 @@ python -m script.generate_od_distinct_route \
        --output_filename od_distinct_route.json
 ```
 
-**Output:** od_distinct_route.json
+**Persistent output:** `od_distinct_route.json`
 
-18. (**INSIDE CONTAINER ts-trajgen**) to build road_time_distribution.npy required for `train_gan.py` ✅
+### 16. Build road-level travel-time distribution
 
--  Since od_distinct_route.json becomes a learned/helper statistic used during training, using train+test can be considered mild test leakage. Maybe just try using xianshi_partA_mm_train.csv instead of xianshi_partA_traj_mm_processed.
+`road_time_distribution.npy` stores hourly average road travel-time information used during search. It is derived from the training trajectories only.
 
 ```bash
 python -m script.generate_time_distribution \
@@ -391,9 +443,11 @@ python -m script.generate_time_distribution \
        --output_filename road_time_distribution.npy
 ```
 
-**Output:** road_time_distribution.npy
+**Persistent output:** `road_time_distribution.npy`
 
-19. (**INSIDE CONTAINER ts-trajgen**) to adversarial learning (road level) ✅
+### 17. Train the road-level GAN
+
+This initializes the road generator from the pretrained road Function G and Function H checkpoints, then performs the road-level adversarial/reinforcement-learning stage.
 
 ```bash
 python train_gan.py \
@@ -419,11 +473,14 @@ python train_gan.py \
        --debug True
 ```
 
-**Outputs:** adversarial_3_generator_1.pt, adversarial_discriminator.pt
+**Persistent outputs:**
 
-20. (**INSIDE CONTAINER ts-trajgen**) to build region_transfer_prob.json required for `train_region_gan.py` ✅
+- `adversarial_3_generator_1.pt`
+- `adversarial_discriminator.pt`
 
--  Since region_transfer_prob.json becomes a learned/helper statistic used during training, using train+test can be considered mild test leakage. Maybe just try using xianshi_partA_mm_train.csv instead of xianshi_partA_traj_mm_processed.
+### 18. Build region-transition frequency helper data
+
+`region_transfer_prob.json` records which road segments are historically used when trajectories cross between neighboring regions. It is derived from the road-level training trajectories only.
 
 ```bash
 python -m script.count_region_transfer \
@@ -435,15 +492,13 @@ python -m script.count_region_transfer \
        --traj_filename nyc_mm_train.csv
 ```
 
-**Outputs:** region_transfer_prob.json
+**Persistent output:** `region_transfer_prob.json`
 
-21. (**INSIDE CONTAINER ts-trajgen**) to build region_od_distinct_route.json required for `train_region_gan.py` ✅
+### 19. Build region-level historical OD-route helper data
 
--  Since region_od_distinct_route.json becomes a learned/helper statistic used during training, using train+test can be considered mild test leakage. Maybe just try using xianshi_mm_region_train.csv instead of xianshi_region_traj_mm_processed.
-- Two cases:
-       - 1. route with only one region has no OD pair
-       - 2. origin == destination: it may not useful for yaw-loss comparison between different origin/destination routes.
-       - currently the script does not allow origin == destination
+`region_od_distinct_route.json` is the region-level equivalent of the road OD-route helper and is built from `nyc_mm_region_train.csv` only.
+
+Routes containing fewer than two valid region IDs do not form an OD route. The current helper logic also excludes same-origin/same-destination cases where the resulting route is not useful for the intended yaw-loss comparison.
 
 ```bash
 python -m script.generate_od_distinct_route \
@@ -455,11 +510,11 @@ python -m script.generate_od_distinct_route \
        --output_filename region_od_distinct_route.json
 ```
 
-**Outputs:** region_od_distinct_route.json
+**Persistent output:** `region_od_distinct_route.json`
 
-22. (**INSIDE CONTAINER ts-trajgen**) to build region_time_distribution.npy required for `train_region_gan.py` ✅
+### 20. Build region-level travel-time distribution
 
--  Since region_od_distinct_route.json becomes a learned/helper statistic used during training, using train+test can be considered mild test leakage. Maybe just try using xianshi_mm_region_train.csv instead of xianshi_region_traj_mm_processed.
+`region_time_distribution.npy` stores hourly average region travel-time information and is derived from the region-level training trajectories only.
 
 ```bash
 python -m script.generate_time_distribution_region \
@@ -470,9 +525,11 @@ python -m script.generate_time_distribution_region \
        --output_filename region_time_distribution.npy
 ```
 
-**Outputs:** region_time_distribution.npy
+**Persistent output:** `region_time_distribution.npy`
 
-23. (**INSIDE CONTAINER ts-trajgen**) to adversarial learning (region level) ✅
+### 21. Train the region-level GAN
+
+This initializes the region generator from the pretrained region Function G and Function H checkpoints, then performs the region-level adversarial/reinforcement-learning stage using the train-derived search/helper artifacts.
 
 ```bash
 python train_region_gan.py \
@@ -502,13 +559,24 @@ python train_region_gan.py \
        --pretrain_discriminator True
 ```
 
-**Outputs:** adversarial_region_generator.pt, adversarial_region_discriminator.pt
+**Persistent outputs:**
 
----
+- `adversarial_region_generator.pt`
+- `adversarial_region_discriminator.pt`
 
-### **NOTE:** use step 24 or 25 and most likely not 24 and 25 because **24** generates trajectories from only the pertained weight not the ones trained in GAN (If im correct based on original authors code). In contrast, **25** generated trajectories using GAN trained model weights. The original GitHub is our_model_generate.py but our_model_generate_gan.py has been added and its flow follows our_model_generate.py except our_model_generate_gan.py uses the GAN trained weights
+## Generation modes
 
-24. (**INSIDE CONTAINER ts-trajgen**) to generate trajectories (using only the pretrained weight checkpoints) based on the OD-input from the test dataset, .e.g, xianshi_mm_test.csv. ✅
+Steps 22 and 23 are two different generation/evaluation paths. They intentionally load different model checkpoints.
+
+- **Step 22** stays close to the original authors' `our_model_generate.py` behavior and loads only the separately pretrained road/region Function G and Function H checkpoints.
+- **Step 23** uses the added `our_model_generate_using_gan.py` script and loads the complete road and region `GeneratorV4` state dictionaries produced by GAN training.
+
+For the final adversarial TS-TrajGen baseline, Step 23 is the GAN-trained generation path. Step 22 is still useful as a pretrained-only comparison and as a reference to the original repository behavior.
+
+### 22. Generate trajectories with pretrained Function G / Function H checkpoints
+
+The held-out road-level test trajectories provide the generation OD/start-time inputs used by the original search flow.
+
 ```bash
 python our_model_generate.py \
        --dataset_name nyc \
@@ -544,9 +612,11 @@ python our_model_generate.py \
        --device cuda:0
 ```
 
-**Outputs:** TS_TrajGen_generated_output.csv
+**Persistent output:** `TS_TrajGen_non_gan_generated_output.csv`
 
-25. (**INSIDE CONTAINER ts-trajgen**) to generate trajectories (using only the the GAN trained checkpoints) based on the OD-input from the test dataset, .e.g, xianshi_mm_test.csv.
+### 23. Generate trajectories with GAN-trained full-generator checkpoints
+
+This is the adversarially trained generation path. It loads the complete road and region `GeneratorV4` checkpoints saved by Steps 17 and 21.
 
 ```bash
 python our_model_generate_using_gan.py \
@@ -575,4 +645,20 @@ python our_model_generate_using_gan.py \
     --config ./configs/ts_trajgen_nyc.yaml \
     --device cuda:0
 ```
-**Output:** TS_TrajGen_GAN_generated_output.csv
+
+**Persistent output:** `TS_TrajGen_GAN_generated_output.csv`
+
+## Important reproducibility notes
+
+The road network, map-matching outputs, `.geo` / `.rel` files, road IDs, region partitioning, and all downstream helper/model artifacts form one dependency chain. If the canonical road network or map-matching result changes, regenerate the dependent TS-TrajGen artifacts instead of mixing files from different network versions.
+
+The train-derived helper files must also be regenerated whenever the training split changes. This includes at least:
+
+- `od_distinct_route.json`
+- `road_time_distribution.npy`
+- `region_transfer_prob.json`
+- `region_od_distinct_route.json`
+- `region_time_distribution.npy`
+- any region-distance artifact whose construction is configured to depend on the training trajectory split
+
+For smoke testing, a reduced train/test subset may be substituted under the same filenames. Before a final experiment, restore the full split and regenerate every downstream artifact that depends on those trajectories.
