@@ -1,9 +1,11 @@
+from pathlib import Path
+
 import sys
 import pandas as pd
 import numpy as np
 
 from model import LSTM_TrajGAN
-from utlis import predict_file_parse_args
+from utlis import get_max_trajectory_length, predict_file_parse_args, load_max_length
 
 from keras.preprocessing.sequence import pad_sequences
 
@@ -12,8 +14,14 @@ if __name__ == '__main__':
     args = predict_file_parse_args()
     
     latent_dim = 100
-    max_length = 144
-    
+    # paper is explicit that trajectories are padded to the length of the longest trajectory in the dataset,
+    # using zero pre-padding, and that padded points are masked during training/inference.
+    # max_length = 144
+    # max_length = load_max_length(
+    #     args.generator_weights_dir
+    # )
+    # print(f"Using cached maximum trajectory length: {max_length}")
+
     keys = ['lat_lon', 'day', 'hour', 'category', 'mask']
     vocab_size = {"lat_lon":2,"day":7,"hour":24,"category":10,"mask":1}
     
@@ -22,6 +30,21 @@ if __name__ == '__main__':
 
     tr = pd.read_csv(args.train_csv)
     te = pd.read_csv(args.test_csv)
+
+    if args.max_length is not None:
+        if args.max_length <= 0:
+            raise ValueError(
+                f"--max_length must be positive, got {args.max_length}."
+            )
+
+        max_length = args.max_length
+        print(f"Using provided max_length: {max_length}")
+    else:
+        max_length = get_max_trajectory_length(
+            train_df=tr,
+            test_df=te,
+        )
+        print(f"Derived max_length from dataset: {max_length}")
     
     lat_centroid = (tr['lat'].sum() + te['lat'].sum())/(len(tr)+len(te))
     lon_centroid = (tr['lon'].sum() + te['lon'].sum())/(len(tr)+len(te))
@@ -53,7 +76,19 @@ if __name__ == '__main__':
     X_test = [pad_sequences(f, max_length, padding='pre', dtype='float64') for f in x_test[:5]]
     
     # Add random noise to the data
-    noise = np.random.normal(0, 1, (1027, 100))
+    # 1027 comes from the original authors' test-set size
+    # noise = np.random.normal(0, 1, (1027, 100))
+    num_trajectories = X_test[0].shape[0]
+
+    if num_trajectories == 0:
+        raise ValueError("No trajectories found in the test dataset.")
+
+    noise = np.random.normal(
+        0,
+        1,
+        (num_trajectories, latent_dim),
+    )
+
     X_test.append(noise)
     
     # Load params for the generator
@@ -106,11 +141,16 @@ if __name__ == '__main__':
     df_traj_fin['hour'] = df_traj_fin['hour'].astype(np.int32)
     df_traj_fin['category'] = df_traj_fin['category'].astype(np.int32)
     df_traj_fin['label'] = df_traj_fin['label'].astype(np.int32)
+
+    output_csv = Path(args.output_csv)
+
+    # Ensure the output directory exists before writing the generated trajectories.
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
     
     # Save synthetic trajectory data
     # df_traj_fin.to_csv('results/syn_traj_test.csv',index=False)
     df_traj_fin.to_csv(
-        args.output_csv,
+        output_csv,
         index=False,
     )
     

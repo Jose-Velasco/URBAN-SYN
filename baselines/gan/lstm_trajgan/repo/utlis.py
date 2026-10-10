@@ -1,5 +1,8 @@
 import argparse
+import json
 from pathlib import Path
+
+import pandas as pd
 
 
 def train_file_parse_args():
@@ -74,6 +77,16 @@ def train_file_parse_args():
         type=int,
         default=100,
         help="The parameter saving interval",
+    )
+
+    parser.add_argument(
+        "--max_length",
+        type=int,
+        default=None,
+        help=(
+            "Maximum trajectory sequence length. "
+            "If omitted, it is derived from the train and test CSV files."
+        ),
     )
 
     return parser.parse_args()
@@ -161,3 +174,78 @@ def predict_file_parse_args():
     )
 
     return parser.parse_args()
+
+def get_max_trajectory_length(
+    train_df,
+    test_df,
+    tid_col: str = "tid",
+) -> int:
+    """Return the longest trajectory length across train and test data."""
+
+    train_max = train_df.groupby(tid_col).size().max()
+    test_max = test_df.groupby(tid_col).size().max()
+
+    max_length = max(train_max, test_max)
+
+    if max_length <= 0:
+        raise ValueError("Could not determine a valid maximum trajectory length.")
+
+    return int(max_length)
+
+
+def save_max_length(max_length: int, output_dir: Path) -> Path:
+    """Cache the maximum trajectory length used to build the model."""
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    metadata_path = output_dir / "metadata.json"
+
+    with metadata_path.open("w") as file:
+        json.dump(
+            {"max_length": max_length},
+            file,
+            indent=2,
+        )
+
+    return metadata_path
+
+
+def load_max_length(checkpoint_dir: Path) -> int:
+    """Load the cached maximum trajectory length for a trained model."""
+
+    metadata_path = Path(checkpoint_dir) / "metadata.json"
+
+    if not metadata_path.exists():
+        raise FileNotFoundError(
+            f"Model metadata not found: {metadata_path}"
+        )
+
+    with metadata_path.open("r") as file:
+        metadata = json.load(file)
+
+    return int(metadata["max_length"])
+
+def get_max_trajectory_length(
+    train_df,
+    test_df,
+    tid_col="tid",
+):
+    """Return the longest trajectory length across train and test data."""
+
+    train_max = train_df.groupby(tid_col).size().max()
+    test_max = test_df.groupby(tid_col).size().max()
+
+    if pd.isna(train_max) or pd.isna(test_max):
+        raise ValueError(
+            "Could not determine max_length from the trajectory data."
+        )
+
+    max_length = int(max(train_max, test_max))
+
+    if max_length <= 0:
+        raise ValueError(
+            f"max_length must be positive, got {max_length}."
+        )
+
+    return max_length

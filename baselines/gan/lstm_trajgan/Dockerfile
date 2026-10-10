@@ -15,7 +15,8 @@ RUN pip install --no-cache-dir \
     pandas \
     Keras==2.2.4 \
     geohash2==1.1 \
-    scikit-learn
+    scikit-learn \
+    pyarrow-0.12.0
 
 # Below are requirements listed by orginal repo
 # RUN pip install --no-cache-dir \

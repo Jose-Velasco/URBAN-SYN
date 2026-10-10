@@ -4,11 +4,18 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    working_dir: /workspace/repo
+    working_dir: /workspace
     volumes:
-      - ./repo:/workspace/repo
-      - ./data:/workspace/data
-      - ./outputs:/workspace/outputs
+      - .:/workspace
+      # LSTM-TrajGAN source code.
+      # - ./repo:/workspace/repo
+      # # Baseline-specific generated/preprocessed inputs.
+      # - ./data:/workspace/data
+      # # Training checkpoints, generated trajectories, and logs.
+      # - ./outputs:/workspace/outputs
+
+      # Read-only MAT-Dataset semantic trajectory source.
+      - ../../../data/nyc_output_tabular/output:/workspace/upstream/data/nyc_output_tabular/output:ro
     gpus: all
     shm_size: "8g"
     tty: true

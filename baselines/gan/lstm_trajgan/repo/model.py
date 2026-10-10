@@ -63,17 +63,20 @@ class LSTM_TrajGAN():
         # The combined model (combining the generator and the discriminator)
         self.combined = Model(inputs, pred)
         self.combined.compile(loss=trajLoss(inputs, gen_trajs), optimizer=self.optimizer)
+
+        params_dir = Path("params")
+        params_dir.mkdir(parents=True, exist_ok=True)
         
         C_model_json = self.combined.to_json()
-        with open("params/C_model.json", "w") as json_file:
+        with open(params_dir / "C_model.json", "w") as json_file:
             json_file.write(C_model_json)
             
         G_model_json = self.generator.to_json()
-        with open("params/G_model.json", "w") as json_file:
+        with open(params_dir / "G_model.json", "w") as json_file:
             json_file.write(G_model_json)
         
         D_model_json = self.discriminator.to_json()
-        with open("params/D_model.json", "w") as json_file:
+        with open(params_dir / "D_model.json", "w") as json_file:
             json_file.write(D_model_json)
 
     def build_discriminator(self):
@@ -180,6 +183,13 @@ class LSTM_TrajGAN():
 
     # def train(self, epochs=200, batch_size=256, sample_interval=10):
     def train(self, epochs=200, batch_size=256, sample_interval=10, *, train_npy: Path, output_dir: Path):
+        """Train LSTM-TrajGAN and periodically save model checkpoints."""
+
+        train_npy = Path(train_npy)
+        output_dir = Path(output_dir)
+        
+        # Ensure the checkpoint directory exists before training begins.
+        output_dir.mkdir(parents=True, exist_ok=True)
         
         # Training data
         # x_train = np.load('data/final_train.npy',allow_pickle=True)
@@ -187,7 +197,7 @@ class LSTM_TrajGAN():
         self.x_train = x_train
 
         # Padding zero to reach the maxlength
-        X_train = [pad_sequences(f, self.max_length, padding='pre', dtype='float64') for f in x_train]
+        X_train = [pad_sequences(feature, self.max_length, padding='pre', dtype='float64') for feature in x_train]
         self.X_train = X_train
         
         
@@ -299,6 +309,9 @@ class LSTM_TrajGAN():
         # self.combined.save_weights("training_params/C_model_"+str(epoch)+".h5")
         # self.generator.save_weights("training_params/G_model_"+str(epoch)+".h5")
         # self.discriminator.save_weights("training_params/D_model_"+str(epoch)+".h5")
+
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         c_save_filename = "C_model_" + str(epoch) + ".h5"
         self.combined.save_weights(output_dir / c_save_filename)

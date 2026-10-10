@@ -75,15 +75,40 @@ docker compose run --rm lstm_trajgan
 
 ## Run
 
+0. (Inside the container)
+
+```bash
+python build_lstm_trajgan_inputs.py \
+    --input_path /workspace/upstream/data/nyc_output_tabular/output/enriched_occasional.parquet \
+    --out_dir /workspace/data \
+    --dataset_name nyc \
+    --train_ratio 0.8 \
+    --random_state 101 \
+    --log_dir /workspace/outputs/logs
+```
+
 1. (Inside the container)
 
 ```bash
-python data/csv2npy.py --load_path ./data/nyc_dev_train_encoded_final.csv --save_path final_train.npy --tid_col tid
+python data/csv2npy.py  \
+    --load_path /workspace/data/nyc_dev_train_encoded_final.csv \
+    --save_path /workspace/data/final_train.npy \
+    --tid_col tid
 ```
 
 2. (Inside the container) Train the LSTM-TrajGAN model using the preprocessed data.
 
 ```bash
+python train.py \
+    --train_csv /workspace/data/nyc_train_latlon.csv \
+    --test_csv /workspace/data/nyc_test_latlon.csv \
+    --train_npy /workspace/data/final_train.npy \
+    --output_dir /workspace/outputs/training_params \
+    --epochs 200 \
+    --batch_size 128 \
+    --save_params_rate 100
+```
+<!-- ```bash
 python train.py \
     --train_csv data/nyc_train_latlon.csv \
     --test_csv data/nyc_test_latlon.csv \
@@ -92,7 +117,7 @@ python train.py \
     --epochs 200 \
     --batch_size 128 \
     --save_params_rate 100
-```
+``` -->
 
 3. (inside container) test.npy requires 2 extra columns when running predict.py
 
@@ -109,10 +134,20 @@ python data/csv2npy.py \
 ```bash
 python predict.py \
     --load_checkpoint_epochs 200 \
+    --train_csv /workspace/data/nyc_train_latlon.csv \
+    --test_csv /workspace/data/nyc_test_latlon.csv \
+    --test_npy /workspace/data/final_test.npy \
+    --encoded_test_csv /workspace/data/nyc_dev_test_encoded_final.csv \
+    --generator_weights_dir /workspace/outputs/training_params \
+    --output_csv /workspace/outputs/results/nyc_syn_traj_test.csv
+```
+<!-- ```bash
+python predict.py \
+    --load_checkpoint_epochs 200 \
     --train_csv data/nyc_train_latlon.csv \
     --test_csv data/nyc_test_latlon.csv \
     --test_npy data/final_test.npy \
     --encoded_test_csv ./data/nyc_dev_test_encoded_final.csv \
     --generator_weights_dir training_params \
     --output_csv results/nyc_syn_traj_test.csv
-```
+``` -->

@@ -1,8 +1,9 @@
-"""Convert encoded csv files to one-hot-encoded npy files."""
+"""Convert encoded csv files to one-hot-encoded npy files (LSTM-TrajGAN NPY inputs)."""
 # https://github.com/GeoDS/LSTM-TrajGAN/issues/5 test.npy requires 2 extra columns when running predict.py
+import argparse
+
 import pandas as pd
 import numpy as np
-import argparse
 
 def data_conversion(df, tid_col, generate_test_npy):
     """Converts input panda dataframe to one-hot-encoded Numpy array (locations are still in float)."""
@@ -36,7 +37,14 @@ if __name__ == '__main__':
     parser.add_argument("--load_path", type=str, default="dev_train_encoded_final.csv")
     parser.add_argument("--save_path", type=str, default="train_encoded.npy")
     parser.add_argument("--tid_col", type=str, default="tid")
-    parser.add_argument("--generate_test_npy", type=bool, default=False, help="final_test.npy has two extra columns need to run predict.py")
+    parser.add_argument(
+        "--generate_test_npy",
+        action="store_true",
+        help=(
+            "Generate the test NPY format with the additional "
+            "trajectory ID and trajectory length fields required by predict.py."
+        ),
+    )
     args = parser.parse_args()
     
     df = pd.read_csv(args.load_path)
