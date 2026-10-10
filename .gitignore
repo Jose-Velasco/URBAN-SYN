@@ -261,6 +261,7 @@ baselines/gan/ts_trajgen/repo/config/*.yaml
 *.svg
 *.tar.gz
 *.gpkg
+*.tar
 
 
 ### Datasets ###
