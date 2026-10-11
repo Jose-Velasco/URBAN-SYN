@@ -648,7 +648,7 @@ if __name__ == '__main__':
     rollout = Rollout(searcher=searcher, generator=generator, device=device, od_distinct_route=od_distinct_route,
                       road_gps=rid_gps)
     # 预训练判别器
-    logger.info('start pretrain discriminator.')
+    # logger.info('start pretrain discriminator.')
     discriminator = DiscriminatorV1(
         config=dis_config,
         data_feature=data_feature,
