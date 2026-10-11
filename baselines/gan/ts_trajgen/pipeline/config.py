@@ -55,8 +55,12 @@ class PipelineConfig:
 
     # GAN execution options
     gan_exp_id: int
-    gan_debug: bool
-    pretrain_discriminator: bool
+
+    road_gan_debug: bool
+    road_pretrain_discriminator: bool
+
+    region_gan_debug: bool
+    region_pretrain_discriminator: bool
 
     # Generation
     generation_mode: str
@@ -131,6 +135,8 @@ class PipelineConfig:
         build = _require_mapping(raw, "build")
         partition = _require_mapping(raw, "partition")
         gan = _require_mapping(raw, "gan")
+        road_gan = _require_mapping(gan, "road")
+        region_gan = _require_mapping(gan, "region")
         generation = _require_mapping(raw, "generation")
 
         config = cls(
@@ -180,9 +186,15 @@ class PipelineConfig:
                 partition, "preconfiguration"
             ),
             gan_exp_id=_require_int(gan, "exp_id"),
-            gan_debug=_require_bool(gan, "debug"),
-            pretrain_discriminator=_require_bool(
-                gan, "pretrain_discriminator"
+
+            road_gan_debug=_require_bool(road_gan, "debug"),
+            road_pretrain_discriminator=_require_bool(
+                road_gan, "pretrain_discriminator"
+            ),
+
+            region_gan_debug=_require_bool(region_gan, "debug"),
+            region_pretrain_discriminator=_require_bool(
+                region_gan, "pretrain_discriminator"
             ),
             generation_mode=_require_str(generation, "mode").lower(),
         )

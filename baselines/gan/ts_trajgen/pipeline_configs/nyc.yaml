@@ -39,7 +39,7 @@ build:
 
   # smoke test
   # Set either value to null for the full dataset.
-  max_train_trajectories: 200
+  max_train_trajectories: 150
   max_test_trajectories: 4
 
 # KaHIP road-graph partitioning settings.
@@ -53,8 +53,14 @@ partition:
 # Set debug=false for the final/full experiment.
 gan:
   exp_id: 1
-  debug: true
-  pretrain_discriminator: true
+
+  road:
+    debug: true
+    pretrain_discriminator: true
+
+  region:
+    debug: true
+    pretrain_discriminator: true
 
 # Generation mode:
 #   pretrained -> run the original-style pretrained Function G/H generator

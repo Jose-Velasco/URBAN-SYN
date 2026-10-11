@@ -11,11 +11,13 @@ PIPELINE_GROUP_ORDER: tuple[str, ...] = (
     "pretrain-road",
     "prepare-region",
     "pretrain-region",
-    "train",
+    "train-road",
+    "train-region",
     "generate",
 )
 
-VALID_GROUPS = frozenset(PIPELINE_GROUP_ORDER)
+# "train" is a convenience/meta target that runs both GAN training stages.
+VALID_GROUPS = frozenset((*PIPELINE_GROUP_ORDER, "train"))
 
 
 def build_stages(config: PipelineConfig) -> tuple[Stage, ...]:
@@ -720,12 +722,12 @@ def build_stages(config: PipelineConfig) -> tuple[Stage, ...]:
     )
 
     # ------------------------------------------------------------------
-    # train
+    # train-road / train-region
     # ------------------------------------------------------------------
     stages.append(
         _stage(
             name="train-road-gan",
-            group="train",
+            group="train-road",
             description="Run road-level TS-TrajGen adversarial training.",
             cwd=repo_dir,
             command=[
@@ -768,9 +770,9 @@ def build_stages(config: PipelineConfig) -> tuple[Stage, ...]:
                 "--config",
                 str(config.model_config_path),
                 "--pretrain_discriminator",
-                _bool_arg(config.pretrain_discriminator),
+                _bool_arg(config.road_pretrain_discriminator),
                 "--debug",
-                _bool_arg(config.gan_debug),
+                _bool_arg(config.road_gan_debug),
             ],
         )
     )
@@ -778,7 +780,7 @@ def build_stages(config: PipelineConfig) -> tuple[Stage, ...]:
     stages.append(
         _stage(
             name="train-region-gan",
-            group="train",
+            group="train-region",
             description="Run region-level TS-TrajGen adversarial training.",
             cwd=repo_dir,
             command=[
@@ -829,9 +831,9 @@ def build_stages(config: PipelineConfig) -> tuple[Stage, ...]:
                 "--config",
                 str(config.model_config_path),
                 "--debug",
-                _bool_arg(config.gan_debug),
+                _bool_arg(config.region_gan_debug),
                 "--pretrain_discriminator",
-                _bool_arg(config.pretrain_discriminator),
+                _bool_arg(config.region_pretrain_discriminator),
             ],
         )
     )
@@ -990,7 +992,7 @@ def stages_for_group(
         config:
             Parsed pipeline configuration.
         group:
-            One of the values in ``PIPELINE_GROUP_ORDER``.
+            One of the values in ``VALID_GROUPS``.
 
     Returns:
         Ordered stages for the requested group.
@@ -1000,8 +1002,17 @@ def stages_for_group(
             If ``group`` is not a supported pipeline group.
     """
     if group not in VALID_GROUPS:
-        allowed = ", ".join(PIPELINE_GROUP_ORDER)
-        raise ValueError(f"Unknown pipeline group {group!r}. Expected one of: {allowed}")
+        allowed = ", ".join(sorted(VALID_GROUPS))
+        raise ValueError(
+            f"Unknown pipeline group {group!r}. Expected one of: {allowed}"
+        )
+
+    if group == "train":
+        return tuple(
+            stage
+            for stage in build_stages(config)
+            if stage.group in {"train-road", "train-region"}
+        )
 
     stages = tuple(stage for stage in build_stages(config) if stage.group == group)
 

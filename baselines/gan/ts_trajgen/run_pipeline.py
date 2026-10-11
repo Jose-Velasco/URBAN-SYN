@@ -24,10 +24,10 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "target",
-        choices=(*PIPELINE_GROUP_ORDER, "all"),
+        choices=(*PIPELINE_GROUP_ORDER, "train", "all"),
         help=(
-            "Pipeline group to run. Use 'all' to execute every group in "
-            "pipeline order."
+            "Pipeline group to run. Use 'train' to run both road and region "
+            "GAN training, or 'all' to execute every group in pipeline order."
         ),
     )
 

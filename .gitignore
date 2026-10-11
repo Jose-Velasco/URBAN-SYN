@@ -245,7 +245,9 @@ baselines/**/*.pt
 baselines/**/*.pth
 baselines/**/*.ckpt
 baselines/**/*.csv
+
 baselines/gan/ts_trajgen/repo/config/*.yaml
+baselines/gan/ts_trajgen/hpc
 
 # But allow traversal into this specific one
 !baselines/gan/lstm_trajgan/repo/data/
