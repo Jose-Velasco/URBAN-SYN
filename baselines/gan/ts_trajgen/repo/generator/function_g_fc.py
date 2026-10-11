@@ -135,6 +135,37 @@ class FunctionGFC(nn.Module):
         # 损失函数
         self.loss_func = nn.CrossEntropyLoss()
 
+    def _score_candidates(self, attn_hidden, candidate_set):
+        """Score only candidate roads using their output-layer parameters.
+
+        This is mathematically equivalent to applying ``self.out_fc`` to all
+        roads and then gathering ``candidate_set``. Computing only the selected
+        output rows avoids producing logits for roads that cannot be chosen at
+        the current step.
+
+        Args:
+            attn_hidden (torch.Tensor):
+                Attention-enhanced trajectory representation with shape
+                ``(batch_size, hidden_size)``.
+            candidate_set (torch.Tensor):
+                Candidate road IDs with shape
+                ``(batch_size, candidate_size)``.
+
+        Returns:
+            torch.Tensor:
+                Candidate logits with shape
+                ``(batch_size, candidate_size)``.
+        """
+        candidate_weight = self.out_fc.weight[candidate_set]
+        candidate_bias = self.out_fc.bias[candidate_set]
+
+        candidate_score = torch.bmm(
+            candidate_weight,
+            attn_hidden.unsqueeze(2),
+        ).squeeze(2)
+
+        return candidate_score + candidate_bias
+
     def forward(self, trace_loc, trace_time, des, candidate_set, candidate_dis, trace_mask=None, train=True):
         """前馈过程
 
@@ -180,11 +211,18 @@ class FunctionGFC(nn.Module):
         attn_hidden = self.intra_attn(query=lstm_last_hidden, key=lstm_hidden, mask=trace_mask) # (batch_size, hidden_size)
         # dropout
         attn_hidden = self.dropout(attn_hidden)
-        # 使用线性层直接预测
-        score = self.out_fc(attn_hidden)  # (batch_size, road_num)
-        # 根据 candidate_set 选出对应 candidate 的 score
-        candidate_score = torch.gather(score, dim=1, index=candidate_set)  # (batch_size, road_num)
-        return candidate_score
+
+        # # 使用线性层直接预测
+        # score = self.out_fc(attn_hidden)  # (batch_size, road_num)
+        # # 根据 candidate_set 选出对应 candidate 的 score
+        # candidate_score = torch.gather(score, dim=1, index=candidate_set)  # (batch_size, road_num)
+        # return candidate_score
+
+        # Only candidate roads can be selected at this step, so compute the
+        # corresponding linear-layer logits directly instead of scoring every road.
+        return self._score_candidates(attn_hidden, candidate_set)
+
+
 
     def predict(self, trace_loc, trace_time, des, candidate_set, candidate_dis, trace_mask=None):
         """预测
