@@ -57,10 +57,12 @@ gan:
   road:
     debug: true
     pretrain_discriminator: true
+    resume: false
 
   region:
     debug: true
     pretrain_discriminator: true
+    resume: false
 
 # Generation mode:
 #   pretrained -> run the original-style pretrained Function G/H generator

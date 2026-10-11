@@ -773,6 +773,8 @@ def build_stages(config: PipelineConfig) -> tuple[Stage, ...]:
                 _bool_arg(config.road_pretrain_discriminator),
                 "--debug",
                 _bool_arg(config.road_gan_debug),
+                "--resume",
+                _bool_arg(config.road_gan_resume),
             ],
         )
     )
@@ -834,6 +836,8 @@ def build_stages(config: PipelineConfig) -> tuple[Stage, ...]:
                 _bool_arg(config.region_gan_debug),
                 "--pretrain_discriminator",
                 _bool_arg(config.region_pretrain_discriminator),
+                "--resume",
+                _bool_arg(config.region_gan_resume),
             ],
         )
     )

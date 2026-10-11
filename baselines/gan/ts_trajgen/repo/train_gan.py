@@ -100,6 +100,13 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    "--resume",
+    type=str2bool,
+    default=False,
+    help="Resume GAN training from the latest saved training checkpoint.",
+)
+
+parser.add_argument(
     "--exp_id",
     type=int,
     default=1,
@@ -232,6 +239,9 @@ map_manager_cache_dir: Path = args.map_manager_cache_dir
 dataset_name = args.dataset_name
 
 disc_path: Path = save_dir / "adversarial_discriminator.pt"
+checkpoint_path: Path = (
+    save_dir / f"training_checkpoint_{args.exp_id}.pt"
+)
 
 experiment_config = load_config(args.config)
 train_config = experiment_config["training"]["road_gan"]
@@ -256,6 +266,8 @@ lr_decay_ratio = scheduler_config["lr_decay_ratio"]
 dis_train_rate = train_config["dis_train_rate"]
 pretrain_discriminator: bool = args.pretrain_discriminator
 debug: bool = args.debug
+resume: bool = args.resume
+
 clip = train_config["clip"]
 
 total_epoch = train_config["total_epoch"]
@@ -594,6 +606,26 @@ def train_generator(stage):
     #                                                               total_dtw / total_cnt))
 
 
+def save_training_checkpoint(
+    path: Path,
+    *,
+    next_epoch: int,
+    generator: GeneratorV4,
+    discriminator: DiscriminatorV1,
+) -> None:
+    """Save GAN state needed to resume at the next adversarial epoch."""
+    checkpoint = {
+        "next_epoch": next_epoch,
+        "generator_state_dict": generator.state_dict(),
+        "discriminator_state_dict": discriminator.state_dict(),
+    }
+
+    # Write to a temporary file first so an interrupted write does not
+    # corrupt the previous usable checkpoint.
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    torch.save(checkpoint, tmp_path)
+    os.replace(tmp_path, path)
+
 if __name__ == '__main__':
     logger.info('load true trajectory.')
     # 加载真实轨迹数据
@@ -617,22 +649,86 @@ if __name__ == '__main__':
                       road_gps=rid_gps)
     # 预训练判别器
     logger.info('start pretrain discriminator.')
-    discriminator = DiscriminatorV1(config=dis_config, data_feature=data_feature).to(device)
-    if pretrain_discriminator:
-        logger.info('start pretrain discriminator.')
-        train_discriminator(max_epoch=pretrain_dis_epoch)
+    discriminator = DiscriminatorV1(
+        config=dis_config,
+        data_feature=data_feature,
+    ).to(device)
+
+    start_epoch = 0
+
+    if resume:
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(
+                f"Resume requested but checkpoint does not exist: {checkpoint_path}"
+            )
+
+        logger.info("resume training from %s", checkpoint_path)
+
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+
+        generator.load_state_dict(checkpoint["generator_state_dict"])
+        discriminator.load_state_dict(checkpoint["discriminator_state_dict"])
+        start_epoch = int(checkpoint["next_epoch"])
+
+        # Refresh cached GAT node embeddings after restoring generator weights.
+        generator.function_h.update_node_emb()
+
+        # Keep the rollout model synchronized with the restored generator.
+        rollout.update_params(generator)
+
+        logger.info("resume adversarial training at epoch %d", start_epoch)
+
     else:
-        logger.info('load discriminator from save pt file.')
-        # discriminator_state = torch.load(os.path.join(save_folder, 'adversarial_discriminator.pt'),
-        #                                  map_location=device)
-        discriminator_state = torch.load(disc_path, map_location=device)
-        discriminator.load_state_dict(discriminator_state)
-    for epoch in range(total_epoch):
+        if pretrain_discriminator:
+            logger.info('start pretrain discriminator.')
+            train_discriminator(max_epoch=pretrain_dis_epoch)
+
+            # Preserve the pretrained discriminator separately so the existing
+            # pretrain_discriminator=False behavior can still load it.
+            torch.save(discriminator.state_dict(), disc_path)
+
+        else:
+            logger.info('load discriminator from save pt file.')
+            discriminator_state = torch.load(disc_path, map_location=device)
+            discriminator.load_state_dict(discriminator_state)
+
+        # If the job dies during adversarial epoch 0, discriminator pretraining
+        # does not have to be repeated.
+        save_training_checkpoint(
+            checkpoint_path,
+            next_epoch=0,
+            generator=generator,
+            discriminator=discriminator,
+        )
+
+        logger.info(
+            "saved pre-adversarial training checkpoint to %s",
+            checkpoint_path,
+        )
+
+
+    for epoch in range(start_epoch, total_epoch):
         logger.info('start train generator at epoch {}'.format(epoch))
         train_generator(stage=1)
+
         logger.info('start train discriminator at epoch {}'.format(epoch))
         train_discriminator(max_epoch=1)
+
         rollout.update_params(generator)
+
+        save_training_checkpoint(
+            checkpoint_path,
+            next_epoch=epoch + 1,
+            generator=generator,
+            discriminator=discriminator,
+        )
+
+        logger.info(
+            "saved training checkpoint after epoch %d to %s",
+            epoch,
+            checkpoint_path,
+        )
+
     # 保存本次训练的生成器与判别器
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
@@ -640,3 +736,6 @@ if __name__ == '__main__':
     # torch.save(discriminator.state_dict(), os.path.join(save_folder, 'adversarial_discriminator.pt'))
     torch.save(generator.state_dict(), save_dir / f'adversarial_3_generator_{exp_id}.pt')
     torch.save(discriminator.state_dict(), disc_path)
+
+    # The run completed successfully, so crash-recovery state is no longer needed.
+    checkpoint_path.unlink(missing_ok=True)

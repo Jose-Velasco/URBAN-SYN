@@ -58,9 +58,11 @@ class PipelineConfig:
 
     road_gan_debug: bool
     road_pretrain_discriminator: bool
+    road_gan_resume: bool
 
     region_gan_debug: bool
     region_pretrain_discriminator: bool
+    region_gan_resume: bool
 
     # Generation
     generation_mode: str
@@ -191,11 +193,14 @@ class PipelineConfig:
             road_pretrain_discriminator=_require_bool(
                 road_gan, "pretrain_discriminator"
             ),
+            road_gan_resume=_require_bool(road_gan, "resume"),
 
             region_gan_debug=_require_bool(region_gan, "debug"),
             region_pretrain_discriminator=_require_bool(
                 region_gan, "pretrain_discriminator"
             ),
+            region_gan_resume=_require_bool(region_gan, "resume"),
+
             generation_mode=_require_str(generation, "mode").lower(),
         )
 
