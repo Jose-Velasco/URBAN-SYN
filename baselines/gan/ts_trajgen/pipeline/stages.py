@@ -17,7 +17,10 @@ PIPELINE_GROUP_ORDER: tuple[str, ...] = (
 )
 
 # "train" is a convenience/meta target that runs both GAN training stages.
-VALID_GROUPS = frozenset((*PIPELINE_GROUP_ORDER, "train"))
+# setup-gans runs everything needed to start training GANs
+VALID_GROUPS = frozenset(
+    (*PIPELINE_GROUP_ORDER, "setup-gans", "train")
+)
 
 
 def build_stages(config: PipelineConfig) -> tuple[Stage, ...]:
@@ -1009,6 +1012,20 @@ def stages_for_group(
         allowed = ", ".join(sorted(VALID_GROUPS))
         raise ValueError(
             f"Unknown pipeline group {group!r}. Expected one of: {allowed}"
+        )
+
+    if group == "setup-gans":
+        setup_groups = (
+            "prepare",
+            "pretrain-road",
+            "prepare-region",
+            "pretrain-region",
+        )
+
+        return tuple(
+            stage
+            for setup_group in setup_groups
+            for stage in stages_for_group(config, setup_group)
         )
 
     if group == "train":
