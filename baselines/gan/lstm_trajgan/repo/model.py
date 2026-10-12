@@ -68,15 +68,18 @@ class LSTM_TrajGAN():
         params_dir.mkdir(parents=True, exist_ok=True)
         
         C_model_json = self.combined.to_json()
-        with open(params_dir / "C_model.json", "w") as json_file:
+        # with open(params_dir / "C_model.json", "w") as json_file:
+        with open(str(params_dir / "C_model.json"), "w") as json_file:
             json_file.write(C_model_json)
             
         G_model_json = self.generator.to_json()
-        with open(params_dir / "G_model.json", "w") as json_file:
+        # with open(params_dir / "G_model.json", "w") as json_file:
+        with open(str(params_dir / "G_model.json"), "w") as json_file:
             json_file.write(G_model_json)
         
         D_model_json = self.discriminator.to_json()
-        with open(params_dir / "D_model.json", "w") as json_file:
+        # with open(params_dir / "D_model.json", "w") as json_file:
+        with open(str(params_dir / "D_model.json"), "w") as json_file:
             json_file.write(D_model_json)
 
     def build_discriminator(self):

@@ -172,25 +172,34 @@ def predict_file_parse_args():
             "will be saved."
         ),
     )
+    parser.add_argument(
+        "--max_length",
+        type=int,
+        default=None,
+        help=(
+            "Maximum trajectory sequence length. "
+            "If omitted, it is derived from the train and test CSV files."
+        ),
+    )
 
     return parser.parse_args()
 
-def get_max_trajectory_length(
-    train_df,
-    test_df,
-    tid_col: str = "tid",
-) -> int:
-    """Return the longest trajectory length across train and test data."""
+# def get_max_trajectory_length(
+#     train_df,
+#     test_df,
+#     tid_col: str = "tid",
+# ) -> int:
+#     """Return the longest trajectory length across train and test data."""
 
-    train_max = train_df.groupby(tid_col).size().max()
-    test_max = test_df.groupby(tid_col).size().max()
+#     train_max = train_df.groupby(tid_col).size().max()
+#     test_max = test_df.groupby(tid_col).size().max()
 
-    max_length = max(train_max, test_max)
+#     max_length = max(train_max, test_max)
 
-    if max_length <= 0:
-        raise ValueError("Could not determine a valid maximum trajectory length.")
+#     if max_length <= 0:
+#         raise ValueError("Could not determine a valid maximum trajectory length.")
 
-    return int(max_length)
+#     return int(max_length)
 
 
 def save_max_length(max_length: int, output_dir: Path) -> Path:
@@ -218,7 +227,7 @@ def load_max_length(checkpoint_dir: Path) -> int:
 
     if not metadata_path.exists():
         raise FileNotFoundError(
-            f"Model metadata not found: {metadata_path}"
+            "Model metadata not found: {}".format(metadata_path)
         )
 
     with metadata_path.open("r") as file:
@@ -245,7 +254,7 @@ def get_max_trajectory_length(
 
     if max_length <= 0:
         raise ValueError(
-            f"max_length must be positive, got {max_length}."
+            "max_length must be positive, got {}.".format(max_length)
         )
 
     return max_length

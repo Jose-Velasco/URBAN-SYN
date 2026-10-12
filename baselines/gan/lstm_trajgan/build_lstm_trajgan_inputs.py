@@ -1,11 +1,23 @@
 #!/usr/bin/env python3
-"""Build project data into the CSV inputs expected by LSTM-TrajGAN.
+"""Build project trajectory data into CSV inputs expected by LSTM-TrajGAN.
 
-This script is intentionally an upstream adapter only. It does not replace
-``data/csv2npy.py`` and does not run model training or prediction.
+This script is intentionally an upstream adapter only. It does not replace the
+upstream ``data/csv2npy.py`` encoder and does not run model training or
+prediction. A future pipeline wrapper should call this script as the dataset
+preparation stage, then call the upstream encoder/training/prediction scripts.
 
-Expected source columns (MAT-Dataset enriched stop data):
-    uid, tid, lat, lng|lon, datetime, category
+Expected source columns for the default GPS-only mode (e.g. traj_cleaned):
+    uid, tid, lat, lng|lon, datetime
+
+Optional semantic mode additionally requires:
+    category
+
+Category strategies:
+    constant  Assign one fixed category ID to every GPS point. This preserves
+              the upstream 10-way category input shape while effectively
+              ablating POI/category information for preliminary GPS+time runs.
+    top10     Preserve the previous semantic-stop behavior: keep the ten most
+              frequent usable source categories and encode them as 0..9.
 
 Outputs:
     <dataset>_train_latlon.csv
@@ -15,7 +27,7 @@ Outputs:
     <dataset>_lstm_trajgan_metadata.json
 
 Auxiliary mapping files are also written so generated integer IDs/categories
-can be mapped back to the source values.
+can be mapped back to source values.
 """
 
 from __future__ import print_function
@@ -34,9 +46,10 @@ import pandas as pd
 
 
 CATEGORY_VOCAB_SIZE = 10
-REQUIRED_COLUMNS = {"uid", "tid", "lat", "datetime", "category"}
+CORE_REQUIRED_COLUMNS = {"uid", "tid", "lat", "datetime"}
 MODEL_COLUMNS = ["label", "tid", "lat", "lon", "day", "hour", "category"]
 UNKNOWN_CATEGORY_VALUES = {"", "unknown", "none", "nan", "null"}
+CATEGORY_MODES = ("constant", "top10")
 
 
 @contextmanager
@@ -57,14 +70,17 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description=(
             "Build LSTM-TrajGAN-compatible train/test CSV inputs from "
-            "project semantic trajectory data."
+            "project trajectory data."
         )
     )
     parser.add_argument(
         "--input_path",
         type=Path,
         required=True,
-        help="Source .csv or .parquet file containing semantic trajectory rows.",
+        help=(
+            "Source .csv or .parquet file. For the preliminary GPS-only run, "
+            "use MAT-Dataset traj_cleaned.parquet."
+        ),
     )
     parser.add_argument(
         "--out_dir",
@@ -88,7 +104,37 @@ def parse_args():
         "--random_state",
         type=int,
         default=101,
-        help="Random seed used for the trajectory-level split (default: 101).",
+        help="Random seed used for trajectory sampling/splitting (default: 101).",
+    )
+    parser.add_argument(
+        "--category_mode",
+        choices=CATEGORY_MODES,
+        default="constant",
+        help=(
+            "Category handling. 'constant' assigns the same category ID to "
+            "every point and is the default preliminary GPS-only baseline. "
+            "'top10' requires a source category column and keeps the ten most "
+            "frequent usable categories."
+        ),
+    )
+    parser.add_argument(
+        "--constant_category",
+        type=int,
+        default=0,
+        help=(
+            "Category ID assigned to every point when --category_mode=constant. "
+            "Must be in [0, 9] because the upstream model uses a 10-way "
+            "category vector (default: 0)."
+        ),
+    )
+    parser.add_argument(
+        "--max_trajectories",
+        type=int,
+        default=None,
+        help=(
+            "Optional trajectory-level sample limit for smoke/debug runs. "
+            "Sampling is deterministic using --random_state. Omit for a full run."
+        ),
     )
     parser.add_argument(
         "--log_dir",
@@ -97,6 +143,23 @@ def parse_args():
         help="Log directory. Defaults to <out_dir>/logs.",
     )
     return parser.parse_args()
+
+
+def validate_args(args):
+    """Validate CLI values before doing expensive work."""
+    if not 0.0 < args.train_ratio < 1.0:
+        raise ValueError("train_ratio must be strictly between 0 and 1.")
+
+    if not 0 <= args.constant_category < CATEGORY_VOCAB_SIZE:
+        raise ValueError(
+            "constant_category must be in [0, {}], got {}.".format(
+                CATEGORY_VOCAB_SIZE - 1,
+                args.constant_category,
+            )
+        )
+
+    if args.max_trajectories is not None and args.max_trajectories < 2:
+        raise ValueError("max_trajectories must be at least 2 when provided.")
 
 
 def setup_logging(log_dir, dataset_name):
@@ -144,10 +207,8 @@ def load_source(path):
                 "compatible with the container's Python version."
             ) from exc
 
-        # The LSTM-TrajGAN container uses an old pandas/pyarrow stack.
-        # Reading modern Parquet pandas metadata directly can fail, so
-        # load the Arrow table while ignoring that metadata and let the
-        # builder normalize the required columns afterward.
+        # The LSTM-TrajGAN container uses a legacy pandas/pyarrow stack.
+        # Modern pandas metadata can fail there, so intentionally ignore it.
         table = pq.read_table(
             str(path),
             use_pandas_metadata=False,
@@ -162,9 +223,9 @@ def load_source(path):
     )
 
 
-def validate_source_columns(df):
-    """Validate and normalize source column names required by the adapter."""
-    missing = sorted(REQUIRED_COLUMNS - set(df.columns))
+def validate_source_columns(df, category_mode):
+    """Validate and normalize source columns required by the adapter."""
+    missing = sorted(CORE_REQUIRED_COLUMNS - set(df.columns))
     if missing:
         raise ValueError(
             "Input is missing required columns: {}".format(", ".join(missing))
@@ -179,13 +240,19 @@ def validate_source_columns(df):
             "to avoid ambiguity."
         )
 
+    if category_mode == "top10" and "category" not in df.columns:
+        raise ValueError(
+            "--category_mode=top10 requires a source 'category' column. "
+            "Use --category_mode=constant for traj_cleaned.parquet."
+        )
+
     if "lng" in df.columns:
         df = df.rename(columns={"lng": "lon"})
 
     return df
 
 
-def clean_source_rows(df, logger):
+def clean_core_rows(df, logger):
     """Coerce core fields, remove unusable rows, and derive day/hour."""
     df = df.copy()
 
@@ -205,10 +272,71 @@ def clean_source_rows(df, logger):
         )
 
     # The paper uses seven day classes and 24 hour classes. pandas uses
-    # Monday=0 ... Sunday=6, which matches the expected one-hot index range.
+    # Monday=0 ... Sunday=6, matching the expected one-hot index range.
     df["day"] = df["datetime"].dt.dayofweek.astype(np.int32)
     df["hour"] = df["datetime"].dt.hour.astype(np.int32)
 
+    if df.empty:
+        raise ValueError("No usable rows remain after cleaning source data.")
+
+    return df, dropped_core
+
+
+def sample_trajectories(df, max_trajectories, random_state, logger):
+    """Optionally keep a deterministic trajectory-level subset for smoke runs."""
+    unique_tids = pd.Series(df["tid"].drop_duplicates().values)
+    available = int(len(unique_tids))
+
+    if max_trajectories is None or max_trajectories >= available:
+        return df, available, available
+
+    sampled_tids = unique_tids.sample(
+        n=max_trajectories,
+        random_state=random_state,
+        replace=False,
+    )
+    sampled_set = set(sampled_tids.tolist())
+    sampled_df = df[df["tid"].isin(sampled_set)].copy()
+
+    logger.info(
+        "Smoke/debug trajectory sampling: retained %d/%d trajectories (%d rows).",
+        max_trajectories,
+        available,
+        len(sampled_df),
+    )
+
+    return sampled_df, available, int(max_trajectories)
+
+
+def assign_constant_category(df, category_id, logger):
+    """Assign one category token to all points for a GPS+time baseline."""
+    df = df.copy()
+    df["category"] = np.int32(category_id)
+
+    mapping = pd.DataFrame(
+        {
+            "category": ["__constant__"],
+            "category_id": [np.int32(category_id)],
+            "count": [int(len(df))],
+        }
+    )
+
+    logger.info(
+        "Category mode=constant: assigned category=%d to all %d points.",
+        category_id,
+        len(df),
+    )
+    logger.info(
+        "The upstream model still uses its original %d-dimensional category input.",
+        CATEGORY_VOCAB_SIZE,
+    )
+
+    return df, mapping, 0, 0
+
+
+def select_top_categories(df, logger):
+    """Keep and encode the ten most frequent usable source categories."""
+    df = df.copy()
     category_text = df["category"].astype(str).str.strip()
     unknown_mask = df["category"].isna() | category_text.str.lower().isin(
         UNKNOWN_CATEGORY_VALUES
@@ -226,13 +354,8 @@ def clean_source_rows(df, logger):
     df["category"] = df["category"].astype(str).str.strip()
 
     if df.empty:
-        raise ValueError("No usable rows remain after cleaning source data.")
+        raise ValueError("No usable category rows remain after cleaning source data.")
 
-    return df, dropped_core, unknown_count
-
-
-def select_top_categories(df, logger):
-    """Keep the ten most frequent categories expected by the current model."""
     counts = (
         df.groupby("category")
         .size()
@@ -246,15 +369,15 @@ def select_top_categories(df, logger):
 
     if len(selected_categories) < CATEGORY_VOCAB_SIZE:
         logger.warning(
-            "Only %d usable categories were found; the current model still "
+            "Only %d usable categories were found; the upstream model still "
             "allocates a category vocabulary of %d.",
             len(selected_categories),
             CATEGORY_VOCAB_SIZE,
         )
 
-    before = len(df)
+    before_top10 = len(df)
     df = df[df["category"].isin(selected_categories)].copy()
-    removed = before - len(df)
+    removed = before_top10 - len(df)
 
     category_to_id = {
         category: idx for idx, category in enumerate(selected_categories)
@@ -262,10 +385,9 @@ def select_top_categories(df, logger):
     df["category"] = df["category"].map(category_to_id).astype(np.int32)
 
     logger.info(
-        "Selected top %d categories; retained %d/%d rows (removed %d).",
-        len(selected_categories),
+        "Category mode=top10: retained %d/%d categorized rows (removed %d).",
         len(df),
-        before,
+        before_top10,
         removed,
     )
     for row in selected.itertuples(index=False):
@@ -274,7 +396,18 @@ def select_top_categories(df, logger):
     selected["category_id"] = selected["category"].map(category_to_id)
     selected = selected[["category", "category_id", "count"]]
 
-    return df, selected, removed
+    return df, selected, unknown_count, removed
+
+
+def apply_category_strategy(df, category_mode, constant_category, logger):
+    """Apply the selected category representation strategy."""
+    if category_mode == "constant":
+        return assign_constant_category(df, constant_category, logger)
+
+    if category_mode == "top10":
+        return select_top_categories(df, logger)
+
+    raise ValueError("Unsupported category_mode: {}".format(category_mode))
 
 
 def build_stable_id_mapping(series, source_name, encoded_name):
@@ -322,9 +455,6 @@ def encode_identifiers(df):
 
 def split_by_trajectory(df, train_ratio, random_state):
     """Split rows by unique trajectory ID, never by individual points."""
-    if not 0.0 < train_ratio < 1.0:
-        raise ValueError("train_ratio must be strictly between 0 and 1.")
-
     unique_tids = pd.Series(df["tid"].drop_duplicates().values)
     if len(unique_tids) < 2:
         raise ValueError("At least two trajectories are required for train/test split.")
@@ -393,10 +523,12 @@ def build_model_frames(train_df, test_df, lat_centroid, lon_centroid):
 
 
 def trajectory_length_stats(df):
-    """Return trajectory length summary statistics."""
+    """Return trajectory-length statistics useful before global padding."""
     lengths = df.groupby("tid").size()
     if lengths.empty:
         raise ValueError("Cannot calculate trajectory lengths for an empty dataframe.")
+
+    values = lengths.values.astype(np.float64)
 
     return {
         "trajectories": int(len(lengths)),
@@ -404,6 +536,9 @@ def trajectory_length_stats(df):
         "max": int(lengths.max()),
         "mean": float(lengths.mean()),
         "median": float(lengths.median()),
+        "p90": float(np.percentile(values, 90)),
+        "p95": float(np.percentile(values, 95)),
+        "p99": float(np.percentile(values, 99)),
     }
 
 
@@ -423,6 +558,7 @@ def write_json(data, path):
 def main():
     """Run the LSTM-TrajGAN input build."""
     args = parse_args()
+    validate_args(args)
     total_start = time.perf_counter()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -438,7 +574,10 @@ def main():
     logger.info("out_dir=%s", args.out_dir)
     logger.info("train_ratio=%.4f", args.train_ratio)
     logger.info("random_state=%d", args.random_state)
+    logger.info("category_mode=%s", args.category_mode)
+    logger.info("constant_category=%d", args.constant_category)
     logger.info("category_vocab_size=%d", CATEGORY_VOCAB_SIZE)
+    logger.info("max_trajectories=%s", args.max_trajectories)
     logger.info("log_file=%s", log_path)
 
     if not args.input_path.exists():
@@ -454,14 +593,30 @@ def main():
         )
 
     with timed_stage(logger, timings, "clean_and_prepare"):
-        df = validate_source_columns(source_df)
+        df = validate_source_columns(source_df, args.category_mode)
         source_trajectories = int(df["tid"].nunique(dropna=True))
         source_users = int(df["uid"].nunique(dropna=True))
 
-        df, dropped_core, unknown_category_rows = clean_source_rows(df, logger)
-        df, category_mapping, rows_removed_by_category = select_top_categories(
-            df, logger
+        df, dropped_core = clean_core_rows(df, logger)
+        cleaned_rows = int(len(df))
+        cleaned_trajectories = int(df["tid"].nunique())
+
+        df, sample_available, sample_selected = sample_trajectories(
+            df,
+            max_trajectories=args.max_trajectories,
+            random_state=args.random_state,
+            logger=logger,
         )
+
+        df, category_mapping, unknown_category_rows, rows_removed_by_category = (
+            apply_category_strategy(
+                df,
+                category_mode=args.category_mode,
+                constant_category=args.constant_category,
+                logger=logger,
+            )
+        )
+
         df, label_mapping, tid_mapping = encode_identifiers(df)
 
         if df.empty:
@@ -504,8 +659,17 @@ def main():
             scale_factor,
         )
         logger.info(
-            "Trajectory lengths: overall max=%d | train max=%d | test max=%d",
-            max_length,
+            "Trajectory lengths: min=%d | median=%.1f | mean=%.2f | "
+            "p95=%.1f | p99=%.1f | max=%d",
+            overall_stats["min"],
+            overall_stats["median"],
+            overall_stats["mean"],
+            overall_stats["p95"],
+            overall_stats["p99"],
+            overall_stats["max"],
+        )
+        logger.info(
+            "Split max lengths: train=%d | test=%d",
             train_stats["max"],
             test_stats["max"],
         )
@@ -557,7 +721,10 @@ def main():
         "parameters": {
             "train_ratio": float(args.train_ratio),
             "random_state": int(args.random_state),
+            "category_mode": args.category_mode,
+            "constant_category": int(args.constant_category),
             "category_vocab_size": CATEGORY_VOCAB_SIZE,
+            "max_trajectories": args.max_trajectories,
             "split_unit": "trajectory_tid",
         },
         "source_summary": {
@@ -565,6 +732,17 @@ def main():
             "trajectories": source_trajectories,
             "users": source_users,
             "dropped_invalid_core_rows": int(dropped_core),
+            "cleaned_rows": cleaned_rows,
+            "cleaned_trajectories": cleaned_trajectories,
+        },
+        "sampling_summary": {
+            "available_trajectories": int(sample_available),
+            "selected_trajectories": int(sample_selected),
+            "limit_applied": args.max_trajectories is not None
+            and args.max_trajectories < sample_available,
+        },
+        "category_summary": {
+            "mode": args.category_mode,
             "excluded_unknown_category_rows": int(unknown_category_rows),
             "removed_outside_top_categories": int(rows_removed_by_category),
         },
@@ -572,7 +750,7 @@ def main():
             "rows": int(len(df)),
             "trajectories": int(df["tid"].nunique()),
             "users": int(df["label"].nunique()),
-            "categories": int(df["category"].nunique()),
+            "categories_present": int(df["category"].nunique()),
         },
         "split_summary": {
             "train_rows": int(len(train_df)),
@@ -613,7 +791,8 @@ def main():
         test_df["tid"].nunique(),
     )
     logger.info("Prepared users: %d", df["label"].nunique())
-    logger.info("Categories: %d", df["category"].nunique())
+    logger.info("Category mode: %s", args.category_mode)
+    logger.info("Categories present: %d", df["category"].nunique())
     logger.info("Cached max_length: %d", max_length)
     logger.info("Train rows: %d", len(train_df))
     logger.info("Test rows: %d", len(test_df))

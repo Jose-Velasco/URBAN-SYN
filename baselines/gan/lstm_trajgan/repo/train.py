@@ -38,17 +38,17 @@ if __name__ == '__main__':
     if args.max_length is not None:
         if args.max_length <= 0:
             raise ValueError(
-                f"--max_length must be positive, got {args.max_length}."
+                "--max_length must be positive, got {}.".format(args.max_length)
             )
 
         max_length = args.max_length
-        print(f"Using provided max_length: {max_length}")
+        print("Using provided max_length: {}".format(max_length))
     else:
         max_length = get_max_trajectory_length(
             train_df=tr,
             test_df=te,
         )
-        print(f"Derived max_length from dataset: {max_length}")
+        print("Derived max_length from dataset: {}".format(max_length))
     
     lat_centroid = (tr['lat'].sum() + te['lat'].sum())/(len(tr)+len(te))
     lon_centroid = (tr['lon'].sum() + te['lon'].sum())/(len(tr)+len(te))

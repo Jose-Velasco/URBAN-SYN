@@ -1,0 +1,31 @@
+dataset:
+  name: nyc
+
+paths:
+  workspace: /workspace
+  repo: /workspace/repo
+
+  data: /workspace/data/nyc_full
+  outputs: /workspace/outputs/lstm_trajgan_nyc_full
+
+  source: /workspace/upstream/data/nyc_output_tabular/output/traj_cleaned.parquet
+  builder: /workspace/build_lstm_trajgan_inputs.py
+
+build:
+  train_ratio: 0.8
+  random_state: 101
+  category_mode: constant
+  constant_category: 0
+  max_trajectories: null
+
+encode:
+  tid_col: tid
+
+train:
+  epochs: 2000
+  batch_size: 256
+  save_params_rate: 100
+  max_length: 602
+
+generate:
+  checkpoint_epoch: null
