@@ -72,8 +72,33 @@ if __name__ == '__main__':
     # final_train.npy: 5 arrays needed for training
     # final_test.npy: 7 arrays needed for prediction/reconstruction
     # https://github.com/GeoDS/LSTM-TrajGAN/issues/5
-    x_test = [x_test[0],x_test[1],x_test[2],x_test[3],x_test[4],x_test[5].reshape(-1,1),x_test[6].reshape(-1,1)]
-    X_test = [pad_sequences(f, max_length, padding='pre', dtype='float64') for f in x_test[:5]]
+    # x_test = [x_test[0],x_test[1],x_test[2],x_test[3],x_test[4],x_test[5].reshape(-1,1),x_test[6].reshape(-1,1)]
+    # X_test = [pad_sequences(f, max_length, padding='pre', dtype='float64') for f in x_test[:5]]
+    x_test = [
+        x_test[0],
+        x_test[1],
+        x_test[2],
+        x_test[3],
+        x_test[4],
+        x_test[5].reshape(-1, 1),
+        x_test[6].reshape(-1, 1),
+    ]
+
+    # pad_sequences(..., padding='pre') also uses the default
+    # truncating='pre'. If a trajectory is longer than max_length,
+    # only its final max_length points are kept.
+    original_lengths = x_test[6].reshape(-1).astype(np.int32)
+    effective_lengths = np.minimum(original_lengths, max_length)
+
+    X_test = [
+        pad_sequences(
+            feature,
+            max_length,
+            padding='pre',
+            dtype='float64',
+        )
+        for feature in x_test[:5]
+    ]
     
     # Add random noise to the data
     # 1027 comes from the original authors' test-set size
@@ -103,29 +128,99 @@ if __name__ == '__main__':
     
     # Make predictions
     prediction = gan.generator.predict(X_test)
-    
+
     traj_attr_concat_list = []
+
     for attributes in prediction:
         traj_attr_list = []
-        idx = 0
-        for row in attributes:
+
+        for idx, row in enumerate(attributes):
+            count = int(effective_lengths[idx])
+
             if row.shape == (max_length, 2):
-                traj_attr_list.append(row[max_length-x_test[6][idx][0]:])
+                # Latitude/longitude output.
+                traj_attr_list.append(
+                    row[max_length - count:]
+                )
             else:
-                traj_attr_list.append(np.argmax(row[max_length-x_test[6][idx][0]:],axis=1).reshape(x_test[6][idx][0],1))
-            idx += 1
+                # Day, hour, category, or mask output.
+                predicted_class = np.argmax(
+                    row[max_length - count:],
+                    axis=1,
+                )
+
+                traj_attr_list.append(
+                    predicted_class.reshape(count, 1)
+                )
+
         traj_attr_concat = np.concatenate(traj_attr_list)
         traj_attr_concat_list.append(traj_attr_concat)
-    traj_data = np.concatenate(traj_attr_concat_list,axis=1)
-    
-    # df_test = pd.read_csv('data/dev_test_encoded_final.csv')
+
+    traj_data = np.concatenate(
+        traj_attr_concat_list,
+        axis=1,
+    )
+
+    # Original encoded test rows.
     df_test = pd.read_csv(
         args.encoded_test_csv
     )
 
-    label = np.array(df_test['label']).reshape(-1,1)
-    tid = np.array(df_test['tid']).reshape(-1,1)
-    traj_data = np.concatenate([label,tid,traj_data],axis=1)
+    # Keep the metadata rows aligned with the same pre-truncation performed
+    # by pad_sequences. Trajectories <= max_length are unchanged. For a
+    # trajectory longer than max_length, keep only its final max_length rows.
+    trimmed_test_parts = []
+
+    for idx in range(len(effective_lengths)):
+        tid_value = x_test[5][idx][0]
+        count = int(effective_lengths[idx])
+
+        traj_rows = df_test.loc[
+            df_test['tid'].isin([tid_value])
+        ]
+
+        if len(traj_rows) < count:
+            raise ValueError(
+                "Encoded test CSV contains fewer rows than expected "
+                "for tid {}: expected {}, found {}.".format(
+                    tid_value,
+                    count,
+                    len(traj_rows),
+                )
+            )
+
+        trimmed_test_parts.append(
+            traj_rows.tail(count)
+        )
+
+    df_test = pd.concat(
+        trimmed_test_parts,
+        ignore_index=True,
+    )
+
+    # Safety check before combining metadata with generated attributes.
+    if len(df_test) != traj_data.shape[0]:
+        raise ValueError(
+            "Generated trajectory rows ({}) do not match "
+            "aligned test rows ({}).".format(
+                traj_data.shape[0],
+                len(df_test),
+            )
+        )
+
+    label = np.array(
+        df_test['label']
+    ).reshape(-1, 1)
+
+    tid = np.array(
+        df_test['tid']
+    ).reshape(-1, 1)
+
+    traj_data = np.concatenate(
+        [label, tid, traj_data],
+        axis=1,
+    )
+
     df_traj_fin = pd.DataFrame(traj_data)
     
     df_traj_fin.columns = ['label','tid','lat','lon','day', 'hour', 'category','mask']
