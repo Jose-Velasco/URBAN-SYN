@@ -39,7 +39,7 @@ encode:
 
 train:
   epochs: 2000
-  batch_size: 256
+  batch_size: 32
   save_params_rate: 100
 
   # null = derive from the train/test CSVs.
