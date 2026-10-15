@@ -46,7 +46,7 @@ train:
   # Use the same value for training and generation.
   # max_length: null
 
-  max_length: 602
+  max_length: null
 
 generate:
   # null = use train.epochs.
