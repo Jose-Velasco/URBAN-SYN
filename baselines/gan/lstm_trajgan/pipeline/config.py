@@ -21,6 +21,8 @@ class PipelineConfig(object):
         data_dir,
         outputs_dir,
         source_path,
+        train_source_path,
+        test_source_path,
         builder_path,
         train_ratio,
         random_state,
@@ -40,6 +42,8 @@ class PipelineConfig(object):
         self.data_dir = data_dir
         self.outputs_dir = outputs_dir
         self.source_path = source_path
+        self.train_source_path = train_source_path
+        self.test_source_path = test_source_path
         self.builder_path = builder_path
 
         self.train_ratio = train_ratio
@@ -127,14 +131,36 @@ class PipelineConfig(object):
         return self.checkpoint_dir / "G_model_{}.h5".format(
             self.checkpoint_epoch
         )
+    @property
+    def uses_pre_split_inputs(self):
+        """Return True when explicit train/test source files are configured."""
+        return self.train_source_path is not None
+
+    @property
+    def input_mode(self):
+        """Return the configured dataset input mode."""
+        if self.uses_pre_split_inputs:
+            return "pre_split"
+
+        return "single_source_split"
+
+    @property
+    def source_paths(self):
+        """Return all source files required by the build stage."""
+        if self.uses_pre_split_inputs:
+            return (
+                self.train_source_path,
+                self.test_source_path,
+            )
+
+        return (self.source_path,)
 
     def validate(self):
         """Validate the small set of settings needed by the wrapper."""
         if not self.dataset_name:
             raise ValueError("dataset.name cannot be empty.")
 
-        if not 0.0 < self.train_ratio < 1.0:
-            raise ValueError("build.train_ratio must be between 0 and 1.")
+        self._validate_source_inputs()
 
         if self.category_mode not in _CATEGORY_MODES:
             allowed = ", ".join(sorted(_CATEGORY_MODES))
@@ -176,6 +202,40 @@ class PipelineConfig(object):
                 "train.save_params_rate so the requested checkpoint is saved."
             )
 
+    def _validate_source_inputs(self):
+        """Validate mutually exclusive combined and pre-split input modes."""
+        has_source = self.source_path is not None
+        has_train = self.train_source_path is not None
+        has_test = self.test_source_path is not None
+
+        if has_source and (has_train or has_test):
+            raise ValueError(
+                "Configure either paths.source or the "
+                "paths.train_source/paths.test_source pair, not both."
+            )
+
+        if not has_source and not (has_train and has_test):
+            raise ValueError(
+                "Configure either paths.source or both "
+                "paths.train_source and paths.test_source."
+            )
+
+        if has_source:
+            self._validate_train_ratio()
+
+
+    def _validate_train_ratio(self):
+        """Validate the split ratio used for a combined source dataset."""
+        if self.train_ratio is None:
+            raise ValueError(
+                "build.train_ratio is required when paths.source is used."
+            )
+
+        if not 0.0 < self.train_ratio < 1.0:
+            raise ValueError(
+                "build.train_ratio must be between 0 and 1."
+            )
+
 
 def load_pipeline_config(config_path):
     """Load a YAML wrapper config and return a validated PipelineConfig."""
@@ -208,7 +268,10 @@ def load_pipeline_config(config_path):
     repo_dir = _as_path(_require_value(paths, "repo"))
     data_dir = _as_path(_require_value(paths, "data"))
     outputs_dir = _as_path(_require_value(paths, "outputs"))
-    source_path = _as_path(_require_value(paths, "source"))
+
+    source_path = _optional_path(paths, "source")
+    train_source_path = _optional_path(paths, "train_source")
+    test_source_path = _optional_path(paths, "test_source")
     builder_path = _as_path(_require_value(paths, "builder"))
 
     checkpoint_epoch = generate.get("checkpoint_epoch")
@@ -238,8 +301,10 @@ def load_pipeline_config(config_path):
         data_dir=data_dir,
         outputs_dir=outputs_dir,
         source_path=source_path,
+        train_source_path=train_source_path,
+        test_source_path=test_source_path,
         builder_path=builder_path,
-        train_ratio=_require_number(build, "train_ratio"),
+        train_ratio=_optional_number(build, "train_ratio"),
         random_state=_require_int(build, "random_state"),
         category_mode=_require_str(build, "category_mode").lower(),
         constant_category=_require_int(build, "constant_category"),
@@ -258,6 +323,14 @@ def _as_path(value):
         raise TypeError("Configured paths must be strings.")
     return Path(value).expanduser()
 
+def _optional_path(mapping, key):
+    """Read an optional filesystem path from a YAML mapping."""
+    value = mapping.get(key)
+
+    if value is None:
+        return None
+
+    return _as_path(value)
 
 def _require_mapping(mapping, key):
     value = _require_value(mapping, key)
@@ -297,6 +370,19 @@ def _require_number(mapping, key):
         raise TypeError("'{}' must be a number.".format(key))
     return float(value)
 
+def _optional_number(mapping, key):
+    """Read an optional numeric value from a YAML mapping."""
+    value = mapping.get(key)
+
+    if value is None:
+        return None
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(
+            "'{}' must be a number or null.".format(key)
+        )
+
+    return float(value)
 
 def _positive_int_value(value, label):
     if isinstance(value, bool) or not isinstance(value, int):

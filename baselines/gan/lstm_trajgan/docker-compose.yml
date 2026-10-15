@@ -15,7 +15,7 @@ services:
       # - ./outputs:/workspace/outputs
 
       # Read-only MAT-Dataset semantic trajectory source.
-      - ../../../data/nyc_output_tabular/output:/workspace/upstream/data/nyc_output_tabular/output:ro
+      - ../../../data:/workspace/upstream/data:ro
     gpus: all
     shm_size: "8g"
     tty: true

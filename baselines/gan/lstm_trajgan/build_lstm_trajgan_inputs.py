@@ -40,6 +40,7 @@ import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -76,10 +77,29 @@ def parse_args():
     parser.add_argument(
         "--input_path",
         type=Path,
-        required=True,
+        default=None,
         help=(
-            "Source .csv or .parquet file. For the preliminary GPS-only run, "
-            "use MAT-Dataset traj_cleaned.parquet."
+            "Combined source .csv or .parquet file. The adapter will split "
+            "trajectories using --train_ratio. Cannot be combined with "
+            "--train_input_path/--test_input_path."
+        ),
+    )
+    parser.add_argument(
+        "--train_input_path",
+        type=Path,
+        default=None,
+        help=(
+            "Optional pre-split training .csv or .parquet file. Must be used "
+            "together with --test_input_path and without --input_path."
+        ),
+    )
+    parser.add_argument(
+        "--test_input_path",
+        type=Path,
+        default=None,
+        help=(
+            "Optional pre-split test .csv or .parquet file. Must be used "
+            "together with --train_input_path and without --input_path."
         ),
     )
     parser.add_argument(
@@ -145,20 +165,44 @@ def parse_args():
     return parser.parse_args()
 
 
-def validate_args(args):
+def validate_options(
+    input_path,
+    train_input_path,
+    test_input_path,
+    train_ratio,
+    constant_category,
+    max_trajectories,
+):
+    # type: (Optional[Path], Optional[Path], Optional[Path], float, int, Optional[int]) -> None
     """Validate CLI values before doing expensive work."""
-    if not 0.0 < args.train_ratio < 1.0:
+    has_combined_input = input_path is not None
+    has_train_input = train_input_path is not None
+    has_test_input = test_input_path is not None
+
+    if has_combined_input and (has_train_input or has_test_input):
+        raise ValueError(
+            "Use either --input_path or the explicit "
+            "--train_input_path/--test_input_path pair, not both."
+        )
+
+    if not has_combined_input and not (has_train_input and has_test_input):
+        raise ValueError(
+            "Provide either --input_path or both --train_input_path "
+            "and --test_input_path."
+        )
+
+    if has_combined_input and not 0.0 < train_ratio < 1.0:
         raise ValueError("train_ratio must be strictly between 0 and 1.")
 
-    if not 0 <= args.constant_category < CATEGORY_VOCAB_SIZE:
+    if not 0 <= constant_category < CATEGORY_VOCAB_SIZE:
         raise ValueError(
             "constant_category must be in [0, {}], got {}.".format(
                 CATEGORY_VOCAB_SIZE - 1,
-                args.constant_category,
+                constant_category,
             )
         )
 
-    if args.max_trajectories is not None and args.max_trajectories < 2:
+    if max_trajectories is not None and max_trajectories < 2:
         raise ValueError("max_trajectories must be at least 2 when provided.")
 
 
@@ -555,158 +599,365 @@ def write_json(data, path):
         json.dump(data, file, indent=2, sort_keys=True)
 
 
-def main():
-    """Run the LSTM-TrajGAN input build."""
-    args = parse_args()
-    validate_args(args)
-    total_start = time.perf_counter()
+def resolve_input_mode(train_input_path):
+    # type: (Optional[Path]) -> Tuple[bool, str]
+    """Return whether pre-split inputs are used and the metadata mode label."""
+    explicit_split = train_input_path is not None
+    input_mode = "pre_split" if explicit_split else "single_source_split"
+    return explicit_split, input_mode
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    log_dir = args.log_dir if args.log_dir is not None else args.out_dir / "logs"
-    logger, log_path = setup_logging(log_dir, args.dataset_name)
-    timings = {}
 
+def log_build_configuration(
+    logger,
+    dataset_name,
+    input_mode,
+    input_path,
+    train_input_path,
+    test_input_path,
+    out_dir,
+    train_ratio,
+    explicit_split,
+    random_state,
+    category_mode,
+    constant_category,
+    max_trajectories,
+    log_path,
+):
+    """Log the resolved build configuration once at startup."""
     logger.info("=" * 72)
     logger.info("LSTM-TrajGAN input build")
     logger.info("=" * 72)
-    logger.info("dataset_name=%s", args.dataset_name)
-    logger.info("input_path=%s", args.input_path)
-    logger.info("out_dir=%s", args.out_dir)
-    logger.info("train_ratio=%.4f", args.train_ratio)
-    logger.info("random_state=%d", args.random_state)
-    logger.info("category_mode=%s", args.category_mode)
-    logger.info("constant_category=%d", args.constant_category)
+    logger.info("dataset_name=%s", dataset_name)
+    logger.info("input_mode=%s", input_mode)
+    logger.info("input_path=%s", input_path)
+    logger.info("train_input_path=%s", train_input_path)
+    logger.info("test_input_path=%s", test_input_path)
+    logger.info("out_dir=%s", out_dir)
+    logger.info("train_ratio=%s", train_ratio if not explicit_split else "n/a")
+    logger.info("random_state=%d", random_state)
+    logger.info("category_mode=%s", category_mode)
+    logger.info("constant_category=%d", constant_category)
     logger.info("category_vocab_size=%d", CATEGORY_VOCAB_SIZE)
-    logger.info("max_trajectories=%s", args.max_trajectories)
+    logger.info("max_trajectories=%s", max_trajectories)
     logger.info("log_file=%s", log_path)
 
-    if not args.input_path.exists():
-        raise FileNotFoundError("Input file does not exist: {}".format(args.input_path))
 
-    with timed_stage(logger, timings, "load_source"):
-        source_df = load_source(args.input_path)
-        source_rows = int(len(source_df))
-        logger.info(
-            "Loaded %d rows and %d columns.",
-            source_rows,
-            len(source_df.columns),
+def require_existing_path(path, argument_name):
+    # type: (Optional[Path], str) -> Path
+    """Return an existing path or raise a CLI-oriented error."""
+    if path is None:
+        raise ValueError("{} was not provided.".format(argument_name))
+
+    if not path.exists():
+        raise FileNotFoundError(
+            "{} does not exist: {}".format(argument_name, path)
         )
 
-    with timed_stage(logger, timings, "clean_and_prepare"):
-        df = validate_source_columns(source_df, args.category_mode)
-        source_trajectories = int(df["tid"].nunique(dropna=True))
-        source_users = int(df["uid"].nunique(dropna=True))
+    return path
 
-        df, dropped_core = clean_core_rows(df, logger)
-        cleaned_rows = int(len(df))
-        cleaned_trajectories = int(df["tid"].nunique())
 
-        df, sample_available, sample_selected = sample_trajectories(
-            df,
-            max_trajectories=args.max_trajectories,
-            random_state=args.random_state,
-            logger=logger,
+def load_validated_source(path, category_mode):
+    """Load one source dataset and normalize its required columns."""
+    df = load_source(path)
+    return validate_source_columns(df, category_mode)
+
+
+def validate_no_trajectory_overlap(train_df, test_df, context):
+    """Raise when a trajectory ID occurs in both sides of a split."""
+    train_tids = set(train_df["tid"].dropna().tolist())
+    test_tids = set(test_df["tid"].dropna().tolist())
+    overlap = train_tids & test_tids
+
+    if overlap:
+        raise ValueError(
+            "Trajectory leakage detected {}: {} tids appear in both "
+            "train and test datasets.".format(context, len(overlap))
         )
 
-        df, category_mapping, unknown_category_rows, rows_removed_by_category = (
-            apply_category_strategy(
-                df,
-                category_mode=args.category_mode,
-                constant_category=args.constant_category,
-                logger=logger,
-            )
+
+def load_pre_split_sources(
+    train_input_path,
+    test_input_path,
+    category_mode,
+):
+    """Load explicit train/test inputs while preserving their split membership."""
+    train_path = require_existing_path(
+        train_input_path,
+        "--train_input_path",
+    )
+    test_path = require_existing_path(
+        test_input_path,
+        "--test_input_path",
+    )
+
+    train_df = load_validated_source(train_path, category_mode)
+    test_df = load_validated_source(test_path, category_mode)
+
+    validate_no_trajectory_overlap(
+        train_df,
+        test_df,
+        "in explicit source files",
+    )
+
+    train_df = train_df.copy()
+    test_df = test_df.copy()
+    train_df["__input_split"] = "train"
+    test_df["__input_split"] = "test"
+
+    return pd.concat(
+        [train_df, test_df],
+        ignore_index=True,
+    )
+
+
+def load_combined_source(input_path, category_mode):
+    """Load the single-source mode used with a trajectory-level random split."""
+    source_path = require_existing_path(input_path, "--input_path")
+    return load_validated_source(source_path, category_mode)
+
+
+def load_input_data(
+    input_path,
+    train_input_path,
+    test_input_path,
+    explicit_split,
+    category_mode,
+):
+    """Load either one combined source or an explicit train/test pair."""
+    if explicit_split:
+        return load_pre_split_sources(
+            train_input_path,
+            test_input_path,
+            category_mode,
         )
 
-        df, label_mapping, tid_mapping = encode_identifiers(df)
+    return load_combined_source(
+        input_path,
+        category_mode,
+    )
 
-        if df.empty:
-            raise ValueError("No rows remain after LSTM-TrajGAN input preparation.")
 
-    with timed_stage(logger, timings, "trajectory_split"):
-        train_df, test_df = split_by_trajectory(
-            df,
-            train_ratio=args.train_ratio,
-            random_state=args.random_state,
-        )
-        logger.info(
-            "Trajectory split: train=%d trajectories / %d rows | "
-            "test=%d trajectories / %d rows",
-            train_df["tid"].nunique(),
-            len(train_df),
-            test_df["tid"].nunique(),
-            len(test_df),
-        )
+def prepare_source_data(
+    source_df,
+    max_trajectories,
+    random_state,
+    category_mode,
+    constant_category,
+    logger,
+):
+    """Clean, sample, categorize, and encode a loaded source dataframe."""
+    source_trajectories = int(source_df["tid"].nunique(dropna=True))
+    source_users = int(source_df["uid"].nunique(dropna=True))
 
-    with timed_stage(logger, timings, "normalization_and_frames"):
-        lat_centroid, lon_centroid, scale_factor = calculate_normalization(df)
-        train_raw, test_raw, train_encoded, test_encoded = build_model_frames(
-            train_df,
-            test_df,
-            lat_centroid,
-            lon_centroid,
-        )
+    df, dropped_core = clean_core_rows(source_df, logger)
+    cleaned_rows = int(len(df))
+    cleaned_trajectories = int(df["tid"].nunique())
 
-        overall_stats = trajectory_length_stats(df)
-        train_stats = trajectory_length_stats(train_df)
-        test_stats = trajectory_length_stats(test_df)
-        max_length = int(overall_stats["max"])
+    df, sample_available, sample_selected = sample_trajectories(
+        df,
+        max_trajectories=max_trajectories,
+        random_state=random_state,
+        logger=logger,
+    )
 
-        logger.info(
-            "Normalization: lat_centroid=%.8f | lon_centroid=%.8f | "
-            "scale_factor=%.8f",
-            lat_centroid,
-            lon_centroid,
-            scale_factor,
-        )
-        logger.info(
-            "Trajectory lengths: min=%d | median=%.1f | mean=%.2f | "
-            "p95=%.1f | p99=%.1f | max=%d",
-            overall_stats["min"],
-            overall_stats["median"],
-            overall_stats["mean"],
-            overall_stats["p95"],
-            overall_stats["p99"],
-            overall_stats["max"],
-        )
-        logger.info(
-            "Split max lengths: train=%d | test=%d",
-            train_stats["max"],
-            test_stats["max"],
-        )
+    (
+        df,
+        category_mapping,
+        unknown_category_rows,
+        rows_removed_by_category,
+    ) = apply_category_strategy(
+        df,
+        category_mode=category_mode,
+        constant_category=constant_category,
+        logger=logger,
+    )
 
-    prefix = args.dataset_name
-    paths = {
-        "train_latlon": args.out_dir / "{}_train_latlon.csv".format(prefix),
-        "test_latlon": args.out_dir / "{}_test_latlon.csv".format(prefix),
-        "train_encoded": args.out_dir
-        / "{}_dev_train_encoded_final.csv".format(prefix),
-        "test_encoded": args.out_dir
-        / "{}_dev_test_encoded_final.csv".format(prefix),
-        "metadata": args.out_dir
-        / "{}_lstm_trajgan_metadata.json".format(prefix),
-        "category_mapping": args.out_dir
-        / "{}_lstm_trajgan_category_mapping.csv".format(prefix),
-        "label_mapping": args.out_dir
-        / "{}_lstm_trajgan_label_mapping.csv".format(prefix),
-        "tid_mapping": args.out_dir
-        / "{}_lstm_trajgan_tid_mapping.csv".format(prefix),
+    df, label_mapping, tid_mapping = encode_identifiers(df)
+
+    if df.empty:
+        raise ValueError("No rows remain after LSTM-TrajGAN input preparation.")
+
+    preparation_stats = {
+        "source_trajectories": source_trajectories,
+        "source_users": source_users,
+        "dropped_core": int(dropped_core),
+        "cleaned_rows": cleaned_rows,
+        "cleaned_trajectories": cleaned_trajectories,
+        "sample_available": int(sample_available),
+        "sample_selected": int(sample_selected),
+        "unknown_category_rows": int(unknown_category_rows),
+        "rows_removed_by_category": int(rows_removed_by_category),
     }
 
-    with timed_stage(logger, timings, "write_artifacts"):
-        write_csv(train_raw, paths["train_latlon"])
-        write_csv(test_raw, paths["test_latlon"])
-        write_csv(train_encoded, paths["train_encoded"])
-        write_csv(test_encoded, paths["test_encoded"])
-        write_csv(category_mapping, paths["category_mapping"])
-        write_csv(label_mapping, paths["label_mapping"])
-        write_csv(tid_mapping, paths["tid_mapping"])
+    return (
+        df,
+        category_mapping,
+        label_mapping,
+        tid_mapping,
+        preparation_stats,
+    )
 
-    total_elapsed = time.perf_counter() - total_start
-    timings["total"] = round(total_elapsed, 3)
 
-    category_records = []
+def split_explicit_inputs(df):
+    """Recover the original train/test membership after shared preprocessing."""
+    train_df = df[df["__input_split"] == "train"].copy()
+    test_df = df[df["__input_split"] == "test"].copy()
+
+    if train_df.empty or test_df.empty:
+        raise ValueError(
+            "Explicit train/test inputs must both retain at least one "
+            "trajectory after preprocessing."
+        )
+
+    validate_no_trajectory_overlap(
+        train_df,
+        test_df,
+        "after preprocessing",
+    )
+
+    return train_df, test_df
+
+
+def build_train_test_split(
+    df,
+    explicit_split,
+    train_ratio,
+    random_state,
+    logger,
+):
+    """Build or recover the train/test split and log its final size."""
+    if explicit_split:
+        train_df, test_df = split_explicit_inputs(df)
+        logger.info(
+            "Using explicit train/test input files; no random split applied."
+        )
+    else:
+        train_df, test_df = split_by_trajectory(
+            df,
+            train_ratio=train_ratio,
+            random_state=random_state,
+        )
+
+    logger.info(
+        "Trajectory split: train=%d trajectories / %d rows | "
+        "test=%d trajectories / %d rows",
+        train_df["tid"].nunique(),
+        len(train_df),
+        test_df["tid"].nunique(),
+        len(test_df),
+    )
+
+    return train_df, test_df
+
+
+def prepare_model_outputs(df, train_df, test_df, logger):
+    """Build normalized model frames and trajectory-length metadata."""
+    lat_centroid, lon_centroid, scale_factor = calculate_normalization(df)
+
+    train_raw, test_raw, train_encoded, test_encoded = build_model_frames(
+        train_df,
+        test_df,
+        lat_centroid,
+        lon_centroid,
+    )
+
+    overall_stats = trajectory_length_stats(df)
+    train_stats = trajectory_length_stats(train_df)
+    test_stats = trajectory_length_stats(test_df)
+    max_length = int(overall_stats["max"])
+
+    logger.info(
+        "Normalization: lat_centroid=%.8f | lon_centroid=%.8f | "
+        "scale_factor=%.8f",
+        lat_centroid,
+        lon_centroid,
+        scale_factor,
+    )
+    logger.info(
+        "Trajectory lengths: min=%d | median=%.1f | mean=%.2f | "
+        "p95=%.1f | p99=%.1f | max=%d",
+        overall_stats["min"],
+        overall_stats["median"],
+        overall_stats["mean"],
+        overall_stats["p95"],
+        overall_stats["p99"],
+        overall_stats["max"],
+    )
+    logger.info(
+        "Split max lengths: train=%d | test=%d",
+        train_stats["max"],
+        test_stats["max"],
+    )
+
+    normalization = {
+        "lat_centroid": lat_centroid,
+        "lon_centroid": lon_centroid,
+        "scale_factor": scale_factor,
+        "encoded_coordinate_definition": "raw_coordinate_minus_global_centroid",
+    }
+    trajectory_stats = {
+        "max_length": max_length,
+        "overall": overall_stats,
+        "train": train_stats,
+        "test": test_stats,
+    }
+
+    return (
+        train_raw,
+        test_raw,
+        train_encoded,
+        test_encoded,
+        normalization,
+        trajectory_stats,
+    )
+
+
+def build_output_paths(out_dir, dataset_name):
+    """Return all artifact paths produced by this adapter."""
+    return {
+        "train_latlon": out_dir / "{}_train_latlon.csv".format(dataset_name),
+        "test_latlon": out_dir / "{}_test_latlon.csv".format(dataset_name),
+        "train_encoded": out_dir
+        / "{}_dev_train_encoded_final.csv".format(dataset_name),
+        "test_encoded": out_dir
+        / "{}_dev_test_encoded_final.csv".format(dataset_name),
+        "metadata": out_dir
+        / "{}_lstm_trajgan_metadata.json".format(dataset_name),
+        "category_mapping": out_dir
+        / "{}_lstm_trajgan_category_mapping.csv".format(dataset_name),
+        "label_mapping": out_dir
+        / "{}_lstm_trajgan_label_mapping.csv".format(dataset_name),
+        "tid_mapping": out_dir
+        / "{}_lstm_trajgan_tid_mapping.csv".format(dataset_name),
+    }
+
+
+def write_build_artifacts(
+    paths,
+    train_raw,
+    test_raw,
+    train_encoded,
+    test_encoded,
+    category_mapping,
+    label_mapping,
+    tid_mapping,
+):
+    """Write all non-metadata build artifacts."""
+    write_csv(train_raw, paths["train_latlon"])
+    write_csv(test_raw, paths["test_latlon"])
+    write_csv(train_encoded, paths["train_encoded"])
+    write_csv(test_encoded, paths["test_encoded"])
+    write_csv(category_mapping, paths["category_mapping"])
+    write_csv(label_mapping, paths["label_mapping"])
+    write_csv(tid_mapping, paths["tid_mapping"])
+
+
+def category_mapping_records(category_mapping):
+    """Convert the category mapping dataframe into JSON-safe records."""
+    records = []
+
     for row in category_mapping.itertuples(index=False):
-        category_records.append(
+        records.append(
             {
                 "source_category": str(row.category),
                 "category": int(row.category_id),
@@ -714,37 +965,90 @@ def main():
             }
         )
 
-    metadata = {
-        "dataset_name": args.dataset_name,
+    return records
+
+
+def build_metadata(
+    dataset_name,
+    input_mode,
+    input_path,
+    train_input_path,
+    test_input_path,
+    explicit_split,
+    train_ratio,
+    random_state,
+    category_mode,
+    constant_category,
+    max_trajectories,
+    source_rows,
+    preparation_stats,
+    df,
+    train_df,
+    test_df,
+    category_mapping,
+    trajectory_stats,
+    normalization,
+    paths,
+    log_path,
+    timings,
+):
+    """Build the JSON metadata document for a successful adapter run."""
+    sample_available = preparation_stats["sample_available"]
+
+    return {
+        "dataset_name": dataset_name,
         "created_utc": datetime.utcnow().isoformat() + "Z",
-        "source_path": str(args.input_path),
+        "input_mode": input_mode,
+        "source_path": str(input_path) if input_path is not None else None,
+        "source_paths": {
+            "train": (
+                str(train_input_path)
+                if train_input_path is not None
+                else None
+            ),
+            "test": (
+                str(test_input_path)
+                if test_input_path is not None
+                else None
+            ),
+        },
         "parameters": {
-            "train_ratio": float(args.train_ratio),
-            "random_state": int(args.random_state),
-            "category_mode": args.category_mode,
-            "constant_category": int(args.constant_category),
+            "train_ratio": float(train_ratio) if not explicit_split else None,
+            "random_state": int(random_state),
+            "category_mode": category_mode,
+            "constant_category": int(constant_category),
             "category_vocab_size": CATEGORY_VOCAB_SIZE,
-            "max_trajectories": args.max_trajectories,
-            "split_unit": "trajectory_tid",
+            "max_trajectories": max_trajectories,
+            "split_unit": (
+                "pre_split_files"
+                if explicit_split
+                else "trajectory_tid"
+            ),
         },
         "source_summary": {
-            "rows": source_rows,
-            "trajectories": source_trajectories,
-            "users": source_users,
-            "dropped_invalid_core_rows": int(dropped_core),
-            "cleaned_rows": cleaned_rows,
-            "cleaned_trajectories": cleaned_trajectories,
+            "rows": int(source_rows),
+            "trajectories": preparation_stats["source_trajectories"],
+            "users": preparation_stats["source_users"],
+            "dropped_invalid_core_rows": preparation_stats["dropped_core"],
+            "cleaned_rows": preparation_stats["cleaned_rows"],
+            "cleaned_trajectories": preparation_stats["cleaned_trajectories"],
         },
         "sampling_summary": {
-            "available_trajectories": int(sample_available),
-            "selected_trajectories": int(sample_selected),
-            "limit_applied": args.max_trajectories is not None
-            and args.max_trajectories < sample_available,
+            "available_trajectories": sample_available,
+            "selected_trajectories": preparation_stats["sample_selected"],
+            "limit_applied": (
+                max_trajectories is not None
+                and max_trajectories < sample_available
+            ),
         },
         "category_summary": {
-            "mode": args.category_mode,
-            "excluded_unknown_category_rows": int(unknown_category_rows),
-            "removed_outside_top_categories": int(rows_removed_by_category),
+            "mode": category_mode,
+            "excluded_unknown_category_rows": (
+                preparation_stats["unknown_category_rows"]
+            ),
+            "removed_outside_top_categories": (
+                preparation_stats["rows_removed_by_category"]
+            ),
         },
         "prepared_summary": {
             "rows": int(len(df)),
@@ -759,27 +1063,27 @@ def main():
             "test_trajectories": int(test_df["tid"].nunique()),
             "trajectory_overlap": 0,
         },
-        "trajectory_lengths": {
-            "max_length": max_length,
-            "overall": overall_stats,
-            "train": train_stats,
-            "test": test_stats,
-        },
-        "normalization": {
-            "lat_centroid": lat_centroid,
-            "lon_centroid": lon_centroid,
-            "scale_factor": scale_factor,
-            "encoded_coordinate_definition": "raw_coordinate_minus_global_centroid",
-        },
-        "categories": category_records,
+        "trajectory_lengths": trajectory_stats,
+        "normalization": normalization,
+        "categories": category_mapping_records(category_mapping),
         "outputs": {name: str(path) for name, path in paths.items()},
         "log_file": str(log_path),
         "timing_seconds": timings,
     }
 
-    # Metadata is written last so it describes only a successfully completed build.
-    write_json(metadata, paths["metadata"])
 
+def log_build_summary(
+    logger,
+    df,
+    train_df,
+    test_df,
+    category_mode,
+    trajectory_stats,
+    total_elapsed,
+    paths,
+    log_path,
+):
+    """Log the concise final build summary."""
     logger.info("=" * 72)
     logger.info("BUILD SUMMARY")
     logger.info("=" * 72)
@@ -791,18 +1095,188 @@ def main():
         test_df["tid"].nunique(),
     )
     logger.info("Prepared users: %d", df["label"].nunique())
-    logger.info("Category mode: %s", args.category_mode)
+    logger.info("Category mode: %s", category_mode)
     logger.info("Categories present: %d", df["category"].nunique())
-    logger.info("Cached max_length: %d", max_length)
+    logger.info("Cached max_length: %d", trajectory_stats["max_length"])
     logger.info("Train rows: %d", len(train_df))
     logger.info("Test rows: %d", len(test_df))
     logger.info("Trajectory overlap: 0")
     logger.info("Total elapsed: %.2f s", total_elapsed)
     logger.info("Artifacts:")
+
     for name, path in paths.items():
         logger.info("  %-18s %s", name + ":", path)
+
     logger.info("  %-18s %s", "log:", log_path)
     logger.info("Build completed successfully.")
+
+
+def main():
+    """Run the LSTM-TrajGAN input build."""
+    args = parse_args()
+
+    # Keep argparse at the CLI boundary. From this point onward, use typed,
+    # named values so the build helpers do not depend on argparse.Namespace.
+    input_path = args.input_path  # type: Optional[Path]
+    train_input_path = args.train_input_path  # type: Optional[Path]
+    test_input_path = args.test_input_path  # type: Optional[Path]
+    out_dir = args.out_dir  # type: Path
+    dataset_name = args.dataset_name  # type: str
+    train_ratio = args.train_ratio  # type: float
+    random_state = args.random_state  # type: int
+    category_mode = args.category_mode  # type: str
+    constant_category = args.constant_category  # type: int
+    max_trajectories = args.max_trajectories  # type: Optional[int]
+    log_dir_arg = args.log_dir  # type: Optional[Path]
+
+    validate_options(
+        input_path=input_path,
+        train_input_path=train_input_path,
+        test_input_path=test_input_path,
+        train_ratio=train_ratio,
+        constant_category=constant_category,
+        max_trajectories=max_trajectories,
+    )
+
+    explicit_split, input_mode = resolve_input_mode(train_input_path)
+    total_start = time.perf_counter()
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = log_dir_arg if log_dir_arg is not None else out_dir / "logs"
+    logger, log_path = setup_logging(log_dir, dataset_name)
+    timings = {}
+
+    log_build_configuration(
+        logger=logger,
+        dataset_name=dataset_name,
+        input_mode=input_mode,
+        input_path=input_path,
+        train_input_path=train_input_path,
+        test_input_path=test_input_path,
+        out_dir=out_dir,
+        train_ratio=train_ratio,
+        explicit_split=explicit_split,
+        random_state=random_state,
+        category_mode=category_mode,
+        constant_category=constant_category,
+        max_trajectories=max_trajectories,
+        log_path=log_path,
+    )
+
+    with timed_stage(logger, timings, "load_source"):
+        source_df = load_input_data(
+            input_path=input_path,
+            train_input_path=train_input_path,
+            test_input_path=test_input_path,
+            explicit_split=explicit_split,
+            category_mode=category_mode,
+        )
+        source_rows = int(len(source_df))
+        logger.info(
+            "Loaded %d rows and %d columns.",
+            source_rows,
+            len(source_df.columns),
+        )
+
+    with timed_stage(logger, timings, "clean_and_prepare"):
+        (
+            df,
+            category_mapping,
+            label_mapping,
+            tid_mapping,
+            preparation_stats,
+        ) = prepare_source_data(
+            source_df=source_df,
+            max_trajectories=max_trajectories,
+            random_state=random_state,
+            category_mode=category_mode,
+            constant_category=constant_category,
+            logger=logger,
+        )
+
+    with timed_stage(logger, timings, "trajectory_split"):
+        train_df, test_df = build_train_test_split(
+            df=df,
+            explicit_split=explicit_split,
+            train_ratio=train_ratio,
+            random_state=random_state,
+            logger=logger,
+        )
+
+    with timed_stage(logger, timings, "normalization_and_frames"):
+        (
+            train_raw,
+            test_raw,
+            train_encoded,
+            test_encoded,
+            normalization,
+            trajectory_stats,
+        ) = prepare_model_outputs(
+            df=df,
+            train_df=train_df,
+            test_df=test_df,
+            logger=logger,
+        )
+
+    paths = build_output_paths(
+        out_dir=out_dir,
+        dataset_name=dataset_name,
+    )
+
+    with timed_stage(logger, timings, "write_artifacts"):
+        write_build_artifacts(
+            paths=paths,
+            train_raw=train_raw,
+            test_raw=test_raw,
+            train_encoded=train_encoded,
+            test_encoded=test_encoded,
+            category_mapping=category_mapping,
+            label_mapping=label_mapping,
+            tid_mapping=tid_mapping,
+        )
+
+    total_elapsed = time.perf_counter() - total_start
+    timings["total"] = round(total_elapsed, 3)
+
+    metadata = build_metadata(
+        dataset_name=dataset_name,
+        input_mode=input_mode,
+        input_path=input_path,
+        train_input_path=train_input_path,
+        test_input_path=test_input_path,
+        explicit_split=explicit_split,
+        train_ratio=train_ratio,
+        random_state=random_state,
+        category_mode=category_mode,
+        constant_category=constant_category,
+        max_trajectories=max_trajectories,
+        source_rows=source_rows,
+        preparation_stats=preparation_stats,
+        df=df,
+        train_df=train_df,
+        test_df=test_df,
+        category_mapping=category_mapping,
+        trajectory_stats=trajectory_stats,
+        normalization=normalization,
+        paths=paths,
+        log_path=log_path,
+        timings=timings,
+    )
+
+    # Metadata is written last so it describes only a successfully completed build.
+    write_json(metadata, paths["metadata"])
+
+    log_build_summary(
+        logger=logger,
+        df=df,
+        train_df=train_df,
+        test_df=test_df,
+        category_mode=category_mode,
+        trajectory_stats=trajectory_stats,
+        total_elapsed=total_elapsed,
+        paths=paths,
+        log_path=log_path,
+    )
 
 
 if __name__ == "__main__":

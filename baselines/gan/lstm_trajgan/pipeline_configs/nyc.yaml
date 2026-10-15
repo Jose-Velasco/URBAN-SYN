@@ -2,21 +2,37 @@ dataset:
   name: nyc
 
 paths:
+  # Paths inside Docker/Apptainer.
   workspace: /workspace
   repo: /workspace/repo
-
   data: /workspace/data/nyc_full
   outputs: /workspace/outputs/lstm_trajgan_nyc_full
 
-  source: /workspace/upstream/data/nyc_output_tabular/output/traj_cleaned.parquet
+  # Read-only upstream MAT dataset input.
+  # source: /workspace/upstream/data/nyc_output_tabular/output/traj_cleaned.parquet
+
+  # for an already split dataset
+  train_source: /workspace/upstream/data/preliminary_results_drive_only_10_14_2026/nyc_gps_train.parquet
+  test_source: /workspace/upstream/data/preliminary_results_drive_only_10_14_2026/nyc_gps_test.parquet
+
+  # Project-owned adapter.
   builder: /workspace/build_lstm_trajgan_inputs.py
 
 build:
-  train_ratio: 0.8
+  # null = use train_source/test_source already split dataset a float (0.0, 1.0) means to perform a random train/test split 
+  train_ratio: null
   random_state: 101
+
+  # Preliminary GPS + temporal baseline.
+  # Keep the upstream 10-way category branch, but use one constant real token.
   category_mode: constant
   constant_category: 0
+
+  # FULL DATASET:
   max_trajectories: null
+
+  # SMOKE TEST:
+  # max_trajectories: 100
 
 encode:
   tid_col: tid
@@ -25,7 +41,15 @@ train:
   epochs: 2000
   batch_size: 256
   save_params_rate: 100
+
+  # null = derive from the train/test CSVs.
+  # Use the same value for training and generation.
+  # max_length: null
+
   max_length: 602
 
 generate:
+  # null = use train.epochs.
+  # This must correspond to an epoch at which a checkpoint is saved.
+  # basically which checkpoint/saved model to load for generation
   checkpoint_epoch: null

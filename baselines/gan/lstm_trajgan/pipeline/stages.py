@@ -43,35 +43,72 @@ def stages_for_target(config, target):
 
     return tuple(stage_map[name] for name in names)
 
+def _build_source_arguments(config):
+    """Build dataset-source CLI arguments for the adapter."""
+    if config.uses_pre_split_inputs:
+        return [
+            "--train_input_path",
+            str(config.train_source_path),
+            "--test_input_path",
+            str(config.test_source_path),
+        ]
+
+    return [
+        "--input_path",
+        str(config.source_path),
+        "--train_ratio",
+        str(config.train_ratio),
+    ]
+
+
+def _build_builder_command(config, python):
+    """Build the complete build_lstm_trajgan_inputs.py command."""
+    command = [
+        python,
+        str(config.builder_path),
+    ]
+
+    command.extend(_build_source_arguments(config))
+
+    command.extend(
+        [
+            "--out_dir",
+            str(config.data_dir),
+            "--dataset_name",
+            config.dataset_name,
+            "--random_state",
+            str(config.random_state),
+            "--category_mode",
+            config.category_mode,
+            "--constant_category",
+            str(config.constant_category),
+            "--log_dir",
+            str(config.log_dir),
+        ]
+    )
+
+    if config.max_trajectories is not None:
+        command.extend(
+            [
+                "--max_trajectories",
+                str(config.max_trajectories),
+            ]
+        )
+
+    return command
+
+
+def _build_required_paths(config):
+    """Return files required before the adapter build stage can run."""
+    return [config.builder_path] + list(config.source_paths)
 
 def _build_stage_map(config):
     python = sys.executable
 
-    build_command = [
+    build_command = _build_builder_command(
+        config,
         python,
-        str(config.builder_path),
-        "--input_path",
-        str(config.source_path),
-        "--out_dir",
-        str(config.data_dir),
-        "--dataset_name",
-        config.dataset_name,
-        "--train_ratio",
-        str(config.train_ratio),
-        "--random_state",
-        str(config.random_state),
-        "--category_mode",
-        config.category_mode,
-        "--constant_category",
-        str(config.constant_category),
-        "--log_dir",
-        str(config.log_dir),
-    ]
-
-    if config.max_trajectories is not None:
-        build_command.extend(
-            ["--max_trajectories", str(config.max_trajectories)]
-        )
+    )
 
     train_command = [
         python,
@@ -124,15 +161,12 @@ def _build_stage_map(config):
             name="build",
             group="prepare",
             description=(
-                "Convert MAT traj_cleaned data to the CSV inputs expected "
+                "Convert trajectory source data to the CSV inputs expected "
                 "by LSTM-TrajGAN."
             ),
             cwd=config.workspace_dir,
             command=build_command,
-            required_paths=[
-                config.builder_path,
-                config.source_path,
-            ],
+            required_paths=_build_required_paths(config),
             expected_paths=[
                 config.train_csv,
                 config.test_csv,
