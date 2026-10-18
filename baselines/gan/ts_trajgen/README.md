@@ -35,55 +35,344 @@ The pipeline uses separate training, validation/evaluation, and test data.
 
 The pretraining scripts still accept explicit train/eval/test filenames because that mirrors the TS-TrajGen workflow. Do not use test-set metrics to tune model or hyperparameter decisions.
 
-## Execution locations
+## How to run TS-TrajGen
 
-There are two execution contexts in this README.
+The **recommended way to run this baseline is through the project wrapper** in `run_pipeline.py`. The wrapper runs the same underlying TS-TrajGen scripts documented later in this README, but groups them into reproducible stages so teammates do not need to execute the full command sequence manually.
 
-**Project/dev environment:** Step 1 runs from the `baselines/gan/ts_trajgen/` directory, where `build_tstrajgen_inputs.py`, `repo/`, and `datasets/` are available.
+The wrapper supports:
 
-**TS-TrajGen container:** Steps 2 onward run from the TS-TrajGen repository working directory, typically `/workspace/repo`.
+- preprocessing and road/region artifact construction;
+- road and region pretraining;
+- road and region GAN training;
+- trajectory generation;
+- a full end-to-end run;
+- `--dry-run` to inspect the exact commands before executing them.
 
-Expected container mounts are conceptually:
+The canonical stage definitions and exact subprocess commands are in `pipeline/stages.py`. Additional wrapper details are documented in [PIPELINE.md](./PIPELINE.md).
 
-```text
-/workspace/repo      # TS-TrajGen repository
-/workspace/datasets  # project datasets, including NYC
-/workspace/outputs   # generated outputs
+### 1. Start from the TS-TrajGen baseline directory
+
+From the project repository root:
+
+```bash
+cd baselines/gan/ts_trajgen
 ```
 
-Scripts under `script/` that import project modules should be run with `python -m script.<name>` when shown below.
+The expected project layout is approximately:
 
-## Container
+```text
+URBAN-SYN/
+├── baselines/gan/ts_trajgen/
+│   ├── run_pipeline.py
+│   ├── pipeline/
+│   ├── pipeline_configs/nyc.yaml
+│   ├── repo/
+│   ├── datasets/
+│   └── docker-compose.yml
+├── fmm_scripts/
+│   ├── data/
+│   └── outputs/
+└── data/nyc_output_tabular/output/
+```
 
-The Docker setup is GPU-enabled through `gpus: all`.
+The Docker Compose configuration mounts the required FMM and MAT-Dataset inputs into the container as read-only upstream data.
 
-### Build
+### 2. Build the Docker image
 
 ```bash
 docker compose build
 ```
 
-### Rebuild
+To rebuild after Docker/environment changes:
 
 ```bash
 docker compose down
 docker compose build
 ```
 
-### Open a shell
+### 3. Open the TS-TrajGen container
 
 ```bash
 docker compose run --rm ts-trajgen
 ```
 
-## Pipeline
+The container starts in:
 
-The commands below are intentionally explicit. Arguments are shown in full so each step can be reproduced or later wrapped without relying on hidden defaults.
+```text
+/workspace
+```
 
-> **Smoke-test note:** the GAN commands currently use `--debug True`, which intentionally reduces epochs/sample counts for a fast pipeline test. Use `--debug False` for a full training run after the pipeline is verified.
+Important paths inside the container are:
 
-For the automated preprocessing, pretraining, GAN training, generation,
-Docker, see [PIPELINE.md](./PIPELINE.md).
+```text
+/workspace                         # TS-TrajGen baseline root
+/workspace/repo                    # adapted upstream TS-TrajGen repository
+/workspace/datasets                # generated preprocessing/model-input artifacts
+/workspace/upstream/fmm            # read-only FMM inputs from the main project
+/workspace/upstream/data           # read-only MAT-Dataset inputs
+```
+
+The wrapper configuration uses these container paths, so wrapper commands should be run **inside Docker/Apptainer**, not directly from the host environment.
+
+### 4. Check the configuration before running
+
+The wrapper and model use two separate YAML files:
+
+- `pipeline_configs/nyc.yaml` — orchestration/runtime settings such as input paths, device, data limits, KaHIP settings, GAN flags, resume flags, and generation mode.
+- `repo/configs/ts_trajgen_nyc.yaml` — TS-TrajGen architecture and model-training hyperparameters.
+
+The checked-in `pipeline_configs/nyc.yaml` is currently configured as a **smoke test**:
+
+```yaml
+build:
+  max_train_trajectories: 150
+  max_test_trajectories: 4
+
+gan:
+  road:
+    debug: true
+  region:
+    debug: true
+```
+
+For a full experiment, change the trajectory limits to `null` and disable GAN debug mode:
+
+```yaml
+build:
+  max_train_trajectories: null
+  max_test_trajectories: null
+
+gan:
+  road:
+    debug: false
+  region:
+    debug: false
+```
+
+Do **not** reuse preprocessing artifacts or checkpoints created from a smoke-test subset for the final full-data experiment.
+
+### 5. Dry-run first
+
+Before starting a long job, validate the configuration and print the exact commands that would run:
+
+```bash
+python /workspace/run_pipeline.py all \
+    --config /workspace/pipeline_configs/nyc.yaml \
+    --dry-run
+```
+
+A dry run does not start training or modify the dataset. It shows the selected stages, working directories, paths, device, and exact subprocess commands.
+
+## Pipeline targets
+
+General form:
+
+```bash
+python /workspace/run_pipeline.py <target> \
+    --config /workspace/pipeline_configs/nyc.yaml
+```
+
+| Target | Purpose |
+| --- | --- |
+| `prepare` | Run road/region preprocessing and construct train-derived helper statistics. |
+| `pretrain-road` | Pretrain the road-level GAT / Function H and Function G. |
+| `prepare-region` | Construct region features from the pretrained road representation. |
+| `pretrain-region` | Pretrain region-level Function G and GAT / Function H. |
+| `setup-gans` | Convenience target that runs `prepare` + road pretraining + region preparation + region pretraining. |
+| `train-road` | Train only the road-level GAN. |
+| `train-region` | Train only the region-level GAN. |
+| `train` | Train both the road and region GANs. |
+| `generate` | Generate trajectories using the mode configured under `generation.mode`. |
+| `all` | Run the complete pipeline from preprocessing through generation. |
+
+### Preprocessing only
+
+Use this when the upstream road network/FMM data changed or when preprocessing artifacts need to be rebuilt:
+
+```bash
+python /workspace/run_pipeline.py prepare \
+    --config /workspace/pipeline_configs/nyc.yaml
+```
+
+This includes the TS-TrajGen input conversion, road preprocessing, KaHIP/region construction, road-to-region trajectory processing, and train-derived helper statistics.
+
+### Pretraining
+
+Road-level pretraining:
+
+```bash
+python /workspace/run_pipeline.py pretrain-road \
+    --config /workspace/pipeline_configs/nyc.yaml
+```
+
+Build the region feature representation after road pretraining:
+
+```bash
+python /workspace/run_pipeline.py prepare-region \
+    --config /workspace/pipeline_configs/nyc.yaml
+```
+
+Region-level pretraining:
+
+```bash
+python /workspace/run_pipeline.py pretrain-region \
+    --config /workspace/pipeline_configs/nyc.yaml
+```
+
+To run **all preprocessing and pretraining required before GAN training** in one command:
+
+```bash
+python /workspace/run_pipeline.py setup-gans \
+    --config /workspace/pipeline_configs/nyc.yaml
+```
+
+`setup-gans` is intended as a from-scratch convenience target. If you have already completed some of those groups, run only the smallest remaining target instead of unnecessarily repeating work.
+
+### GAN training
+
+Train both GAN stages in order:
+
+```bash
+python /workspace/run_pipeline.py train \
+    --config /workspace/pipeline_configs/nyc.yaml
+```
+
+Or run them separately:
+
+```bash
+# Road-level GAN
+python /workspace/run_pipeline.py train-road \
+    --config /workspace/pipeline_configs/nyc.yaml
+
+# Region-level GAN
+python /workspace/run_pipeline.py train-region \
+    --config /workspace/pipeline_configs/nyc.yaml
+```
+
+These targets assume the required preprocessing and pretrained checkpoints already exist. For a fresh run, use `setup-gans` first or use `all`.
+
+### Trajectory generation
+
+```bash
+python /workspace/run_pipeline.py generate \
+    --config /workspace/pipeline_configs/nyc.yaml
+```
+
+Generation behavior is controlled by:
+
+```yaml
+generation:
+  mode: gan
+```
+
+Supported modes are:
+
+| Mode | Checkpoints used |
+| --- | --- |
+| `pretrained` | Separately pretrained road/region Function G and Function H checkpoints. |
+| `gan` | Full road-level and region-level GAN-trained `GeneratorV4` checkpoints. |
+| `both` | Run both generation paths. |
+
+For the final adversarial TS-TrajGen baseline, use `gan`.
+
+### Complete end-to-end run
+
+For a fresh run from preprocessing through generation:
+
+```bash
+python /workspace/run_pipeline.py all \
+    --config /workspace/pipeline_configs/nyc.yaml
+```
+
+The wrapper executes the groups in this order:
+
+```text
+prepare
+  ↓
+pretrain-road
+  ↓
+prepare-region
+  ↓
+pretrain-region
+  ↓
+train-road
+  ↓
+train-region
+  ↓
+generate
+```
+
+## Main outputs
+
+Most preprocessing/data artifacts are written to:
+
+```text
+/workspace/datasets/nyc/
+```
+
+Important outputs include:
+
+```text
+nyc.geo
+nyc.rel
+nyc_mm_train.csv
+nyc_mm_test.csv
+nyc_mm_region_train.csv
+nyc_mm_region_eval.csv
+nyc_mm_region_test.csv
+adjacent_list.json
+region_adjacent_list.json
+region2rid.json
+rid2region.json
+road_time_distribution.npy
+region_time_distribution.npy
+region_transfer_prob.json
+od_distinct_route.json
+region_od_distinct_route.json
+TS_TrajGen_non_gan_generated_output.csv
+TS_TrajGen_GAN_generated_output.csv
+```
+
+Model checkpoints are written under:
+
+```text
+/workspace/repo/save/nyc/
+/workspace/repo/save/nyc/gan/
+/workspace/repo/save/nyc/region_gan/
+```
+
+## Rerunning after a failure
+
+The wrapper is **fail-fast**: if one stage exits with a non-zero status, execution stops at that stage. It does not automatically cache completed stages or infer where to restart.
+
+After fixing the issue, run the **smallest appropriate target** rather than automatically rerunning `all`. For example:
+
+- preprocessing failure → rerun `prepare` or the underlying command if debugging one specific primitive stage;
+- pretraining failure → rerun the corresponding pretraining group;
+- road GAN failure → rerun `train-road`;
+- region GAN failure → rerun `train-region`;
+- generation failure → rerun `generate`.
+
+Road and region GAN scripts expose `resume` through `pipeline_configs/nyc.yaml`. Set the appropriate `resume: true` only when continuing from an existing **compatible** checkpoint. Resume does not make preprocessing stages automatically resumable.
+
+## Upstream input consistency
+
+The wrapper expects these upstream NYC inputs inside the container:
+
+```text
+/workspace/upstream/fmm/data/road_network/nyc.gpkg
+/workspace/upstream/fmm/data/nyc_gps_points_fmm_trip_id_map.csv
+/workspace/upstream/fmm/outputs/nyc_fmm_match.csv
+/workspace/upstream/data/nyc_output_tabular/output/traj_cleaned.parquet
+```
+
+They must come from the same road-network/map-matching run. The road network, FMM output, TS-TrajGen split, region partitioning, train-derived statistics, checkpoints, and generated trajectories form one dependency chain. If an upstream network or map-matching artifact changes, rebuild the dependent TS-TrajGen artifacts rather than mixing files from different runs.
+
+## Manual pipeline reference
+
+The wrapper above is the recommended teammate-facing interface. The commands below show the individual underlying steps and are useful for debugging, reproducing one primitive stage manually, or understanding how the wrapper maps to the adapted TS-TrajGen repository.
+
+> **Execution context for the manual commands:** the first input-construction command can be run from the project/dev environment as originally documented below. Subsequent TS-TrajGen commands run from the adapted repository/container context. For routine use, prefer the wrapper because it normalizes these working directories automatically.
 
 ### 1. Build TS-TrajGen road-network and map-matched trajectory inputs
 
