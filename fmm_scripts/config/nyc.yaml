@@ -32,8 +32,8 @@ road_network:
     # OSMnx custom-filter strings.
     filter_network_types:
       - drive
-      - bike
-      - walk
+      # - bike
+      # - walk
 
     simplify: true
     retain_all: false

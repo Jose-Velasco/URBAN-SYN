@@ -135,6 +135,25 @@ def parse_args() -> BuildConfig:
             "GPS-anchor road assignments from FMM opath."
         ),
     )
+    parser.add_argument(
+        "--max_train_trajectories",
+        type=int,
+        default=None,
+        help=(
+            "Optional maximum number of training trajectories to retain after "
+            "the train/test split. Useful for smoke tests."
+        ),
+    )
+
+    parser.add_argument(
+        "--max_test_trajectories",
+        type=int,
+        default=None,
+        help=(
+            "Optional maximum number of test trajectories to retain after "
+            "the train/test split. Useful for smoke tests."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -157,6 +176,8 @@ def parse_args() -> BuildConfig:
         min_delta_seconds=args.min_delta_seconds,
         verbose=args.verbose,
         interpolate_intermediate_edges=args.interpolate_intermediate_edges,
+        max_train_trajectories=args.max_train_trajectories,
+        max_test_trajectories=args.max_test_trajectories,
     )
 
 def prepare_output_dirs(config: BuildConfig) -> None:
@@ -301,6 +322,8 @@ def build_and_save_mm_csvs(
         fmm_sep=config.fmm_sep,
         min_delta_seconds=config.min_delta_seconds,
         logger=logger,
+        max_train_trajectories=config.max_train_trajectories,
+        max_test_trajectories=config.max_test_trajectories,
     )
 
     train_df.to_csv(train_path, index=False)
@@ -345,6 +368,11 @@ def run_build(config: BuildConfig) -> None:
     logger.info(
         "Interpolate intermediate edges: %s",
         config.interpolate_intermediate_edges,
+    )
+    logger.info(
+        "Trajectory limits: train=%s, test=%s",
+        config.max_train_trajectories,
+        config.max_test_trajectories,
     )
 
     geo_df, edges_df, edge_id_to_geo_id, geo_to_length = build_and_save_geo(

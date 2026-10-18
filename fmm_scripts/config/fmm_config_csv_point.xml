@@ -20,6 +20,7 @@
       <mode>drive</mode>
     </network>
     <gps>
+      <!-- refer to https://fmm-wiki.github.io/docs/documentation/input/ -->
     <!-- GPS file name -->
       <file>./data/nyc_gps_points_fmm_ready.csv</file>
       <!-- GPS id field/column name -->

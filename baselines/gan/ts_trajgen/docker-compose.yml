@@ -4,13 +4,35 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    working_dir: /workspace/repo
+    working_dir: /workspace
     volumes:
-      - ./repo:/workspace/repo
-      - ./datasets:/workspace/datasets
-      - ./outputs:/workspace/outputs
+     # Entire TS-TrajGen baseline workspace.
+      - .:/workspace
+      # Read-only upstream FMM artifacts required by TS-TrajGen input construction.
+      - ../../../fmm_scripts/data:/workspace/upstream/fmm/data:ro
+      - ../../../fmm_scripts/outputs:/workspace/upstream/fmm/outputs:ro
+
+      # Read-only MAT-Dataset trajectory input.
+      - ../../../data/nyc_output_tabular/output:/workspace/upstream/data/nyc_output_tabular/output:ro
     gpus: all
     shm_size: "8g"
     tty: true
     stdin_open: true
     command: /bin/bash
+
+# name: ts-trajgen
+# services:
+#   ts-trajgen:
+#     build:
+#       context: .
+#       dockerfile: Dockerfile
+#     working_dir: /workspace/repo
+#     volumes:
+#       - ./repo:/workspace/repo
+#       - ./datasets:/workspace/datasets
+#       - ./outputs:/workspace/outputs
+#     gpus: all
+#     shm_size: "8g"
+#     tty: true
+#     stdin_open: true
+#     command: /bin/bash

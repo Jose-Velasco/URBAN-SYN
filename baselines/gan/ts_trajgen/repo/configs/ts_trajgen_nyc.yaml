@@ -31,6 +31,10 @@ road:
       distance_mode: l2
 
     # GeneratorV4-level weighting
+    # Initial trainable weight assigned to Function H.
+    # Generator computes:
+    # (1 - w1) * g_score + w1 * h_score
+    # w1 is learnable and initialized to this value.
     dis_weight: 0.45
 
   discriminator:
@@ -63,6 +67,10 @@ region:
       distance_mode: l2
       no_gps_emb: true
 
+      # Initial trainable weight assigned to Function H.
+    # Generator computes:
+    # (1 - w1) * g_score + w1 * h_score
+    # w1 is learnable and initialized to this value.
     dis_weight: 0.45
 
   discriminator:
@@ -83,8 +91,8 @@ training:
   # pretrain_function_g_fc.py
   # ----------------------------------------------------------
   road_function_g:
-    # max_epoch: 25
-    max_epoch: 1
+    # max_epoch: 1
+    max_epoch: 25
     batch_size: 64
 
     optimizer:
@@ -104,8 +112,8 @@ training:
   # pretrain_gat_fc.py
   # ----------------------------------------------------------
   road_function_h:
-    # max_epoch: 50
-    max_epoch: 1
+    # max_epoch: 1
+    max_epoch: 50
     batch_size: 32
 
     optimizer:
@@ -123,8 +131,8 @@ training:
   # pretrain_region_function_g_fc.py
   # ----------------------------------------------------------
   region_function_g:
-    # max_epoch: 25
-    max_epoch: 1
+    # max_epoch: 1
+    max_epoch: 25
     batch_size: 32
 
     optimizer:
@@ -142,8 +150,8 @@ training:
   # pretrain_region_gat_fc.py
   # ----------------------------------------------------------
   region_function_h:
-    # max_epoch: 50
-    max_epoch: 1
+    # max_epoch: 1
+    max_epoch: 50
     batch_size: 32
 
     optimizer:
@@ -161,10 +169,10 @@ training:
   # train_gan.py
   # ----------------------------------------------------------
   road_gan:
-    # total_epoch: 20
-    total_epoch: 1
-    # pretrain_dis_epoch: 5
-    pretrain_dis_epoch: 1
+    # total_epoch: 1
+    total_epoch: 20
+    # pretrain_dis_epoch: 1
+    pretrain_dis_epoch: 5
 
     batch_size: 64
     dis_train_rate: 0.8
@@ -190,10 +198,10 @@ training:
   # train_region_gan.py
   # ----------------------------------------------------------
   region_gan:
-    # total_epoch: 10
-    total_epoch: 1
-    # pretrain_dis_epoch: 5
-    pretrain_dis_epoch: 1
+    # total_epoch: 1
+    total_epoch: 10
+    # pretrain_dis_epoch: 1
+    pretrain_dis_epoch: 5
 
     batch_size: 64
     dis_train_rate: 0.8
@@ -219,9 +227,10 @@ data:
 
   splits:
     # Fraction of train_data rows written to train output; the rest go to eval.
-    road_train_rate: 0.9
+    # paper did 60/20/20 split 0.8 *x = 60 => x=0.75
+    road_train_rate: 0.75
 
-    region_train_rate: 0.9
+    region_train_rate: 0.75
 
   encoding:
     road:

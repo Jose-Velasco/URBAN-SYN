@@ -69,6 +69,12 @@ parser.add_argument(
     default=False,
     help="Whether to pretrain discriminator else loads an already trained one from I think running this file at least once",
 )
+parser.add_argument(
+    "--resume",
+    type=str2bool,
+    default=False,
+    help="Resume GAN training from the latest saved training checkpoint.",
+)
 # ---- data ----
 parser.add_argument(
     "--dataset_name",
@@ -237,6 +243,7 @@ pretrain_h_path = args.pretrain_region_gat_file
 
 disc_path: Path = save_dir / "adversarial_region_discriminator.pt"
 generator_path: Path = save_dir / "adversarial_region_generator.pt"
+checkpoint_path: Path = save_dir / "training_checkpoint.pt"
 
 experiment_config = load_config(args.config)
 train_config = experiment_config["training"]["region_gan"]
@@ -258,6 +265,7 @@ learning_rate = optimizer_config["learning_rate"]
 weight_decay = optimizer_config["weight_decay"]
 clip = train_config["clip"]
 pretrain_discriminator: bool = args.pretrain_discriminator
+resume: bool = args.resume
 
 total_epoch = train_config["total_epoch"]
 pretrain_dis_epoch = train_config["pretrain_dis_epoch"]
@@ -622,6 +630,30 @@ def train_generator(stage):
     return avg_hausdorff
 
 
+def save_training_checkpoint(
+    path: Path,
+    *,
+    next_epoch: int,
+    generator: GeneratorV4,
+    discriminator: DiscriminatorV1,
+    prev_hausdorff: float | None,
+    patience: int,
+) -> None:
+    """Save region GAN state needed to resume adversarial training."""
+    checkpoint = {
+        "next_epoch": next_epoch,
+        "generator_state_dict": generator.state_dict(),
+        "discriminator_state_dict": discriminator.state_dict(),
+        "prev_hausdorff": (
+            None if prev_hausdorff is None else float(prev_hausdorff)
+        ),
+        "patience": patience,
+    }
+
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    torch.save(checkpoint, tmp_path)
+    os.replace(tmp_path, path)
+
 if __name__ == '__main__':
     logger.info('load true trajectory.')
     # 加载真实轨迹数据
@@ -651,24 +683,81 @@ if __name__ == '__main__':
     rollout = Rollout(searcher=searcher, generator=region_generator, device=device, od_distinct_route=od_distinct_route,
                       road_gps=rid_gps)
     # 预训练判别器
-    discriminator = DiscriminatorV1(config=region_dis_config, data_feature=region_data_feature).to(device)
-    if pretrain_discriminator:
-        logger.info('start pretrain discriminator.')
-        train_discriminator(max_epoch=pretrain_dis_epoch)
-    else:
-        logger.info('load discriminator from save pt file.')
-        # discriminator_state = torch.load(os.path.join(save_folder, 'adversarial_region_discriminator.pt'), map_location=device)
-        discriminator_state = torch.load(disc_path, map_location=device)
-        discriminator.load_state_dict(discriminator_state)
+    discriminator = DiscriminatorV1(
+        config=region_dis_config,
+        data_feature=region_data_feature,
+    ).to(device)
+
+    start_epoch = 0
     prev_hausdorff = None
     patience = 2
-    for epoch in range(total_epoch):
+
+    if resume:
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(
+                f"Resume requested but checkpoint does not exist: {checkpoint_path}"
+            )
+
+        logger.info("resume training from %s", checkpoint_path)
+
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+
+        region_generator.load_state_dict(
+            checkpoint["generator_state_dict"]
+        )
+        discriminator.load_state_dict(
+            checkpoint["discriminator_state_dict"]
+        )
+
+        start_epoch = int(checkpoint["next_epoch"])
+
+        saved_hausdorff = checkpoint.get("prev_hausdorff")
+        prev_hausdorff = (
+            None if saved_hausdorff is None else float(saved_hausdorff)
+        )
+        patience = int(checkpoint.get("patience", 2))
+
+        region_generator.function_h.update_node_emb()
+        rollout.update_params(region_generator)
+
+        logger.info("resume adversarial training at epoch %d", start_epoch)
+
+    else:
+        if pretrain_discriminator:
+            logger.info('start pretrain discriminator.')
+            train_discriminator(max_epoch=pretrain_dis_epoch)
+
+            # Save immediately so discriminator pretraining can be reused.
+            torch.save(discriminator.state_dict(), disc_path)
+
+        else:
+            logger.info('load discriminator from save pt file.')
+            discriminator_state = torch.load(
+                disc_path,
+                map_location=device,
+            )
+            discriminator.load_state_dict(discriminator_state)
+
+        save_training_checkpoint(
+            checkpoint_path,
+            next_epoch=0,
+            generator=region_generator,
+            discriminator=discriminator,
+            prev_hausdorff=prev_hausdorff,
+            patience=patience,
+        )
+
+        logger.info(
+            "saved pre-adversarial training checkpoint to %s",
+            checkpoint_path,
+        )
+
+
+    for epoch in range(start_epoch, total_epoch):
         logger.info('start train generator at epoch {}'.format(epoch))
         now_hausdorff = train_generator(stage=1)
-        # stop after two consecutive degradations in Hausdorff
-        # original code had a bug where prev_hausdorff was never updated after the first epoch
-        # thus every later epoch is being compared against the first epoch's Hausdorff,
-        # not the immediately previous epoch.
+
+        # Stop after two consecutive degradations in Hausdorff.
         if prev_hausdorff is not None:
             if now_hausdorff > prev_hausdorff:
                 patience -= 1
@@ -676,12 +765,31 @@ if __name__ == '__main__':
                 patience = 2
 
         prev_hausdorff = now_hausdorff
+
         if patience == 0:
             logger.info('early stop')
             break
+
         logger.info('start train discriminator at epoch {}'.format(epoch))
         train_discriminator(max_epoch=1)
+
         rollout.update_params(region_generator)
+
+        save_training_checkpoint(
+            checkpoint_path,
+            next_epoch=epoch + 1,
+            generator=region_generator,
+            discriminator=discriminator,
+            prev_hausdorff=prev_hausdorff,
+            patience=patience,
+        )
+
+        logger.info(
+            "saved training checkpoint after epoch %d to %s",
+            epoch,
+            checkpoint_path,
+        )
+
     # 保存本次训练的生成器与判别器
     # if not os.path.exists(save_folder):
     if not os.path.exists(save_dir):
@@ -691,3 +799,6 @@ if __name__ == '__main__':
     torch.save(region_generator.state_dict(), generator_path)
     # torch.save(discriminator.state_dict(), os.path.join(save_folder, 'adversarial_region_discriminator.pt'))
     torch.save(discriminator.state_dict(), disc_path)
+
+    # The run completed successfully, so crash-recovery state is no longer needed.
+    checkpoint_path.unlink(missing_ok=True)

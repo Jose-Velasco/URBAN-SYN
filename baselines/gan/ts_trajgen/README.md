@@ -82,6 +82,9 @@ The commands below are intentionally explicit. Arguments are shown in full so ea
 
 > **Smoke-test note:** the GAN commands currently use `--debug True`, which intentionally reduces epochs/sample counts for a fast pipeline test. Use `--debug False` for a full training run after the pipeline is verified.
 
+For the automated preprocessing, pretraining, GAN training, generation,
+Docker, see [PIPELINE.md](./PIPELINE.md).
+
 ### 1. Build TS-TrajGen road-network and map-matched trajectory inputs
 
 Run this in the project/dev environment, not from `/workspace/repo` inside the TS-TrajGen container.
