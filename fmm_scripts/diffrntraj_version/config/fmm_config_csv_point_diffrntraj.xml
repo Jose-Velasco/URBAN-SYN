@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Diff-RNTraj copy of config/fmm_config_csv_point.xml. -->
+
+
+<!-- Same as the original above except the lines marked CHANGED or NEW. -->
+<!-- This is for the vehicle-move point CSV (from enriched_moves.parquet) -->
+<!-- written by prepare_fmm_inputs_diffrntraj.py. -->
+<config>
+  <input>
+    <ubodt>
+    <!-- Ubodt file name -->
+      <!-- CHANGED: was ./data/nyc_ubodt.bin. The drive-only table from ubodt_config_diffrntraj.xml. -->
+      <file>./data/nyc_drive_ubodt.bin</file>
+      <!-- set it to the same 0.01 as the ubodt_config used to generate the table. -->
+      <!-- Note: this FMM version only reads <file> in this section and ignores <delta>. -->
+      <delta>0.01</delta>
+    </ubodt>
+    <network>
+    <!-- network file name -->
+      <!-- CHANGED: was ./data/fmm/fmm_nyc.shp. Must be the same network the UBODT was built from. -->
+      <file>./data/fmm/fmm_nyc_drive.shp</file>
+      <!-- network id field name -->
+      <id>fid</id>
+      <source>u</source>
+      <target>v</target>
+    <!-- network mode name, only applies to OSM network, one of drive|walk|bike|all. -->
+      <mode>drive</mode>
+    </network>
+    <gps>
+    <!-- GPS file name -->
+      <!-- CHANGED: was ./data/nyc_gps_points_fmm_ready.csv. Vehicle-move points: -->
+      <!-- one point every 15 s, 20-100 points per trajectory id. -->
+      <file>./data/nyc_drive_points.csv</file>
+      <!-- GPS id field/column name -->
+      <id>id</id>
+      <!-- GPS geometry field/column name (default:geom), only applicable for CSV file -->
+      <!-- <geom>id</geom> -->
+
+      <!-- if specified read input data as gps point, otherwise (default) read input data as trajectory -->
+      <gps_point/>
+      <!-- X field/column name, only applicable for GPS point CSV file -->
+      <x>x</x>
+      <!-- Y field/column name, only applicable for GPS point CSV file -->
+      <y>y</y>
+      <!-- Timestamp field/column name, an integer list (Trajectory file) and int (Point GPS file) -->
+      <timestamp>timestamp</timestamp>
+    </gps>
+  </input>
+  <parameters>
+  <!-- number of candidates -->
+    <k>8</k>
+    <!-- search radius (unit: map unit) -->
+    <r>0.003</r>
+    <!-- GPS sensor error (unit: map unit) -->
+    <gps_error>0.0005</gps_error>
+  </parameters>
+  <output>
+  <!-- refer to https://fmm-wiki.github.io/docs/documentation/output/ -->
+    <fields>
+      <!-- DIFF-RNTRAJ CHANGE: keep only fields needed by the converter or QC. -->
+      <!-- One matched edge ID per GPS point; converted from FMM fid to model rid. -->
+      <opath/>
+      <!-- Distance from start of matched edge to matched point. -->
+      <offset/>
+      <!-- Length of matched edge; converter computes rate = offset / length. -->
+      <length/>
+      <!-- Retained for match-quality filtering/diagnostics before conversion. -->
+      <error/>
+    </fields>
+    <!-- Output file name -->
+    <!-- CHANGED: was ./outputs/nyc_fmm_match.csv. New name for the drive-only results,
+         kept in data/ with the other intermediate files (no outputs/ folder). -->
+    <file>./data/nyc_drive_fmm_match.csv</file>
+  </output>
+  <other>
+  <!-- log level: 0-trace,1-debug,2-info,3-warn,4-err,5-critical,6off -->
+    <log_level>2</log_level>
+    <!-- If specified, run map matching in multiple thread -->
+    <use_omp/>
+    <!-- Number of trajectories to report the progress of matching -->
+    <step>3000</step>
+  </other>
+</config>
