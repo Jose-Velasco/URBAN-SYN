@@ -46,8 +46,16 @@ This project includes baseline implementations adapted from existing research re
 The code for this baseline is included under:
 `baselines/gan/lstm_trajgan/`
 
-
 See `baselines/gan/lstm_trajgan/NOTES.md` for details.
+
+### TS-TrajGen
+- Source: https://github.com/WenMellors/TS-TrajGen
+- Paper: [Continuous Trajectory Generation Based on Two-Stage GAN](https://arxiv.org/abs/2301.07103)
+
+The code for this baseline is included under:
+`baselines/gan/ts_trajgen/`
+
+See `baselines/gan/ts_trajgen/README.md` for details.
 
 ### Diff-RNTraj
 - Source: https://github.com/wtl52656/Diff-RNTraj
@@ -66,3 +74,5 @@ The code for this baseline is included under:
 `baselines/diffusion/difftraj/`
 
 See `baselines/diffusion/difftraj/README.md` for details.
+
+
