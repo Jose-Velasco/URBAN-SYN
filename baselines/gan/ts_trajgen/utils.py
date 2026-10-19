@@ -1017,6 +1017,31 @@ def _print_build_summary(
     print(f"  Train size:             {train_size:,}")
     print(f"  Test size:              {test_size:,}")
 
+def _limit_trajectories(
+    df: pd.DataFrame,
+    max_trajectories: int | None,
+    random_state: int,
+    logger: logging.Logger | None = None,
+) -> pd.DataFrame:
+    """Deterministically limit the number of trajectories in a split."""
+    if max_trajectories is None:
+        return df.reset_index(drop=True)
+
+    if max_trajectories <= 0:
+        raise ValueError("max_trajectories must be greater than 0.")
+
+    if len(df) <= max_trajectories:
+        return df.reset_index(drop=True)
+
+    if logger:
+        logger.info(f"Applied trajectory limits: {max_trajectories = }")
+    return (
+        df.sample(
+            n=max_trajectories,
+            random_state=random_state,
+        )
+        .reset_index(drop=True)
+    )
 def build_mm_csvs(
     fmm_path: Path | str,
     edge_id_to_geo_id: dict[int, int],
@@ -1030,6 +1055,8 @@ def build_mm_csvs(
     fmm_sep: str = ";",
     min_delta_seconds: float = 1.0,
     logger: logging.Logger | None = None,
+    max_train_trajectories: int | None = None,
+    max_test_trajectories: int | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Build TS-TrajGen train/test CSVs from FMM map-matching output.
@@ -1146,6 +1173,18 @@ def build_mm_csvs(
         return df, df.copy()
 
     train, test = _split_train_test(df, train_ratio, random_state)
+
+    train = _limit_trajectories(
+        train,
+        max_train_trajectories,
+        random_state,
+    )
+
+    test = _limit_trajectories(
+        test,
+        max_test_trajectories,
+        random_state,
+    )
 
     build_stats.log_summary(logger, train_size=len(train), test_size=len(test))
     interp_stats.log_summary(logger)
