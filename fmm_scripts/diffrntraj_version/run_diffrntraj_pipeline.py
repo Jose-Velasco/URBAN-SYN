@@ -6,21 +6,22 @@ From PowerShell (or any terminal on your computer), in URBAN-SYN/fmm_scripts/dif
 
     python run_diffrntraj_pipeline.py
 
-What it runs, in order. Every step runs in the Diff-RNTraj image
-(baselines/diffusion/diff_rntraj/Dockerfile), which has FMM and all the packages:
+What it runs, in order. Every step runs in this folder's Docker image (Dockerfile and
+docker-compose.yml here), so nothing has to be installed on your computer except Docker Desktop.
+The result is everything training needs, in baselines/diffusion/diff_rntraj/repo/data/NYC/:
 
-  step      runs with                 what
+  step      runs                      what
   --------  ------------------------  ----------------------------------------------------
-  prep      prep-python (osmnx env)   prepare_fmm_inputs_diffrntraj.py: download road network,
+  prep      python                    prepare_fmm_inputs_diffrntraj.py: download road network,
                                       build the 15 s GPS points CSV from the parquet
                                       (needs internet for the OpenStreetMap download)
   ubodt     FMM                       ubodt_gen  (shortest-path table)
   fmm       FMM                       fmm        (map matching)
-  convert   prep-python               convert_fmm_to_diffrntraj.py -> baselines/.../repo/data/NYC/
+  convert   python                    convert_fmm_to_diffrntraj.py -> baselines/.../repo/data/NYC/
                                       (writes straight into the model's data folder; first clears
                                       the old graph files, which no longer match the new road IDs)
-  graph     prep-python               build_graph_nyc.py (graph.pkl, graph_X.csv, edge list)
-  embed     python (model env, GPU)   train_road_embed.py (road_embed.txt) - can be slow,
+  graph     python                    build_graph_nyc.py (graph.pkl, graph_X.csv, edge list)
+  embed     python (GPU if any)       train_road_embed.py (road_embed.txt) - can be slow,
                                       only runs if you ask for it with --to embed
 
 Optional:
@@ -28,28 +29,24 @@ Optional:
     python run_diffrntraj_pipeline.py --only convert    # run one step
     python run_diffrntraj_pipeline.py --to embed        # also train the road embedding
     python run_diffrntraj_pipeline.py --dry-run         # print the commands only
-    python3 run_diffrntraj_pipeline.py --apptainer ../../baselines/diffusion/diff_rntraj/diffrntraj.sif --from ubodt
-                                                        # on the HPC
+    python run_diffrntraj_pipeline.py --to embed --embed-cpu   # road embedding without an NVIDIA GPU (slow)
 
-Where it runs:
-  - On your computer (default): needs Docker Desktop. Each step is a `docker compose run`
-    of baselines/diffusion/diff_rntraj/docker-compose.yml, which mounts the URBAN-SYN folder
-    at /workspace/URBAN-SYN. The first run builds the image (it compiles FMM; takes a while).
-  - On the HPC: --apptainer path/to/diffrntraj.sif runs the same commands with
-    `apptainer exec`. HPC nodes have no internet, so run `prep` on your computer first and
-    start the HPC run with --from ubodt (see "How to run" in baselines/diffusion/diff_rntraj/README.md).
+Image: build it once with `docker compose build` in this folder (the first run also builds it if
+it's missing; it compiles FMM, so it takes a while). It mounts the URBAN-SYN folder at
+/workspace/URBAN-SYN. The embed step uses the same image with the GPU (service diffrntraj-fmm-gpu).
+Training and generation then run in the model image (baselines/diffusion/diff_rntraj/), on the HPC.
 
 File paths below match config/*_diffrntraj.xml. The FMM-related paths are read
 from those XML files, so the two can't drift apart.
 
 Folder layout: everything for Diff-RNTraj is in fmm_scripts/diffrntraj_version/ (scripts,
-configs, data/, logs/). The TS-TrajGen files stay in fmm_scripts/; this pipeline only uses
-their utils.py and config/nyc.yaml. FMM is built into the Diff-RNTraj image the same way as
-in fmm_scripts/dockerfile, so the TS-TrajGen containers aren't needed here (they still run
+configs, Docker files, data/, logs/). The TS-TrajGen files stay in fmm_scripts/; this pipeline
+only uses their utils.py and config/nyc.yaml. FMM is built into this folder's image the same way
+as in fmm_scripts/dockerfile, so the TS-TrajGen containers aren't needed here (they still run
 the TS-TrajGen pipeline).
 """
 
-# Works with Python 3.6+ (only the standard library), so it also runs with an older python3 on the HPC.
+# Works with Python 3.6+ (only the standard library).
 import argparse
 import codecs
 import os
@@ -84,18 +81,16 @@ CONVERTER_OUT = "../../baselines/diffusion/diff_rntraj/repo/data/NYC"
 MODEL_REPO = REPO / "baselines/diffusion/diff_rntraj/repo"
 MODEL_DATA = MODEL_REPO / "data/NYC"
 
-# Container: the Diff-RNTraj image (baselines/diffusion/diff_rntraj/Dockerfile) has FMM and
-# two Python envs. URBAN-SYN is mounted at ROOT_IN_CONTAINER, so the relative paths above
-# work the same inside it.
-COMPOSE = REPO / "baselines/diffusion/diff_rntraj/docker-compose.yml"
-SERVICE = "diff-rntraj"
-IMAGE = "diffrntraj:latest"
+# Containers. URBAN-SYN is mounted at ROOT_IN_CONTAINER in both, so the relative paths above
+# work the same inside them.
+FMM_COMPOSE = HERE / "docker-compose.yml"                  # this folder's image
+FMM_SERVICE = "diffrntraj-fmm"                             # no GPU
+GPU_SERVICE = "diffrntraj-fmm-gpu"                         # same image with the GPU (embed step)
+FMM_IMAGE = "diffrntraj-fmm:latest"
+EMBED_CPU = False                                          # --embed-cpu
 ROOT_IN_CONTAINER = "/workspace/URBAN-SYN"
 PIPELINE_DIR_IN_CONTAINER = f"{ROOT_IN_CONTAINER}/fmm_scripts/diffrntraj_version"
 MODEL_DIR_IN_CONTAINER = f"{ROOT_IN_CONTAINER}/baselines/diffusion/diff_rntraj/repo"
-PREP_PY = "prep-python"   # conda env "prep": osmnx, geopandas, pyogrio, pyarrow, networkx, ...
-MODEL_PY = "python"       # conda env "diffrntraj": torch with CUDA (model, road embedding)
-APPTAINER_SIF = None   # Path of the .sif, set with --apptainer (HPC); otherwise Docker
 
 STEPS = ["prep", "ubodt", "fmm", "convert", "graph", "embed"]
 DEFAULT_LAST = "graph"
@@ -190,26 +185,24 @@ def xml_files(path):
     return re.findall(r"<file>\s*(.*?)\s*</file>", text)
 
 
-def in_container(workdir: str, *cmd: str) -> None:
-    """Run one command in the Diff-RNTraj image: Docker by default, Apptainer with --apptainer."""
-    if APPTAINER_SIF:
-        run(["apptainer", "exec", "--nv", "--env", "PYTHONUNBUFFERED=1",
-             "--bind", f"{REPO}:{ROOT_IN_CONTAINER}", "--pwd", workdir, str(APPTAINER_SIF), *cmd])
-    else:
-        run(["docker", "compose", "-f", str(COMPOSE), "run", "--rm", "-T", "-e", "PYTHONUNBUFFERED=1",
-             "-w", workdir, SERVICE, *cmd])
+def in_container(compose: Path, service: str, workdir: str, *cmd: str) -> None:
+    """Run one command in a container (docker compose run of the given compose file)."""
+    run(["docker", "compose", "-f", str(compose), "run", "--rm", "-T", "-e", "PYTHONUNBUFFERED=1",
+         "-w", workdir, service, *cmd])
 
 
 def in_pipeline_dir(*cmd: str) -> None:
-    in_container(PIPELINE_DIR_IN_CONTAINER, *cmd)
+    """FMM pipeline image, in fmm_scripts/diffrntraj_version/."""
+    in_container(FMM_COMPOSE, FMM_SERVICE, PIPELINE_DIR_IN_CONTAINER, *cmd)
 
 
-def in_model_dir(*cmd: str) -> None:
-    in_container(MODEL_DIR_IN_CONTAINER, *cmd)
+def in_model_dir(*cmd: str, gpu: bool = False) -> None:
+    """Same image, in the model's repo/ folder (build_graph_nyc.py and train_road_embed.py live there)."""
+    in_container(FMM_COMPOSE, GPU_SERVICE if gpu else FMM_SERVICE, MODEL_DIR_IN_CONTAINER, *cmd)
 
 
-def docker_image_exists() -> bool:
-    return subprocess.run(["docker", "image", "inspect", IMAGE],
+def docker_image_exists(image: str) -> bool:
+    return subprocess.run(["docker", "image", "inspect", image],
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
 
 
@@ -227,7 +220,7 @@ def step_prep() -> None:
         with log.open("a", encoding="utf-8") as f:
             f.write("\n")
     in_pipeline_dir(
-        PREP_PY, "prepare_fmm_inputs_diffrntraj.py",
+        "python", "prepare_fmm_inputs_diffrntraj.py",
         "--config", ROAD_CONFIG,
         "--canonical_road_network_output", CANONICAL_GPKG,
         "--canonical_road_network_layer", "roads",
@@ -251,7 +244,7 @@ def step_fmm() -> None:
 def step_convert() -> None:
     clear_stale_graph_files()
     in_pipeline_dir(
-        PREP_PY, "convert_fmm_to_diffrntraj.py",
+        "python", "convert_fmm_to_diffrntraj.py",
         "--fmm-output", MATCH_CSV,
         "--road-network", CANONICAL_GPKG,
         "--output-dir", CONVERTER_OUT,
@@ -277,11 +270,14 @@ def clear_stale_graph_files() -> None:
 
 
 def step_graph() -> None:
-    in_model_dir(PREP_PY, "build_graph_nyc.py", "--data-dir", "./data/NYC")
+    in_model_dir("python", "build_graph_nyc.py", "--data-dir", "./data/NYC")
 
 
 def step_embed() -> None:
-    in_model_dir(MODEL_PY, "train_road_embed.py", "--data-dir", "./data/NYC")
+    if EMBED_CPU:
+        in_model_dir("python", "train_road_embed.py", "--data-dir", "./data/NYC", "--device", "cpu")
+    else:
+        in_model_dir("python", "train_road_embed.py", "--data-dir", "./data/NYC", gpu=True)
 
 
 RUNNERS = {"prep": step_prep, "ubodt": step_ubodt, "fmm": step_fmm, "convert": step_convert,
@@ -296,12 +292,12 @@ def main() -> None:
     p.add_argument("--to", dest="end", choices=STEPS, default=DEFAULT_LAST, help=f"last step (default: {DEFAULT_LAST})")
     p.add_argument("--only", choices=STEPS, help="run just this one step")
     p.add_argument("--dry-run", action="store_true", help="print the commands without running them")
-    p.add_argument("--apptainer", metavar="SIF", type=Path,
-                   help="run with Apptainer and this .sif image (HPC) instead of Docker")
+    p.add_argument("--embed-cpu", action="store_true",
+                   help="run the road embedding on the CPU (no NVIDIA GPU; much slower)")
     a = p.parse_args()
     DRY_RUN = a.dry_run
-    global APPTAINER_SIF
-    APPTAINER_SIF = a.apptainer.resolve() if a.apptainer else None
+    global EMBED_CPU
+    EMBED_CPU = a.embed_cpu
     if not DRY_RUN:
         start_pipeline_log()
 
@@ -319,24 +315,19 @@ def main() -> None:
     print(f"model data folder  : {MODEL_DATA}")
     if not DRY_RUN:
         print(f"log                : {PIPELINE_LOG}")
-    print(f"runs in            : {'Apptainer (' + str(APPTAINER_SIF) + ')' if APPTAINER_SIF else 'Docker (' + str(COMPOSE) + ')'}")
+    print(f"image              : {FMM_IMAGE} ({FMM_COMPOSE})")
+    if "embed" in steps:
+        print(f"road embedding on  : {'CPU (--embed-cpu)' if EMBED_CPU else 'GPU'}")
 
     # checks before spending time on anything
     if not DRY_RUN:
-        tool = "apptainer" if APPTAINER_SIF else "docker"
-        if shutil.which(tool) is None:
-            sys.exit("Apptainer not found (on the SJSU HPC it is /usr/bin/apptainer)." if APPTAINER_SIF
-                     else "Docker not found. Start Docker Desktop and try again.")
-        if APPTAINER_SIF and not APPTAINER_SIF.exists():
-            sys.exit(f"Image not found: {APPTAINER_SIF} (see 'How to run' in baselines/diffusion/diff_rntraj/README.md)")
+        if shutil.which("docker") is None:
+            sys.exit("Docker not found. Start Docker Desktop and try again.")
         if "prep" in steps and not (HERE / PARQUET).exists():
             sys.exit(f"Parquet not found: {(HERE / PARQUET).resolve()}")
-        if APPTAINER_SIF and "prep" in steps:
-            print("Note: prep downloads OpenStreetMap data. HPC compute nodes have no internet, so run prep "
-                  "on your computer and use --from ubodt here.", flush=True)
-        if not APPTAINER_SIF and not docker_image_exists():
-            heading(f"Building the Diff-RNTraj image {IMAGE} (first time only: compiles FMM, takes a while)")
-            run(["docker", "compose", "-f", str(COMPOSE), "build"])
+        if not docker_image_exists(FMM_IMAGE):
+            heading(f"Building the image {FMM_IMAGE} (first time only: compiles FMM, takes a while)")
+            run(["docker", "compose", "-f", str(FMM_COMPOSE), "build"])
 
     t_all = time.time()
     for i, name in enumerate(steps, 1):

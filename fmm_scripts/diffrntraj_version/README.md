@@ -8,7 +8,10 @@ uses `utils.py` and the road network settings in `config/nyc.yaml`.
 ## Files added for this project
 
 Created only for the Diff-RNTraj version:
-- `run_diffrntraj_pipeline.py`: runs every step with one command, in the Diff-RNTraj container.
+- `run_diffrntraj_pipeline.py`: runs every step with one command, in Docker containers.
+- `Dockerfile`, `docker-compose.yml`, `.dockerignore`: the pipeline's container, with FMM (built like the TS-TrajGen
+  `fmm_scripts/dockerfile`) and the Python packages of the data scripts (osmnx 2.0.7, geopandas, and PyTorch for the
+  road embedding).
 - `convert_fmm_to_diffrntraj.py`: turns the FMM matches into Diff-RNTraj's data files in `repo/data/NYC/`.
 - `README.md`: this file.
 - `fmm_scripts/nyc_test.csv` (one folder up, gitignored): TS-TrajGen's test trips, held out from training.
@@ -55,9 +58,10 @@ cd fmm_scripts/diffrntraj_version
 python run_diffrntraj_pipeline.py --to embed
 ```
 Steps, in order: road network and GPS points, shortest-path table, map matching, conversion to `repo/data/NYC/`,
-road graph, and road embedding (only with `--to embed`). Each runs in the Diff-RNTraj image, which the first run
-builds. Other options: `--from <step>`, `--only <step>`, `--dry-run`. After replacing the test split, rerun from the
-conversion: `--from convert --to embed`.
+road graph, and road embedding (only with `--to embed`). Every step runs in this folder's container: build it once
+with `docker compose build` here (the first run also builds it if it's missing). The road embedding uses the GPU;
+add `--embed-cpu` on a computer without an NVIDIA GPU (much slower), or stop after the graph step (the default) and
+let the HPC training job train the road embedding by not including `--to embed`
 
 It needs `data/nyc_output_tabular/output/enriched_moves.parquet` (in the URBAN-SYN root) and
 `fmm_scripts/nyc_test.csv`. Outputs (gitignored) go to `data/` and `logs/` in this folder, and the model

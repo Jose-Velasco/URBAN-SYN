@@ -16,7 +16,7 @@ the code work at NYC's scale and with current PyTorch.
 
 Everything else in `repo/` is the authors' code (changed files are listed under NYC adaptation notes).
 
-- `Dockerfile`, `docker-compose.yml`, `.dockerignore`: the container with FMM and both Python environments.
+- `Dockerfile`, `docker-compose.yml`, `.dockerignore`: the model container (training and generation).
 - `hpc/train_nyc.sbatch`: HPC job that trains, then generates.
 - `README.md`: this file.
 - `repo/build_graph_nyc.py`: builds the NYC road graph from the training trips (edge list instead of `graph_A.csv`).
@@ -93,17 +93,20 @@ All data and outputs are gitignored; only the code is committed.
 
 ## Container
 
-One image (`diffrntraj:latest`) has everything from the raw NYC data to generated trajectories:
+Two images, one for each part:
 
-- FMM for map matching, built the same way as the TS-TrajGen `fmm_scripts/dockerfile` (same Ubuntu 22.04 packages and FMM
-  commit), so the TS-TrajGen FMM container isn't needed here and is not changed.
-- A Python environment for the model (Python 3.11, gdal, rtree, networkx < 3, pandas, scikit-learn,
-  torch 2.7.1 with CUDA 11.8), used by `python`.
-- A separate Python environment for the data pipeline (osmnx 2.0.7, geopandas, pyogrio, pyarrow, pyyaml,
-  shapely, networkx), used by `prep-python`. It's separate because the model needs networkx < 3.
+- **FMM pipeline image** (`diffrntraj-fmm:latest`, in `fmm_scripts/diffrntraj_version/`): FMM for map matching,
+  built the same way as the TS-TrajGen `fmm_scripts/dockerfile` (same Ubuntu 22.04 packages and FMM commit), and a
+  Python environment for the data scripts (osmnx 2.0.7, geopandas, pyogrio, pyarrow, pyyaml, shapely, networkx,
+  and torch 2.7.1 with CUDA 11.8 for the road embedding). It builds everything training needs in `repo/data/NYC/`.
+  The TS-TrajGen FMM container isn't needed here and is not changed.
+- **Model image** (`diffrntraj:latest`, in this folder): Python 3.11, gdal, rtree, networkx < 3, pandas,
+  scikit-learn and torch 2.7.1 with CUDA 11.8. It runs training and generation. It's separate because the model
+  needs networkx < 3, while osmnx needs a newer version.
 
-`docker-compose.yml` mounts the whole URBAN-SYN folder, so code changes don't need a rebuild. The build ends with an
-import check of every package. GPU-enabled through `gpus: all`. On the HPC the same image runs as an Apptainer `.sif`.
+Both `docker-compose.yml` files mount the whole URBAN-SYN folder, so code changes don't need a rebuild, and both
+builds end with an import check of every package. Both can use the GPU (`gpus: all`; the FMM image only for the road
+embedding), and on the HPC the model image runs as an Apptainer `.sif`.
 
 ## How to run
 
@@ -120,14 +123,16 @@ python run_diffrntraj_pipeline.py --to embed      # all steps
 python run_diffrntraj_pipeline.py --from convert --to embed   # resume from a step
 python run_diffrntraj_pipeline.py --dry-run       # print the commands only
 ```
-Every step runs in the image; the first run builds it (it compiles FMM, so it takes a while). Details are in
+Every step runs in the FMM pipeline image (`docker compose build` in that folder, or the first run builds it; it
+compiles FMM, so it takes a while). Details are in
 `fmm_scripts/diffrntraj_version/README.md`.
 
 ### 2. Train and generate
 
 **On the HPC:** submit `hpc/train_nyc.sbatch` from this folder, with the image as `diffrntraj.sif` next to it.
-The job trains, then generates with the trained model; `GENERATE_ONLY=1` skips training. Usage and options are in
-the comments at the top of the script.
+The job trains, then generates with the trained model; `GENERATE_ONLY=1` skips training. If
+`repo/data/NYC/graph/road_embed.txt` is missing (pipeline run locally only up to the graph step), the job trains the
+road embedding first. 
 
 **Locally** (from this folder):
 ```bash

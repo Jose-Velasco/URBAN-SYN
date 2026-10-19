@@ -19,6 +19,8 @@
 # Outputs: repo/results/NYC/ (model, losses, run_times.txt) and repo/generate_data/NYC/ (trajectories).
 # Generation only, with the model already in repo/results/NYC/:
 #   sbatch --export=ALL,GENERATE_ONLY=1 hpc/train_nyc.sbatch
+# If repo/data/NYC/graph/road_embed.txt is missing (pipeline run locally only up to the graph
+# step, e.g. on a computer without an NVIDIA GPU), the job trains the road embedding first.
 
 set -eo pipefail
 # Paths below (repo/, diffrntraj.sif, logs/) are relative to the folder the job was submitted from.
@@ -30,6 +32,7 @@ RUN=$(command -v apptainer || command -v singularity)
 now() { date '+%Y-%m-%d %H:%M:%S'; }
 
 [ -d repo/data/NYC/gen_train ] || { echo "repo/data/NYC/gen_train is missing - rerun the convert step locally and upload repo/data/NYC"; exit 1; }
+[ -f repo/data/NYC/graph/graph_edge.edgelist ] || { echo "repo/data/NYC/graph/graph_edge.edgelist is missing - run the pipeline locally up to the graph step and upload repo/data/NYC"; exit 1; }
 
 nvidia-smi
 
@@ -52,6 +55,14 @@ if ! container python -c "import torch; torch.zeros(1).cuda()" >/dev/null 2>&1; 
     exit 1
 fi
 hms() { printf '%dh %02dm %02ds' $(($1 / 3600)) $(($1 % 3600 / 60)) $(($1 % 60)); }
+
+# Road embedding, only if it wasn't made locally (train_road_embed.py, same settings as the pipeline).
+if [ ! -f repo/data/NYC/graph/road_embed.txt ]; then
+    echo "[$(now)] repo/data/NYC/graph/road_embed.txt is missing: training the road embedding"
+    EMBED_START=$SECONDS
+    container python train_road_embed.py --data-dir ./data/NYC
+    echo "[$(now)] road embedding done in $(hms $((SECONDS - EMBED_START)))"
+fi
 
 START=$SECONDS
 if [ "${GENERATE_ONLY:-0}" = 1 ]; then

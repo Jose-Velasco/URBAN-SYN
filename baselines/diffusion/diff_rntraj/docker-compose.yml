@@ -5,8 +5,8 @@ services:
       context: .
       dockerfile: Dockerfile
     image: diffrntraj:latest
-    # The whole URBAN-SYN folder is mounted, so the data pipeline (fmm_scripts/, data/)
-    # and the model (repo/) see the same folders as on your computer.
+    # The whole URBAN-SYN folder is mounted, so the model (repo/) and its data (repo/data/NYC/,
+    # made by the FMM pipeline in fmm_scripts/diffrntraj_version/) are the same folders as on your computer.
     working_dir: /workspace/URBAN-SYN/baselines/diffusion/diff_rntraj/repo
     volumes:
       - ../../..:/workspace/URBAN-SYN
