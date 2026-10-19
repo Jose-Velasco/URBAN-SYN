@@ -48,3 +48,21 @@ The code for this baseline is included under:
 
 
 See `baselines/gan/lstm_trajgan/NOTES.md` for details.
+
+### Diff-RNTraj
+- Source: https://github.com/wtl52656/Diff-RNTraj
+- Paper: [Diff-RNTraj: A Structure-aware Diffusion Model for Road Network-constrained Trajectory Generation](https://arxiv.org/abs/2402.07369)
+
+The code for this baseline is included under:
+`baselines/diffusion/diff_rntraj/`
+
+See `baselines/diffusion/diff_rntraj/README.md` for details.
+
+### DiffTraj
+- Source: https://github.com/Yasoz/DiffTraj
+- Paper: [DiffTraj: Generating GPS Trajectory with Diffusion Probabilistic Model](https://arxiv.org/abs/2304.11582)
+
+The code for this baseline is included under:
+`baselines/diffusion/difftraj/`
+
+See `baselines/diffusion/difftraj/README.md` for details.
