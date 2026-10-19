@@ -1,0 +1,29 @@
+name: diffrntraj-fmm
+services:
+  # Every pipeline step except the road embedding. No GPU needed.
+  diffrntraj-fmm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: diffrntraj-fmm:latest
+    # The whole URBAN-SYN folder is mounted, so the pipeline sees fmm_scripts/, data/ and the
+    # model's data folder (baselines/diffusion/diff_rntraj/repo/data/NYC/) as on your computer.
+    working_dir: /workspace/URBAN-SYN/fmm_scripts/diffrntraj_version
+    volumes:
+      - ../..:/workspace/URBAN-SYN
+    tty: true
+    stdin_open: true
+    command: /bin/bash
+
+  # Same image with the GPU, for the road embedding (run_diffrntraj_pipeline.py uses it for
+  # the embed step; --embed-cpu uses the service above instead, on computers without an NVIDIA GPU).
+  diffrntraj-fmm-gpu:
+    image: diffrntraj-fmm:latest
+    working_dir: /workspace/URBAN-SYN/fmm_scripts/diffrntraj_version
+    volumes:
+      - ../..:/workspace/URBAN-SYN
+    gpus: all
+    shm_size: "8g"
+    tty: true
+    stdin_open: true
+    command: /bin/bash

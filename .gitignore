@@ -274,3 +274,27 @@ outputs/
 
 !.devcontainer/devcontainer.json
 temp-baseline/
+
+### Diff-RNTraj FMM pipeline (fmm_scripts/diffrntraj_version) ###
+# Pipeline cache and logs
+fmm_scripts/**/cache/
+fmm_scripts/**/logs/
+# Local data-checks notebook (not committed)
+fmm_scripts/diffrntraj_version/NYC_DiffRNTraj_data_checks.ipynb
+
+### Diff-RNTraj (baselines/diffusion/diff_rntraj) ###
+# Container images for the HPC (see "How to run" in baselines/diffusion/diff_rntraj/README.md)
+# (*.tar is already ignored above)
+*.sif
+*.tgz
+# Training outputs, generated NYC trajectories and Slurm logs
+baselines/diffusion/diff_rntraj/repo/results/
+baselines/diffusion/diff_rntraj/repo/generate_data/NYC*/
+baselines/diffusion/diff_rntraj/logs/
+# Local reference notes, not committed (their content is in the READMEs)
+baselines/diffusion/diff_rntraj/**/*.txt
+
+### DiffTraj (baselines/diffusion/difftraj) ###
+# Training runs (checkpoints, logs, generated trajectories) and Slurm logs
+baselines/diffusion/difftraj/repo/DiffTraj/
+baselines/diffusion/difftraj/logs/

@@ -1,0 +1,16 @@
+name: difftraj
+services:
+  difftraj:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: difftraj:latest
+    # The whole URBAN-SYN folder is mounted, so prepare_data.py can read data/ and the run starts in repo/.
+    working_dir: /workspace/URBAN-SYN/baselines/diffusion/difftraj/repo
+    volumes:
+      - ../../..:/workspace/URBAN-SYN
+    gpus: all
+    shm_size: "8g"
+    tty: true
+    stdin_open: true
+    command: /bin/bash

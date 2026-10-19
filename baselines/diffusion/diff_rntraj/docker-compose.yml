@@ -1,0 +1,17 @@
+name: diff-rntraj
+services:
+  diff-rntraj:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: diffrntraj:latest
+    # The whole URBAN-SYN folder is mounted, so the model (repo/) and its data (repo/data/NYC/,
+    # made by the FMM pipeline in fmm_scripts/diffrntraj_version/) are the same folders as on your computer.
+    working_dir: /workspace/URBAN-SYN/baselines/diffusion/diff_rntraj/repo
+    volumes:
+      - ../../..:/workspace/URBAN-SYN
+    gpus: all
+    shm_size: "8g"
+    tty: true
+    stdin_open: true
+    command: /bin/bash

@@ -1,0 +1,4 @@
+# The image only needs the Dockerfile. Everything else (data/, logs/, cache/, scripts)
+# is mounted at run time and must not be sent to the build.
+*
+!Dockerfile
