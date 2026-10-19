@@ -1,0 +1,4 @@
+# The image only needs the Dockerfile. Everything else (repo/, the 3.6 GB
+# diffrntraj.tar, logs/) is mounted at run time and must not be sent to the build.
+*
+!Dockerfile

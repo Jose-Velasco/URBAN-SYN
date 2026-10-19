@@ -284,7 +284,7 @@ fmm_scripts/diffrntraj_version/NYC_DiffRNTraj_data_checks.ipynb
 
 ### Diff-RNTraj (baselines/diffusion/diff_rntraj) ###
 # Container images for the HPC (see "How to run" in baselines/diffusion/diff_rntraj/README.md)
-*.tar
+# (*.tar is already ignored above)
 *.sif
 *.tgz
 # Training outputs, generated NYC trajectories and Slurm logs
