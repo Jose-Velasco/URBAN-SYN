@@ -73,7 +73,7 @@ PARQUET = "../../data/nyc_output_tabular/output/enriched_moves.parquet"
 CANONICAL_GPKG = "./data/road_network/nyc_drive.gpkg"
 TRIP_ID_MAP = "./data/nyc_gps_points_fmm_trip_id_map_drive.csv"
 # uid, tid of TS-TrajGen's test trips (held out in gen_test/ by the convert step)
-TEST_TRIPS = "../nyc_test_trips.csv"                       # in fmm_scripts/
+TEST_TRIPS = "../nyc_test.csv"                                   # in fmm_scripts/
 PREP_LOG = "./logs/prepare_fmm_nyc_diffrntraj.log"
 # Everything the pipeline prints (all steps), appended run after run.
 PIPELINE_LOG = "./logs/run_diffrntraj_pipeline.log"

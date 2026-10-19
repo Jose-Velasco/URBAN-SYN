@@ -23,7 +23,7 @@ Everything else in `repo/` is the authors' code (changed files are listed under 
 - `repo/train_road_embed.py`: trains the road embedding (`road_embed.txt`).
 - `fmm_scripts/diffrntraj_version/` (in the URBAN-SYN root): the FMM pipeline that makes `repo/data/NYC/`, with
   its own README.
-- `fmm_scripts/nyc_test_trips.csv` (gitignored): the test trips held out from training.
+- `fmm_scripts/nyc_test.csv` (gitignored): the test trips held out from training.
 
 ## NYC adaptation notes
 
@@ -73,7 +73,7 @@ Other:
 
 - **Train (`gen_train/`):** all trips except TS-TrajGen's test trips. Used for training, the road graph and the
   number of trajectories generated per length.
-- **Test (`gen_test/`):** the same test trips as TS-TrajGen (listed in `fmm_scripts/nyc_test_trips.csv`), held out
+- **Test (`gen_test/`):** the same test trips as TS-TrajGen (listed in `fmm_scripts/nyc_test.csv`), held out
   so both baselines are evaluated on the same trips.
 - **All (`gen_all/`):** train + test, kept for reference.
 - **No validation set:** like the original code, training has no validation split. Despite its name,
@@ -85,7 +85,7 @@ Other:
 All data and outputs are gitignored; only the code is committed.
 
 - **Raw input:** the MAT-Dataset NYC moves (`data/nyc_output_tabular/output/enriched_moves.parquet`) and the test
-  split (`fmm_scripts/nyc_test_trips.csv`).
+  split (`fmm_scripts/nyc_test.csv`).
 - **Model input (`repo/data/NYC/`):** made by the FMM pipeline in `fmm_scripts/diffrntraj_version/`: road data and
   road ID maps, the train/test/all trajectory files, the road network, the road graph and the road embedding.
 - **Outputs:** the trained model, losses and logs in `repo/results/NYC/`, and the generated trajectories in

@@ -4,7 +4,7 @@ DiffTraj_DataFormat.ipynb, in the same folder).
 
 One trajectory per MOVE (enriched_moves.parquet, default) or per user track
 (traj_cleaned.parquet, --source traj_cleaned). Test trips are the ones in
-fmm_scripts/nyc_test_trips.csv (the same list as Diff-RNTraj, read from there, not copied);
+fmm_scripts/nyc_test.csv (the same list as Diff-RNTraj, read from there, not copied);
 all moves of a test (uid, tid) go to the test set, like the Diff-RNTraj converter.
 Normalisation statistics come from the TRAIN trips only.
 
@@ -22,10 +22,10 @@ head columns: [departure slot (5 min), distance m, duration min, #points, avg m 
                avg speed m/min, start cell, end cell]   (cells: 16x16 grid over the data)
 
 Usage
-    python prepare_data.py                  # data/.../enriched_moves.parquet + fmm_scripts/nyc_test_trips.csv
+    python prepare_data.py                  # data/.../enriched_moves.parquet + fmm_scripts/nyc_test.csv
     python prepare_data.py --test-csv nyc_mm_test.csv --trip-map nyc_gps_points_fmm_trip_id_map.csv
     python prepare_data.py --parquet output/traj_cleaned.parquet      # one trajectory per user track
-    (nyc_test_trips.csv already has uid / tid, so it needs no trip map)
+    (nyc_test.csv already has uid / tid, so it needs no trip map)
 """
 import argparse
 import json
@@ -86,8 +86,6 @@ def load_test_keys(args):
     test = pd.read_csv(args.test_csv)
     if {"uid", "tid"} <= set(test.columns):
         test = test.astype({"uid": str, "tid": str})
-        # fmm_scripts/nyc_test_trips.csv names the TS-TrajGen trajectory id tstrajgen_traj_id
-        test = test.rename(columns={"tstrajgen_traj_id": "traj_id"})
         test["trip_key"] = as_key_str(test["uid"]) + "_" + as_key_str(test["tid"])
         if "traj_id" not in test.columns:
             test["traj_id"] = np.nan
@@ -109,7 +107,7 @@ def main():
     p.add_argument("--source", choices=["enriched_moves", "traj_cleaned"], default=None,
                    help="default: from the parquet file name")
     # the shared test list in URBAN-SYN/fmm_scripts (also used by Diff-RNTraj)
-    p.add_argument("--test-csv", default="../../../../fmm_scripts/nyc_test_trips.csv",
+    p.add_argument("--test-csv", default="../../../../fmm_scripts/nyc_test.csv",
                    help="test trips: a CSV with uid, tid, or with traj_id (+ --trip-map)")
     p.add_argument("--trip-map", default="nyc_gps_points_fmm_trip_id_map.csv")
     p.add_argument("--modes", type=int, nargs="*", default=None,

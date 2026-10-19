@@ -143,7 +143,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--test-trips",
-        default="../nyc_test_trips.csv",
+        default="../nyc_test.csv",
         help="CSV with uid, tid of the test trips (TS-TrajGen's test set). "
              "Their trajectories go to gen_test/, the rest to gen_train/.",
     )

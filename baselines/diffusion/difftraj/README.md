@@ -72,7 +72,7 @@ The authors' other notebook (`process/Traj2parquet.ipynb`, Chengdu data conversi
 ## Data-split policy
 
 - **Train:** all trips except the test trips. Used for training and for the normalisation statistics.
-- **Test:** the same test trips as Diff-RNTraj, read from the shared list `fmm_scripts/nyc_test_trips.csv`
+- **Test:** the same test trips as Diff-RNTraj and TS-TrajGen, read from the shared list `fmm_scripts/nyc_test.csv`
   (`uid`, `tid`; not copied into this folder). Every move of a test trip goes to the test set. `generate.py` generates one trajectory per test trip for evaluation.
 - **No validation set:** like the original code, training has no validation split; checkpoints are simply saved
   every 50 epochs.
@@ -82,7 +82,7 @@ The authors' other notebook (`process/Traj2parquet.ipynb`, Chengdu data conversi
 All data and outputs are gitignored; only the code is committed.
 
 - **Raw input:** the MAT-Dataset NYC moves (`data/nyc_output_tabular/output/enriched_moves.parquet` in the
-  URBAN-SYN root) and the test list (`fmm_scripts/nyc_test_trips.csv`, gitignored).
+  URBAN-SYN root) and the test list (`fmm_scripts/nyc_test.csv`, gitignored).
 - **Made by `prepare_data.py` (in `repo/`):** the training trajectories and conditions (`traj.npy`, `head.npy`),
   the test conditions (`head_test.npy`), the training statistics (`traj_stats.npy`), the real test trajectories
   in the same order (`real_trajectories_test.npy`), and a summary (`prepare_data_info.json`).
@@ -117,7 +117,7 @@ Other options: `--min-points N` (drop moves with fewer GPS points, default 2) an
 The same steps are in `repo/DiffTraj_DataFormat.ipynb` (notebook version). It runs in Colab (it mounts Google
 Drive and reads the data and test files from there) or locally from `repo/` (it reads the parquet from
 `URBAN-SYN/data/`). Its settings are at the top: `DATA_SOURCE`, `MODES` and `MIN_POINTS`. For the test split
-it reads the same `fmm_scripts/nyc_test_trips.csv` (in Colab, a copy in the Drive folder). It also prints the training statistics that `Traj_Generation.ipynb` uses.
+it reads the same `fmm_scripts/nyc_test.csv` (in Colab, a copy in the Drive folder). It also prints the training statistics that `Traj_Generation.ipynb` uses.
 
 ### 2. Train and generate
 
