@@ -75,4 +75,11 @@ The code for this baseline is included under:
 
 See `baselines/diffusion/difftraj/README.md` for details.
 
+### MobilityGPT
+- Source: https://github.com/ammarhydr/MobilityGPT
+- Paper: [MobilityGPT: Enhanced Human Mobility Modeling with a GPT model](https://arxiv.org/abs/2402.03264)
 
+The code for this baseline is included under:
+`baselines/transformer/MobilityGPT/`
+
+See `baselines/transformer/MobilityGPT/README.md` for details.
