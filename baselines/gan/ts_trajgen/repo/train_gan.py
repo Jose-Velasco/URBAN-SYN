@@ -1,0 +1,741 @@
+## 参考 SeqGAN 来强化学习生成器
+import json
+import os
+import pandas as pd
+import torch
+import torch.nn as nn
+from torch.utils.data import random_split
+from geopy import distance
+import numpy as np
+import scipy.sparse as sp
+from tqdm import tqdm
+from torch.nn.utils.rnn import pad_sequence
+from utils.ListDataset import ListDataset
+from torch.utils.data import DataLoader
+from generator.generator_v4 import GeneratorV4
+from discriminator.discriminator_v1 import DiscriminatorV1
+from search import Searcher
+from rollout import Rollout
+from loss import gan_loss
+from utils.utils import get_logger
+from utils.data_util import encode_time
+from utils.evaluate_funcs import edit_distance, hausdorff_metric, dtw_metric
+import argparse
+from pathlib import Path
+from utils.map_manager import MapManager
+from copy import deepcopy
+from utils.refactor_utils import load_config
+
+
+def str2bool(value):
+    """
+    Parse common string boolean values for argparse.
+
+    Parameters
+    ----------
+    value : str | bool
+        Raw CLI value.
+
+    Returns
+    -------
+    bool
+        Parsed boolean value.
+
+    Raises
+    ------
+    argparse.ArgumentTypeError
+        If the value cannot be interpreted as boolean.
+    """
+    if isinstance(value, bool):
+        return value
+    if value.lower() in ("yes", "true", "1"):
+        return True
+    if value.lower() in ("no", "false", "0"):
+        return False
+    raise argparse.ArgumentTypeError("bool value expected.")
+
+parser = argparse.ArgumentParser(
+    description=(
+        "Train TS-TrajGen GAN using pretrained Function G and GAT models "
+        "with OD-aware trajectory generation."
+    )
+)
+
+# ---- dataset ----
+parser.add_argument(
+    "--dataset_name",
+    type=str,
+    required=True,
+    help="Dataset folder name (Xian, nyc, etc).",
+)
+
+parser.add_argument(
+    "--data_root",
+    type=Path,
+    default=Path("./data"),
+    help="Root directory containing dataset folders.",
+)
+
+# ---- device ----
+parser.add_argument(
+    "--device",
+    type=str,
+    default="cuda:0",
+    help="Torch device (e.g., cuda:0, cpu).",
+)
+
+# ---- training control ----
+parser.add_argument(
+    "--pretrain_discriminator",
+    type=str2bool,
+    default=False,
+    help="Whether to pretrain discriminator.",
+)
+
+parser.add_argument(
+    "--debug",
+    type=str2bool,
+    default=False,
+    help="Enable debug mode.",
+)
+
+parser.add_argument(
+    "--resume",
+    type=str2bool,
+    default=False,
+    help="Resume GAN training from the latest saved training checkpoint.",
+)
+
+parser.add_argument(
+    "--exp_id",
+    type=int,
+    default=1,
+    help="Experiment ID for checkpoint naming.",
+)
+
+# ---- save ----
+parser.add_argument(
+    "--save_dir",
+    type=Path,
+    default=Path("./save/our_gan"),
+    help="Directory to save GAN checkpoints.",
+)
+
+# ---- pretrained models ----
+parser.add_argument(
+    "--pretrain_g_file",
+    type=Path,
+    default=Path("./save/function_g_fc.pt"),
+    help="Pretrained Function G model.",
+)
+
+parser.add_argument(
+    "--pretrain_gat_file",
+    type=Path,
+    default=Path("./save/gat_fc.pt"),
+    help="Pretrained GAT model.",
+)
+
+# ---- inputs ----
+parser.add_argument(
+    "--trajectory_filename",
+    type=str,
+    default="xianshi_partA_mm_train.csv",
+    help="Trajectory file for GAN training.",
+)
+
+parser.add_argument(
+    "--node_feature_filename",
+    type=str,
+    default="node_feature.pt",
+    help="Node feature tensor.",
+)
+
+parser.add_argument(
+    "--adjacent_np_filename",
+    type=str,
+    default="adjacent_mx.npz",
+    help="Road adjacency matrix.",
+)
+
+parser.add_argument(
+    "--adjacent_list_filename",
+    type=str,
+    default="adjacent_list.json",
+    help="Road adjacency list.",
+)
+
+parser.add_argument(
+    "--rid_gps_filename",
+    type=str,
+    default="rid_gps.json",
+    help="Road GPS mapping.",
+)
+
+parser.add_argument(
+    "--road_length_filename",
+    type=str,
+    default="road_length.json",
+    help="Road length dictionary.",
+)
+
+parser.add_argument(
+    "--od_distinct_route_filename",
+    type=str,
+    default="od_distinct_route.json",
+    help="OD → historical route mapping.",
+)
+
+parser.add_argument(
+    "--road_time_dist_filename",
+    type=str,
+    default="road_time_distribution.npy",
+    help="Road time distribution.",
+)
+
+parser.add_argument(
+    "--geo_filename",
+    type=str,
+    default="xian.geo",
+    help="Geo file used to compute road_num dynamically.",
+)
+
+parser.add_argument(
+    "--map_manager_cache_dir",
+    type=Path,
+    required=True,
+    help="Path to save MapManger's computed city lat/long bonding boxes.",
+)
+
+parser.add_argument(
+    "--config",
+    type=Path,
+    required=True,
+    help="Path to TS-TrajGen YAML experiment configuration.",
+)
+
+
+args = parser.parse_args()
+
+data_dir: Path = args.data_root / args.dataset_name
+save_dir: Path = args.save_dir
+device = args.device
+
+save_dir.mkdir(parents=True, exist_ok=True)
+
+trajectory_path: Path =  data_dir / args.trajectory_filename
+node_feature_path: Path =  data_dir / args.node_feature_filename
+adjacent_np_path: Path =  data_dir / args.adjacent_np_filename
+adjacent_list_path: Path =  data_dir / args.adjacent_list_filename
+rid_gps_path: Path =  data_dir / args.rid_gps_filename
+road_length_path: Path =  data_dir / args.road_length_filename
+od_route_path: Path =  data_dir / args.od_distinct_route_filename
+road_time_dist_path: Path =  data_dir / args.road_time_dist_filename
+geo_path: Path =  data_dir / args.geo_filename
+pretrain_g_path: Path =  args.pretrain_g_file
+pretrain_gat_path: Path =  args.pretrain_gat_file
+
+map_manager_cache_dir: Path = args.map_manager_cache_dir
+dataset_name = args.dataset_name
+
+disc_path: Path = save_dir / "adversarial_discriminator.pt"
+checkpoint_path: Path = (
+    save_dir / f"training_checkpoint_{args.exp_id}.pt"
+)
+
+experiment_config = load_config(args.config)
+train_config = experiment_config["training"]["road_gan"]
+optimizer_config = train_config["optimizer"]
+scheduler_config = train_config["scheduler"]
+
+# save_folder = './save/our_gan'
+# Files used to distinguish the saved results from different parameter tuning iterations
+# exp_id = 1  # 用于区分不同次调参的保存结果文件
+exp_id: int = args.exp_id
+# pretrain_gan_file = './save/function_g_fc.pt'
+# pretrain_gat_file = './save/gat_4.pt'
+
+# The author says the real trajectory dataset used in GAN training is the training set, not test or all trajectories.
+# https://github.com/WenMellors/TS-TrajGen/issues/10
+# trajectory_file = './data/201511_week1_short_traj.csv'
+
+learning_rate = optimizer_config["learning_rate"]
+weight_decay = optimizer_config["weight_decay"]
+lr_patience = scheduler_config["lr_patience"]
+lr_decay_ratio = scheduler_config["lr_decay_ratio"]
+dis_train_rate = train_config["dis_train_rate"]
+pretrain_discriminator: bool = args.pretrain_discriminator
+debug: bool = args.debug
+resume: bool = args.resume
+
+clip = train_config["clip"]
+
+total_epoch = train_config["total_epoch"]
+pretrain_dis_epoch = train_config["pretrain_dis_epoch"]
+batch_size = train_config["batch_size"]
+
+dis_sample_num = train_config["dis_sample_num"]
+gen_sample_num = train_config["gen_sample_num"]  # 生成器训练的时间复杂度很高 the time complexity of generator is very high
+rollout_times = train_config["rollout_times"]
+
+
+if debug:
+    total_epoch = 1
+    pretrain_dis_epoch = 1
+    dis_sample_num = 10
+    gen_sample_num = 1
+    rollout_times = 1
+# else:
+#     total_epoch = 20
+#     pretrain_dis_epoch = 5
+#     dis_sample_num = 5000
+#     gen_sample_num = 2000  # 生成器训练的时间复杂度很高 the time complexity of generator is very high
+#     rollout_times = 8
+# 生成器 config
+# generator config
+# NOTE:
+#  function_g: road_emb_size, time_emb_size, hidden_size, lstm_layer_num
+#              parameters must match the pretrained model that will be loaded
+#  function_h: embed_dim, gps_emb_dim, num_of_heads, lstm_layer_num
+#              parameters must match the pretrained model that will be loaded
+# gen_config = {
+#     "function_g": {
+#         # "road_emb_size": 256,  # 需要和路网表征预训练部分维度一致
+#         "road_emb_size": 128,  # 需要和路网表征预训练部分维度一致
+#         # "time_emb_size": 50,
+#         "time_emb_size": 32,
+#         # "hidden_size": 256,
+#         "hidden_size": 128,
+#         "dropout_p": 0.6,
+#         "lstm_layer_num": 2,
+#         "pretrain_road_rep": None,
+#         "dis_weight": 0.5,
+#         "device": device
+#     },
+#     "function_h": {
+#         # 'embed_dim': 256,
+#         'embed_dim': 128,
+#         # 'gps_emb_dim': 10,
+#         'gps_emb_dim': 5,
+#         # 'num_of_heads': 5,
+#         'num_of_heads': 4,
+#         'concat': False,
+#         'device': device,
+#         'distance_mode': 'l2'
+#     },
+#     'dis_weight': 0.45
+# }
+
+gen_config = deepcopy(experiment_config["road"]["generator"])
+gen_config["function_g"]["device"] = device
+gen_config["function_h"]["device"] = device
+
+# 加载 node_feature
+# node_feature_file = './data/node_feature.pt'
+# node_features = torch.load(node_feature_file).to(device)
+node_features = torch.load(node_feature_path).to(device)
+# adjacent_np_file = './data/adjacent_mx.npz'
+# adj_mx = sp.load_npz(adjacent_np_file)
+adj_mx = sp.load_npz(adjacent_np_path)
+
+# 判别器 config
+# discriminator config
+# must match discriminator parameters with the road network pre-training part
+# I think when pretrain_discriminator=False else its trained then saved
+# dis_config = {
+#     "road_emb_size": 256,  # 需要和路网表征预训练部分维度一致
+#     "hidden_size": 256,
+#     "dropout_p": 0.6,
+#     "lstm_layer_num": 2,
+#     "pretrain_road_rep": None,
+#     "device": device
+# }
+
+dis_config = deepcopy(experiment_config["road"]["discriminator"])
+dis_config["device"] = device
+# dis_config.setdefault("pretrain_road_rep", None)
+
+# init logger
+logger = get_logger()
+# build road adjacent list
+
+# 读取 od 历史轨迹
+# with open('./data/od_distinct_route.json', 'r') as f:
+with open(od_route_path, 'r') as f:
+    od_distinct_route = json.load(f)
+# 读取路网邻接表
+# with open('./data/adjacent_list.json', 'r') as f:
+with open(adjacent_list_path, 'r') as f:
+    adjacent_list = json.load(f)
+# 读取路网 GPS
+# with open('./data/rid_gps.json', 'r') as f:
+with open(rid_gps_path, 'r') as f:
+    rid_gps = json.load(f)
+# 读取路网长度
+# with open('./data/road_length.json', 'r') as f:
+with open(road_length_path, 'r') as f:
+    road_length = json.load(f)
+# road_time_distribution = np.load('./data/road_time_distribution.npy')
+road_time_distribution = np.load(road_time_dist_path)
+# 数据集的大小
+# road_num = 40306
+# dynamic road_num
+road_num = pd.read_csv(geo_path).shape[0]
+time_size = experiment_config["data"]["time_size"]
+loc_pad = road_num
+time_pad = time_size
+map_manager = MapManager(
+    dataset_name=dataset_name,
+    geo_path=geo_path,
+    cache_dir=map_manager_cache_dir
+)
+
+data_feature = {
+    'road_num': road_num + 1,
+    'time_size': time_size + 1,
+    'road_pad': loc_pad,
+    'time_pad': time_pad,
+    'adj_mx': adj_mx,
+    'node_features': node_features,
+    'img_width': map_manager.img_width,
+    'img_height': map_manager.img_height
+}
+
+
+def collate_fn(indices):
+    """
+    自定义 DataLoader 收集函数
+    Args:
+        indices: 一个 batch 的数据
+
+    Returns:
+
+    """
+    trace_loc = []
+    trace_tim = []
+    label = []
+    for i in indices:
+        trace_loc.append(torch.tensor(i[0]))
+        trace_tim.append(torch.tensor(i[1]))
+        label.append(i[2])
+    trace_loc = pad_sequence(trace_loc, batch_first=True, padding_value=loc_pad)
+    trace_tim = pad_sequence(trace_tim, batch_first=True, padding_value=time_pad)
+    label = torch.tensor(label)
+    trace_mask = ~(trace_loc == loc_pad)
+    return [trace_loc.to(device), trace_tim.to(device), label.to(device), trace_mask.to(device)]
+
+
+# 组织返回判别器的训练数据
+def generate_discriminator_data(pos, gen_model):
+    """
+
+    Args:
+        pos (pandas.Dataframe): 正样本轨迹的 df 形式数据，包含三列 trace_loc trace_tim, trace_label
+        gen_model (Generator): 生成器，用于生成样本
+
+    Returns:
+        train_dataloader (DataLoader): 返回组织好的训练数据
+        eval_dataloader (DataLoader)
+    """
+    data = []
+    for index, row in tqdm(pos.iterrows(), total=pos.shape[0], desc='generate discriminator data'):
+        trace_loc = list(map(int, row['rid_list'].split(',')))
+        trace_tim = list(map(encode_time, row['time_list'].split(',')))
+        data.append([trace_loc, trace_tim, 1])
+        neg_trace_loc, neg_trace_tim = searcher.road_random_sample(gen_model=generator, trace_loc=[trace_loc[0]],
+                                                                   trace_tim=[trace_tim[0]], des=trace_loc[-1],
+                                                                   default_len=len(trace_loc))
+        data.append([neg_trace_loc, neg_trace_tim, 0])
+    dataset = ListDataset(data)
+    # 还是划分一个训练集和验证集吧
+    train_num = int(len(dataset) * dis_train_rate)
+    eval_num = len(dataset) - train_num
+    train_dataset, eval_dataset = random_split(dataset, [train_num, eval_num])
+    return DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn), \
+        DataLoader(eval_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+
+
+def train_discriminator(max_epoch):
+    """
+    根据抽样的真实轨迹与生成的轨迹预训练判别器
+    """
+    dis_optimizer = torch.optim.Adam(discriminator.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    generator.train(False)
+    discriminator.train(True)
+    for epoch in range(max_epoch):
+        # 每一轮随机抽取 dis_sample_num 条真实轨迹作为正样本，对应生成的 dis_sample_num 条轨迹作为负样本
+        pos_sample_index = np.random.randint(0, total_trace, size=dis_sample_num)
+        pos_sample = trace.iloc[pos_sample_index]
+        train_loader, eval_loader = generate_discriminator_data(gen_model=generator, pos=pos_sample)
+        train_total_loss = 0
+        # 训练
+        discriminator.train(True)
+        for batch in tqdm(train_loader, desc='train discriminator'):
+            dis_optimizer.zero_grad()
+            score = discriminator.forward(trace_loc=batch[0], trace_time=batch[1],
+                                          trace_mask=batch[3])
+            loss = discriminator.loss_func(score, batch[2])
+            loss.backward()
+            train_total_loss += loss.item()
+            dis_optimizer.step()
+        # 验证
+        discriminator.train(False)
+        eval_hit = 0
+        eval_total_cnt = len(eval_loader.dataset)
+        for batch in tqdm(eval_loader, desc='eval discriminator'):
+            score = discriminator.forward(trace_loc=batch[0], trace_time=batch[1],
+                                          trace_mask=batch[3])
+            truth = batch[2]
+            val, index = torch.topk(score, 1, dim=1)
+            for i, p in enumerate(index):
+                if truth[i] in p:
+                    eval_hit += 1
+        avg_ac = eval_hit / eval_total_cnt
+        logger.info('train discriminator epoch {}: loss {:.6f}, top1 ac {:.6f}'.format(epoch, train_total_loss, avg_ac))
+
+
+def train_generator(stage):
+    """
+    对抗学习更新生成器
+
+    Args:
+        stage (int): 设置一个难度等级，先学短轨迹、再学中轨迹、再学长轨迹
+    """
+    gen_optimizer = torch.optim.Adam(generator.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    # 设置判别器为非训练模式
+    discriminator.train(False)
+    # 每一轮随机抽取 gen_sample_num 条真实轨迹作为正样本，对应生成的 gen_sample_num 条轨迹作为负样本
+    pos_sample_index = np.random.randint(0, total_trace, size=gen_sample_num)
+    pos_sample = trace.iloc[pos_sample_index]
+    total_edit_distance = 0
+    total_hausdorff = 0
+    total_dtw = 0
+    total_cnt = 0
+    for index, row in tqdm(pos_sample.iterrows(), total=pos_sample.shape[0], desc='train generator with true trajectory'):
+        trace_loc = list(map(int, row['rid_list'].split(',')))
+        trace_tim = list(map(encode_time, row['time_list'].split(',')))
+        # 根据这个轨迹的 OD 生成轨迹
+        generator.train(False)
+        neg_trace_loc, neg_trace_tim = searcher.road_random_sample(gen_model=generator, trace_loc=[trace_loc[0]],
+                                                                   trace_tim=[trace_tim[0]], des=trace_loc[-1],
+                                                                   default_len=len(trace_loc))
+        reward, yaw_distance = rollout.get_road_reward(generate_trace=(neg_trace_loc, neg_trace_tim), des=trace_loc[-1],
+                                                       rollout_times=rollout_times, discriminator=discriminator)
+        # 计算模型对每一步的候选集概率预测值与所选择下一跳在候选集中的下标
+        generator.train(True)
+        seq_len = len(neg_trace_loc)
+        if seq_len <= 1:
+            # maybe print it?
+            # print("This genreation failed miserably, but this should not happen.")
+            # This genreation failed miserably, but this should not happen.
+            # 这个生成特别失败，但不应该有这种情况呀
+            continue
+        des_center_gps = rid_gps[str(trace_loc[-1])]
+        candidate_prob_list = []
+        gen_candidate = []
+        for i in range(1, seq_len):
+            des_tensor = torch.tensor([trace_loc[-1]]).to(device)
+            input_trace_loc = neg_trace_loc[:i]
+            input_trace_tim = neg_trace_tim[:i]
+            now_rid = input_trace_loc[-1]
+            candidate_set = adjacent_list[str(now_rid)]
+            candidate_dis = []
+            for c in candidate_set:
+                candidate_gps = rid_gps[str(c)]
+                d = distance.distance((des_center_gps[1], des_center_gps[0]),
+                                      (candidate_gps[1], candidate_gps[0])).kilometers * 10
+                candidate_dis.append(d)
+            # 构建模型输入
+            trace_loc_tensor = torch.LongTensor(input_trace_loc).to(device).unsqueeze(0)
+            trace_tim_tensor = torch.LongTensor(input_trace_tim).to(device).unsqueeze(0)
+            candidate_set_tensor = torch.LongTensor(candidate_set).to(device).unsqueeze(0)
+            candidate_dis_tensor = torch.FloatTensor(candidate_dis).to(device).unsqueeze(0)
+            candidate_prob = generator.predict(trace_loc=trace_loc_tensor, trace_time=trace_tim_tensor,
+                                               des=des_tensor, candidate_set=candidate_set_tensor,
+                                               candidate_dis=candidate_dis_tensor)
+            candidate_prob_list.append(candidate_prob.squeeze(0))
+            # 获取所选择的下一跳在候选集中的下标
+            choose_index = candidate_set.index(neg_trace_loc[i])
+            gen_candidate.append(choose_index)
+        # 计算 loss
+        reward = torch.tensor(reward).to(device)
+        yaw_distance = torch.tensor(yaw_distance).to(device)
+        gen_candidate = torch.tensor(gen_candidate).to(device)
+        loss = gan_loss(candidate_prob=candidate_prob_list, gen_candidate=gen_candidate, reward=reward,
+                        yaw_loss=yaw_distance)
+        gen_optimizer.zero_grad()
+        loss.backward()
+        
+        # Gradient clipping must happen after backward() has populated the gradients
+        # and before optimizer.step() updates the model parameters.
+        torch.nn.utils.clip_grad_norm_(generator.parameters(), clip)
+        gen_optimizer.step()
+        # 更新模型的 gat cache
+        generator.function_h.update_node_emb()
+        # 计算评估指标
+        total_edit_distance += edit_distance(neg_trace_loc, trace_loc)
+        generate_gps_list = []
+        for road_id in neg_trace_loc:
+            now_gps = rid_gps[str(road_id)]
+            generate_gps_list.append([now_gps[1], now_gps[0]])
+        true_gps_list = []
+        for road_id in trace_loc:
+            now_gps = rid_gps[str(road_id)]
+            true_gps_list.append([now_gps[1], now_gps[0]])
+        true_gps_list = np.array(true_gps_list)
+        generate_gps_list = np.array(generate_gps_list)
+        total_hausdorff += hausdorff_metric(true_gps_list, generate_gps_list)
+        total_dtw += dtw_metric(true_gps_list, generate_gps_list)
+        total_cnt += 1
+    if total_cnt > 0:
+        logger.info("evaluate generator:")
+        logger.info(
+            "avg EDT {}, avg hausdorff {}, avg dtw {}".format(
+                total_edit_distance / total_cnt,
+                total_hausdorff / total_cnt,
+                total_dtw / total_cnt,
+            )
+        )
+    else:
+        logger.warning(
+            "No valid generated trajectories in this generator-training iteration."
+        )
+    # logger.info('evaluate generator:')
+    # logger.info('avg EDT {}, avg hausdorff {}, avg dtw {}'.format(total_edit_distance / total_cnt,
+    #                                                               total_hausdorff / total_cnt,
+    #                                                               total_dtw / total_cnt))
+
+
+def save_training_checkpoint(
+    path: Path,
+    *,
+    next_epoch: int,
+    generator: GeneratorV4,
+    discriminator: DiscriminatorV1,
+) -> None:
+    """Save GAN state needed to resume at the next adversarial epoch."""
+    checkpoint = {
+        "next_epoch": next_epoch,
+        "generator_state_dict": generator.state_dict(),
+        "discriminator_state_dict": discriminator.state_dict(),
+    }
+
+    # Write to a temporary file first so an interrupted write does not
+    # corrupt the previous usable checkpoint.
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    torch.save(checkpoint, tmp_path)
+    os.replace(tmp_path, path)
+
+if __name__ == '__main__':
+    logger.info('load true trajectory.')
+    # 加载真实轨迹数据
+    # trace = pd.read_csv(trajectory_file)
+    trace = pd.read_csv(trajectory_path)
+    total_trace = trace.shape[0]
+    searcher = Searcher(device=device, adjacent_list=adjacent_list, road_center_gps=rid_gps, road_length=road_length,
+                        road_time_distribution=road_time_distribution)
+    # 加载预训练生成器
+    # logger.info('load pretrain generator from ' + pretrain_gan_file + ' and ' + pretrain_gat_file)
+    logger.info('load pretrain generator from ' + str(pretrain_g_path) + ' and ' + str(pretrain_gat_path))
+    generator = GeneratorV4(config=gen_config, data_feature=data_feature).to(device)
+    # generatorv1_state = torch.load(pretrain_gan_file, map_location=device)
+    generatorv1_state = torch.load(pretrain_g_path, map_location=device)
+    generator.function_g.load_state_dict(generatorv1_state)
+    # gat_state = torch.load(pretrain_gat_file, map_location=device)
+    gat_state = torch.load(pretrain_gat_path, map_location=device)
+    generator.function_h.load_state_dict(gat_state)
+    # 开始对抗学习
+    rollout = Rollout(searcher=searcher, generator=generator, device=device, od_distinct_route=od_distinct_route,
+                      road_gps=rid_gps)
+    # 预训练判别器
+    # logger.info('start pretrain discriminator.')
+    discriminator = DiscriminatorV1(
+        config=dis_config,
+        data_feature=data_feature,
+    ).to(device)
+
+    start_epoch = 0
+
+    if resume:
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(
+                f"Resume requested but checkpoint does not exist: {checkpoint_path}"
+            )
+
+        logger.info("resume training from %s", checkpoint_path)
+
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+
+        generator.load_state_dict(checkpoint["generator_state_dict"])
+        discriminator.load_state_dict(checkpoint["discriminator_state_dict"])
+        start_epoch = int(checkpoint["next_epoch"])
+
+        # Refresh cached GAT node embeddings after restoring generator weights.
+        generator.function_h.update_node_emb()
+
+        # Keep the rollout model synchronized with the restored generator.
+        rollout.update_params(generator)
+
+        logger.info("resume adversarial training at epoch %d", start_epoch)
+
+    else:
+        if pretrain_discriminator:
+            logger.info('start pretrain discriminator.')
+            train_discriminator(max_epoch=pretrain_dis_epoch)
+
+            # Preserve the pretrained discriminator separately so the existing
+            # pretrain_discriminator=False behavior can still load it.
+            torch.save(discriminator.state_dict(), disc_path)
+
+        else:
+            logger.info('load discriminator from save pt file.')
+            discriminator_state = torch.load(disc_path, map_location=device)
+            discriminator.load_state_dict(discriminator_state)
+
+        # If the job dies during adversarial epoch 0, discriminator pretraining
+        # does not have to be repeated.
+        save_training_checkpoint(
+            checkpoint_path,
+            next_epoch=0,
+            generator=generator,
+            discriminator=discriminator,
+        )
+
+        logger.info(
+            "saved pre-adversarial training checkpoint to %s",
+            checkpoint_path,
+        )
+
+
+    for epoch in range(start_epoch, total_epoch):
+        logger.info('start train generator at epoch {}'.format(epoch))
+        train_generator(stage=1)
+
+        logger.info('start train discriminator at epoch {}'.format(epoch))
+        train_discriminator(max_epoch=1)
+
+        rollout.update_params(generator)
+
+        save_training_checkpoint(
+            checkpoint_path,
+            next_epoch=epoch + 1,
+            generator=generator,
+            discriminator=discriminator,
+        )
+
+        logger.info(
+            "saved training checkpoint after epoch %d to %s",
+            epoch,
+            checkpoint_path,
+        )
+
+    # 保存本次训练的生成器与判别器
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    # torch.save(generator.state_dict(), os.path.join(save_folder, 'adversarial_3_generator_{}.pt'.format(exp_id))) 
+    # torch.save(discriminator.state_dict(), os.path.join(save_folder, 'adversarial_discriminator.pt'))
+    torch.save(generator.state_dict(), save_dir / f'adversarial_3_generator_{exp_id}.pt')
+    torch.save(discriminator.state_dict(), disc_path)
+
+    # The run completed successfully, so crash-recovery state is no longer needed.
+    checkpoint_path.unlink(missing_ok=True)

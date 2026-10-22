@@ -18,8 +18,10 @@ if ! git config --global --get-all safe.directory | grep -q "$WORKSPACE_DIR"; th
   git config --global --add safe.directory "$WORKSPACE_DIR"
 fi 
 
-sudo mkdir -p /home/vscode/.cache/uv
-sudo chown -R vscode:vscode /home/vscode/.cache/uv
+# Ensure user cache directories are writable.
+# Used by uv, matplotlib, and potentially other Python tooling.
+sudo mkdir -p /home/vscode/.cache
+sudo chown -R vscode:vscode /home/vscode/.cache
 
 # Sync project deps from uv.lock (creates .venv automatically)
 # Since your repo is mounted, this creates .venv in the

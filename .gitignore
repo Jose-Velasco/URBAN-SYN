@@ -1,6 +1,3 @@
-### Datasets ###
-data/
-
 ### Database ###
 *.accdb
 *.db
@@ -219,6 +216,7 @@ pyrightconfig.json
 # End of https://www.toptal.com/developers/gitignore/api/visualstudiocode
 
 baselines/**/data/*
+baselines/**/datasets/*
 baselines/**/outputs/*
 baselines/**/params/*
 
@@ -248,15 +246,31 @@ baselines/**/*.pth
 baselines/**/*.ckpt
 baselines/**/*.csv
 
+baselines/gan/ts_trajgen/repo/config/*.yaml
+baselines/gan/ts_trajgen/hpc
+
+baselines/gan/lstm_trajgan/hpc
+
 # But allow traversal into this specific one
 !baselines/gan/lstm_trajgan/repo/data/
 # Then allow the file
 !baselines/gan/lstm_trajgan/repo/data/csv2npy.py
+
+!baselines/gan/ts_trajgen/repo/config/example.yaml
+
 
 *.png
 *.json
 *.csv
 *.svg
 *.tar.gz
+*.gpkg
+*.tar
+
+
+### Datasets ###
+data/
+outputs/
 
 !.devcontainer/devcontainer.json
+temp-baseline/

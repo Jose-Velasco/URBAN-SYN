@@ -1,22 +1,50 @@
+from pathlib import Path
+
 import sys
 import pandas as pd
 import numpy as np
 
 from model import LSTM_TrajGAN
+from utlis import get_max_trajectory_length, predict_file_parse_args, load_max_length
 
 from keras.preprocessing.sequence import pad_sequences
 
 if __name__ == '__main__':
-    n_epochs = int(sys.argv[1])
+    # n_epochs = int(sys.argv[1])
+    args = predict_file_parse_args()
     
     latent_dim = 100
-    max_length = 144
-    
+    # paper is explicit that trajectories are padded to the length of the longest trajectory in the dataset,
+    # using zero pre-padding, and that padded points are masked during training/inference.
+    # max_length = 144
+    # max_length = load_max_length(
+    #     args.generator_weights_dir
+    # )
+    # print("Using cached maximum trajectory length: {}".format(max_length))
+
     keys = ['lat_lon', 'day', 'hour', 'category', 'mask']
     vocab_size = {"lat_lon":2,"day":7,"hour":24,"category":10,"mask":1}
     
-    tr = pd.read_csv('data/train_latlon.csv')
-    te = pd.read_csv('data/test_latlon.csv')
+    # tr = pd.read_csv('data/train_latlon.csv')
+    # te = pd.read_csv('data/test_latlon.csv')
+
+    tr = pd.read_csv(args.train_csv)
+    te = pd.read_csv(args.test_csv)
+
+    if args.max_length is not None:
+        if args.max_length <= 0:
+            raise ValueError(
+                "--max_length must be positive, got {}.".format(args.max_length)
+            )
+
+        max_length = args.max_length
+        print("Using provided max_length: {}".format(max_length))
+    else:
+        max_length = get_max_trajectory_length(
+            train_df=tr,
+            test_df=te,
+        )
+        print("Derived max_length from dataset: {}".format(max_length))
     
     lat_centroid = (tr['lat'].sum() + te['lat'].sum())/(len(tr)+len(te))
     lon_centroid = (tr['lon'].sum() + te['lon'].sum())/(len(tr)+len(te))
@@ -35,39 +63,164 @@ if __name__ == '__main__':
     gan = LSTM_TrajGAN(latent_dim, keys, vocab_size, max_length, lat_centroid, lon_centroid, scale_factor)
     
     # Test data
-    x_test = np.load('data/final_test.npy',allow_pickle=True)
+    # x_test = np.load('data/final_test.npy',allow_pickle=True)
+    x_test = np.load(
+        args.test_npy,
+        allow_pickle=True,
+    )
     
-    x_test = [x_test[0],x_test[1],x_test[2],x_test[3],x_test[4],x_test[5].reshape(-1,1),x_test[6].reshape(-1,1)]
-    X_test = [pad_sequences(f, max_length, padding='pre', dtype='float64') for f in x_test[:5]]
+    # final_train.npy: 5 arrays needed for training
+    # final_test.npy: 7 arrays needed for prediction/reconstruction
+    # https://github.com/GeoDS/LSTM-TrajGAN/issues/5
+    # x_test = [x_test[0],x_test[1],x_test[2],x_test[3],x_test[4],x_test[5].reshape(-1,1),x_test[6].reshape(-1,1)]
+    # X_test = [pad_sequences(f, max_length, padding='pre', dtype='float64') for f in x_test[:5]]
+    x_test = [
+        x_test[0],
+        x_test[1],
+        x_test[2],
+        x_test[3],
+        x_test[4],
+        x_test[5].reshape(-1, 1),
+        x_test[6].reshape(-1, 1),
+    ]
+
+    # pad_sequences(..., padding='pre') also uses the default
+    # truncating='pre'. If a trajectory is longer than max_length,
+    # only its final max_length points are kept.
+    original_lengths = x_test[6].reshape(-1).astype(np.int32)
+    effective_lengths = np.minimum(original_lengths, max_length)
+
+    X_test = [
+        pad_sequences(
+            feature,
+            max_length,
+            padding='pre',
+            dtype='float64',
+        )
+        for feature in x_test[:5]
+    ]
     
     # Add random noise to the data
-    noise = np.random.normal(0, 1, (1027, 100))
+    # 1027 comes from the original authors' test-set size
+    # noise = np.random.normal(0, 1, (1027, 100))
+    num_trajectories = X_test[0].shape[0]
+
+    if num_trajectories == 0:
+        raise ValueError("No trajectories found in the test dataset.")
+
+    noise = np.random.normal(
+        0,
+        1,
+        (num_trajectories, latent_dim),
+    )
+
     X_test.append(noise)
     
     # Load params for the generator
-    gan.generator.load_weights('training_params/G_model_' + str(n_epochs) + '.h5') # params/G_model_2000.h5
+    # gan.generator.load_weights('training_params/G_model_' + str(n_epochs) + '.h5') # params/G_model_2000.h5
+
+    generator_weights = (
+        args.generator_weights_dir
+        / "G_model_{}.h5".format(args.load_checkpoint_epochs)
+    )
+    gan.generator.load_weights(generator_weights)
+
     
     # Make predictions
     prediction = gan.generator.predict(X_test)
-    
+
     traj_attr_concat_list = []
+
     for attributes in prediction:
         traj_attr_list = []
-        idx = 0
-        for row in attributes:
+
+        for idx, row in enumerate(attributes):
+            count = int(effective_lengths[idx])
+
             if row.shape == (max_length, 2):
-                traj_attr_list.append(row[max_length-x_test[6][idx][0]:])
+                # Latitude/longitude output.
+                traj_attr_list.append(
+                    row[max_length - count:]
+                )
             else:
-                traj_attr_list.append(np.argmax(row[max_length-x_test[6][idx][0]:],axis=1).reshape(x_test[6][idx][0],1))
-            idx += 1
+                # Day, hour, category, or mask output.
+                predicted_class = np.argmax(
+                    row[max_length - count:],
+                    axis=1,
+                )
+
+                traj_attr_list.append(
+                    predicted_class.reshape(count, 1)
+                )
+
         traj_attr_concat = np.concatenate(traj_attr_list)
         traj_attr_concat_list.append(traj_attr_concat)
-    traj_data = np.concatenate(traj_attr_concat_list,axis=1)
-    
-    df_test = pd.read_csv('data/dev_test_encoded_final.csv')
-    label = np.array(df_test['label']).reshape(-1,1)
-    tid = np.array(df_test['tid']).reshape(-1,1)
-    traj_data = np.concatenate([label,tid,traj_data],axis=1)
+
+    traj_data = np.concatenate(
+        traj_attr_concat_list,
+        axis=1,
+    )
+
+    # Original encoded test rows.
+    df_test = pd.read_csv(
+        args.encoded_test_csv
+    )
+
+    # Keep the metadata rows aligned with the same pre-truncation performed
+    # by pad_sequences. Trajectories <= max_length are unchanged. For a
+    # trajectory longer than max_length, keep only its final max_length rows.
+    trimmed_test_parts = []
+
+    for idx in range(len(effective_lengths)):
+        tid_value = x_test[5][idx][0]
+        count = int(effective_lengths[idx])
+
+        traj_rows = df_test.loc[
+            df_test['tid'].isin([tid_value])
+        ]
+
+        if len(traj_rows) < count:
+            raise ValueError(
+                "Encoded test CSV contains fewer rows than expected "
+                "for tid {}: expected {}, found {}.".format(
+                    tid_value,
+                    count,
+                    len(traj_rows),
+                )
+            )
+
+        trimmed_test_parts.append(
+            traj_rows.tail(count)
+        )
+
+    df_test = pd.concat(
+        trimmed_test_parts,
+        ignore_index=True,
+    )
+
+    # Safety check before combining metadata with generated attributes.
+    if len(df_test) != traj_data.shape[0]:
+        raise ValueError(
+            "Generated trajectory rows ({}) do not match "
+            "aligned test rows ({}).".format(
+                traj_data.shape[0],
+                len(df_test),
+            )
+        )
+
+    label = np.array(
+        df_test['label']
+    ).reshape(-1, 1)
+
+    tid = np.array(
+        df_test['tid']
+    ).reshape(-1, 1)
+
+    traj_data = np.concatenate(
+        [label, tid, traj_data],
+        axis=1,
+    )
+
     df_traj_fin = pd.DataFrame(traj_data)
     
     df_traj_fin.columns = ['label','tid','lat','lon','day', 'hour', 'category','mask']
@@ -83,9 +236,18 @@ if __name__ == '__main__':
     df_traj_fin['hour'] = df_traj_fin['hour'].astype(np.int32)
     df_traj_fin['category'] = df_traj_fin['category'].astype(np.int32)
     df_traj_fin['label'] = df_traj_fin['label'].astype(np.int32)
+
+    output_csv = Path(args.output_csv)
+
+    # Ensure the output directory exists before writing the generated trajectories.
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
     
     # Save synthetic trajectory data
-    df_traj_fin.to_csv('results/syn_traj_test.csv',index=False)
+    # df_traj_fin.to_csv('results/syn_traj_test.csv',index=False)
+    df_traj_fin.to_csv(
+        output_csv,
+        index=False,
+    )
     
     
     
