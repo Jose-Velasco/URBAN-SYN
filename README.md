@@ -80,6 +80,6 @@ See `baselines/diffusion/difftraj/README.md` for details.
 - Paper: [MobilityGPT: Enhanced Human Mobility Modeling with a GPT model](https://arxiv.org/abs/2402.03264)
 
 The code for this baseline is included under:
-`baselines/transformer/MobilityGPT/`
+`baselines/transformer/mobilitygpt/`
 
-See `baselines/transformer/MobilityGPT/README.md` for details.
+See `baselines/transformer/mobilitygpt/README.md` for details.
