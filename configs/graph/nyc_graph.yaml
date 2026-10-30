@@ -1,0 +1,82 @@
+# Run from the repository root: uv run python -m urban_syn.graph --config configs/graph/nyc.yaml
+# Use a NEW root or --force-reload when changing preprocessing or transforms.
+
+# IMPORTANT:
+# Changing the YAML's preprocessing options requires rebuilding the dataset, while changing only model.node_features does not.
+dataset:
+  network_path: fmm_scripts/data/road_network/nyc.gpkg
+  layer: roads
+  root: outputs/pyg/nyc_gnn
+
+features:
+  numeric: [log_length, speed_kph, lanes, width]  # log_length derives from OSM length
+  categorical: [highway, surface, access, junction]
+  boolean: [oneway, bridge, tunnel]
+  geometry: [mid_lon, mid_lat, bearing_sin, bearing_cos, straightness]
+  # Alternative location inputs: relative_x_km, relative_y_km
+
+graph:
+  allow_self_loops: false
+
+  transforms:
+    # Node-level graph features
+    degree_features:
+      enabled: true
+      log_scale: true
+
+    local_degree_profile:
+      enabled: true
+      log_scale: true
+
+    random_walk_pe:
+      enabled: true
+      walk_length: 3
+      drop_first: true
+
+    pagerank_features:
+      enabled: true
+      alpha: 0.85
+
+    clustering_features:
+      enabled: true
+      turbo: false
+
+    betweenness:
+      enabled: True
+      k: 100
+      seed: 42
+
+    constraint_features:
+      enabled: True
+
+    laplacian_pe:
+      enabled: True
+      k: 16
+
+    # Edge-level graph features
+    # TODO: incorporate edge features besides the road usage frequency diff-rntraj does
+    adamic_adar_edge_features:
+      enabled: false
+      batch_size: 25000
+
+    random_walk_edge_features:
+      enabled: false
+
+    laplacian_edge_features:
+      enabled: false
+
+# Only controls which CACHED groups the model consumes, does not rebuild graph.
+# Adding a feature name under model.node_features doesn't automatically compute it.
+# You must also enable its corresponding transform, And rebuild the cached dataset.
+# Otherwise, select_node_features() will raise an error because the requested attribute doesn't exist.
+model:
+  node_features:
+    - x                         # OSM + geographic features
+    - degree_features           # Directed in/out degree
+    - local_degree_profile      # Neighbor degree statistics
+    - random_walk_pe            # Random-walk positional encoding
+    - pagerank_features         # PageRank centrality
+    - clustering_features       # Local clustering coefficient
+    - betweenness               # Betweenness centrality
+    - constraint_features       # Structural-hole constraint
+    - laplacian_pe              # Laplacian positional encoding
