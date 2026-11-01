@@ -110,3 +110,32 @@ model:
     # - random_walk_edge_features
     # Difference between the Laplacian positional encodings of connected roads
     # - laplacian_edge_features
+
+  gnn:
+    architecture: gine  # gatv2 | gine
+
+    hidden_dim: 128
+    output_dim: 128
+    num_layers: 2
+    dropout: 0.1
+    activation: relu
+    normalization: layer  # layer | batch | none
+    residual: true
+
+    gatv2:
+      heads: 4
+      concat: true
+      final_concat: true
+      attention_dropout: 0.1
+      add_self_loops: false
+
+    gine:
+      train_eps: true
+      eps: 0.0
+      mlp:
+        hidden_dim: 128
+        num_layers: 2
+        activation: relu
+        dropout: 0.1
+        normalization: layer_norm
+        plain_last: true
