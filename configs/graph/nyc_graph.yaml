@@ -22,7 +22,7 @@ graph:
     # Node-level graph features
     degree_features:
       enabled: true
-      log_scale: true
+      log_scale: true``
 
     local_degree_profile:
       enabled: true
@@ -54,6 +54,17 @@ graph:
       k: 16
 
     # Edge-level graph features
+    edge_transition_count:
+      enabled: true
+
+      # Prefiltered training-only FMM match CSV containing cpath.
+      # using full for development but need to be changes once we get the train split
+      match_csv: fmm_scripts/outputs/preliminary_results_10_16_2026_drive_only/nyc_fmm_match.csv
+
+      smoothing:
+        method: additive
+        alpha: 1.0
+
     # TODO: incorporate edge features besides the road usage frequency diff-rntraj does
     adamic_adar_edge_features:
       enabled: false
@@ -80,3 +91,22 @@ model:
     - betweenness               # Betweenness centrality
     - constraint_features       # Structural-hole constraint
     - laplacian_pe              # Laplacian positional encoding
+
+  edge_features:
+    # Training-derived road-transition features
+
+    # IMPORTANT: 
+    #   The corresponding transforms under graph.transforms must also be enabled for the selected features to exist.
+
+    # are smoothed across edges based on smoothing algorithm selected  under edge_transition_count -> smoothing
+    - edge_transition_prob
+    # Raw number of observed transitions between physically connected roads
+    # - edge_transition_count
+
+    # Graph-derived structural edge features
+    # Structural similarity based on shared neighboring roads
+    # - adamic_adar_edge_features
+    # Difference between the random-walk positional encodings of connected roads
+    # - random_walk_edge_features
+    # Difference between the Laplacian positional encodings of connected roads
+    # - laplacian_edge_features

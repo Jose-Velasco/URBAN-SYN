@@ -1,4 +1,7 @@
-"""Build and validate a YAML-configured road graph from the command line."""
+"""
+Build and validate a YAML-configured road graph from the command line.
+Standalone graph building, debugging, and validation
+"""
 import argparse
 import logging
 from pathlib import Path
@@ -9,6 +12,7 @@ from torch_geometric.data import Data
 from .config import build_dataset_from_config, load_graph_config
 from .selection import select_node_features
 from .utils import graph_info
+from .validation import validate_graph_features
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +46,18 @@ def validate_graph(graph: Data) -> None:
     """
     n = graph.num_nodes
 
+    # Validate optional transition features against the physical edge count.
+    for name in ("edge_transition_count", "edge_transition_prob"):
+        features = getattr(graph, name, None)
+        if features is None:
+            continue
+
+        if features.shape != (graph.num_edges, 1):
+            raise ValueError(f"{name} must have shape [E, 1].")
+
+        if not torch.isfinite(features).all():
+            raise ValueError(f"{name} contains non-finite values.")
+    
     if graph.x is None or graph.x.ndim != 2 or graph.x.size(0) != n:
         raise ValueError("Node-feature matrix has invalid shape.")
     if graph.edge_id.numel() != n:
@@ -81,6 +97,11 @@ def main() -> None:
     logger.info("Has isolated nodes: %s", graph.has_isolated_nodes())
 
     model = config.get("model", {})
+    validate_graph_features(
+        graph,
+        node_features=model.get("node_features", ["x"]),
+        edge_features=model.get("edge_features", []),
+    )
     if model:
         chosen = model.get("node_features", ["x"])
         if not isinstance(chosen, list) or not all(isinstance(s, str) for s in chosen):

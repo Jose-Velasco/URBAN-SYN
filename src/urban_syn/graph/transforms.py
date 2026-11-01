@@ -28,6 +28,10 @@ from torch_geometric.utils import (
     to_networkx
 )
 
+from urban_syn.graph.transition_features import AddCPathTransitionFeatures
+
+from .smoothing import AdditiveSmoothing
+
 logger = logging.getLogger(__name__)
 
 def _require_graph(data: Data) -> tuple[Tensor, int]:
@@ -750,6 +754,10 @@ def make_graph_pre_transform(config: Mapping[str, Any] | None) -> Compose | None
         "pagerank_features": (AddPageRank, {"alpha", "tolerance"}),
         "clustering_features": (AddClusteringCoefficient, {"turbo"}),
         "constraint_features": (AddConstraintStructuralHoles, set()),
+        "edge_transition_count": (
+            AddCPathTransitionFeatures,
+            {"match_csv", "smoothing"},
+        ),
         "adamic_adar_edge_features": (AddAdamicAdar, {"batch_size"}),
         "random_walk_edge_features": (AddRandomWalkRelativeDistance, set()),
         "laplacian_edge_features": (
@@ -776,6 +784,25 @@ def make_graph_pre_transform(config: Mapping[str, Any] | None) -> Compose | None
         unexpected = set(kwargs) - accepted
         if unexpected:
             raise ValueError(f"Unknown {name} options: {sorted(unexpected)}")
+
+        if name == "edge_transition_count":
+            smoothing_config = kwargs.pop("smoothing", {})
+
+            if not isinstance(smoothing_config, Mapping):
+                raise ValueError("smoothing must be a mapping.")
+
+            if smoothing_config.get("method", "additive") != "additive":
+                raise ValueError("Only additive smoothing is implemented.")
+
+            unknown_smoothing = set(smoothing_config) - {"method", "alpha"}
+            if unknown_smoothing:
+                raise ValueError(
+                    f"Unknown smoothing options: {sorted(unknown_smoothing)}"
+                )
+
+            kwargs["smoother"] = AdditiveSmoothing(
+                alpha=smoothing_config.get("alpha", 1.0)
+            )
         
         transforms.append(factory(**kwargs))
     
