@@ -139,3 +139,23 @@ model:
         dropout: 0.1
         normalization: layer_norm
         plain_last: true
+
+  diffusion:
+    hidden_dim: 128
+    residual_layers: 10
+    diffusion_steps: 500
+    beta_start: 0.0001
+    beta_end: 0.02
+    similarity_chunk_size: 128
+
+training:
+  epochs: 2
+  batch_size: 4
+  learning_rate: 0.001
+  weight_decay: 0.01
+  grad_clip_norm: 1.0
+  
+  # Maximum number of those batches the training loop processes per epoch.
+  # Process all available batches
+  max_batches: null 
+  # max_batches: 1    # Train on only 1 batch per epoch used for debugging
