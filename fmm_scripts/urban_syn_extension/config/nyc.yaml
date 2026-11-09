@@ -1,0 +1,28 @@
+# Only Diff-RNTraj-style GPS sampling settings.
+# The road network, FMM network and UBODT all come from the shared pipeline.
+sampling:
+  # Each trajectory is resampled from its first observation at this interval.
+  interval_seconds: 15
+
+  # Non-overlapping pieces; trailing pieces shorter than min_points are dropped.
+  min_points: 20
+  max_points: 100
+
+  # Group original moves for sampling
+  # For traj_cleaned.parquet (one trajectory per uid/tid):
+  # group_columns: [uid, tid]
+
+  # Group original moves for sampling
+  # For enriched_moves.parquet, use instead:
+  group_columns: [uid, tid, move_id]
+
+  # Optional filtering by the dataset's mode label; omitted = keep all modes.
+  # allowed_labels: [0, 1, 2, 3, 4, 5, 6]
+
+  # Optional source-column mapping when names differ from the shared schema.
+  # columns:
+  #   uid: user_id
+  #   tid: trajectory_id
+  #   datetime: timestamp
+  #   lat: latitude
+  #   lng: longitude

@@ -111,3 +111,35 @@ road_network:
     # Walking/path characteristics
     - lit
     - segregated
+
+# Shared trajectory input settings for prepare_fmm_gps.py.
+# These settings describe the input dataset, not the road network.
+trajectories:
+
+  # Columns that together uniquely identify an original trajectory.
+  # For our NYC dataset, tid is only unique within each uid.
+  # Other datasets may use a different combination of columns.
+  # Uniquely identify FMM trajectories
+  # identity_columns: [uid, tid]
+
+  # NOTE:
+    # if you later process enriched_moves.parquet directly without sampling, it won't have a generated piece column.
+    # In that case, use the FMM identity with identity_columns: [uid, tid, move_id]
+  # Uniquely identify FMM trajectories
+  # Sampled move pieces require [uid, tid, move_id, piece], which can be overridden through prepare_fmm_gps.py's CLI.
+  identity_columns: [uid, tid, move_id, piece]
+
+  # Preserve original train/test assignments
+  # Original trip identity used for train/test splitting.
+  split_identity_columns: [uid, tid]
+
+  # Maps internal column names (left) to input Parquet columns (right).
+  # Change the right-hand values when using a dataset with different names.
+  # Additional columns such as move_id and piece are preserved.
+  # Example: uid: user_id
+  columns:
+    uid: uid
+    tid: tid            # Trajectory identifier
+    datetime: datetime
+    lat: lat
+    lng: lng

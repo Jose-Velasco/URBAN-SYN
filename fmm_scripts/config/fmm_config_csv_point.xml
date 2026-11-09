@@ -24,7 +24,7 @@
     <!-- GPS file name -->
       <file>./data/nyc_gps_points_fmm_ready.csv</file>
       <!-- GPS id field/column name -->
-      <id>id</id>
+      <id>fmm_id</id>
       <!-- GPS geometry field/column name (default:geom), only applicable for CSV file -->
       <!-- <geom>id</geom> -->
 
@@ -49,13 +49,13 @@
   <output>
   <!-- refer to https://fmm-wiki.github.io/docs/documentation/output/ -->
     <fields>
-    <!-- the path traversed by the trajectory -->
+    <!-- Complete matched path, including intermediate road segments -->
       <cpath/>
-      <!-- edge matched to each point in trajectory -->
+      <!-- edge matched to each point in trajectory. Matched road segment for each original GPS observation -->
       <opath/>
       <!-- the geometry of the cpath (matched path) -->
       <mgeom/>
-      <!-- edges traversed between consecutive points separated by -->
+      <!-- edges traversed between consecutive points separated by |. Traversed road segments between consecutive GPS observations -->
       <tpath/>
       <!-- shortest path distances traversed between consecutive points -->
       <spdist/>
@@ -65,6 +65,8 @@
       <duration/>
       <!-- speed of the vehicle between two consecutive GPS points, calculated by spdist/duration -->
       <speed/>
+      <!-- distance from the matched point to the start of the matched edge -->
+      <offset/>
       <!-- distance from each point to its matched point -->
       <error/>
     </fields>

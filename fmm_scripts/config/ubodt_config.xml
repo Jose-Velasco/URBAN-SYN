@@ -12,7 +12,7 @@
       <!-- network target field name -->
       <target>v</target>
       <!-- network mode name, only applies to OSM network, one of drive|walk|bike|all. -->
-      <mode>all</mode>
+      <mode>drive</mode>
     </network>
   </input>
   <parameters>
