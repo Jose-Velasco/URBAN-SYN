@@ -13,6 +13,7 @@ from torch import Tensor
 from torch_geometric.nn import summary
 from urban_syn.graph.config import build_dataset_from_config, load_graph_config
 from urban_syn.graph.selection import select_graph_features
+from urban_syn.graph.utils import graph_info
 from urban_syn.graph.validation import validate_graph_features
 
 from .encoder import RoadGNNEncoder
@@ -51,6 +52,8 @@ def _inputs_from_config(config: dict) -> tuple[RoadGNNEncoder, Tensor, Tensor, T
     """Load cached graph, select YAML feature groups, and construct the encoder."""
     dataset = build_dataset_from_config(config)
     graph = dataset[0]
+
+    logger.info("\n%s", graph_info(graph))
 
     model_options = config.get("model", {})
     if not isinstance(model_options, dict) or "gnn" not in model_options:

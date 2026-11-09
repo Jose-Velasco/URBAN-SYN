@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from .diff_module import diff_CSDI
 from .diff_util import diff_forward_x0_constraint, cal_x0_from_noise_ddpm
 
 from torch_geometric.data import Data
@@ -62,8 +61,8 @@ class Diff_RNTraj(nn.Module):
 
         # Represent each directed physical transition as an integer key.
         # These use the same one-based model IDs as the embedding table.
-        src, dst = graph.edge_index.long() + 1
-        road_id_base = graph.num_nodes + 1
+        src, dst = graph.edge_index.long() + 1 # pyright: ignore[reportOptionalMemberAccess]
+        road_id_base = graph.num_nodes + 1 # pyright: ignore[reportOptionalOperand]
 
         self.register_buffer(
             "valid_transition_keys",
@@ -94,7 +93,7 @@ class Diff_RNTraj(nn.Module):
         Tensor
             Road embedding table [N + 1, D].
         """
-        if not torch.equal(graph.edge_id.to(self.edge_ids.device), self.edge_ids):
+        if not torch.equal(graph.edge_id.to(self.edge_ids.device), self.edge_ids): # pyright: ignore[reportArgumentType]
             raise ValueError("Graph road ordering differs from the model mapping.")
 
         embeddings = self.road_encoder(
@@ -148,8 +147,8 @@ class Diff_RNTraj(nn.Module):
             input_data,
             self.diffusion_param,
             road_embeddings,
-            self.valid_transition_keys,
-            road_id_base=self.edge_ids.numel() + 1,
+            self.valid_transition_keys, # pyright: ignore[reportArgumentType]
+            road_id_base=self.edge_ids.numel() + 1, # pyright: ignore[reportCallIssue]
             similarity_chunk_size=self.similarity_chunk_size,
         )
         
@@ -158,18 +157,21 @@ class Diff_RNTraj(nn.Module):
     @torch.no_grad()
     def generate_data(
         self,
-        graph: Data,
+        graph: Data | None,
         batchsize: int,
         length: int,
         similarity_chunk_size: int | None = None,
+        road_embeddings: torch.Tensor | None = None
         ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Generate road-ID sequences and position rates
 
         Parameters
         ----------
-        graph : Data
-            Road graph with selected GNN features.
+        graph : Data | None
+            Road graph with selected GNN features. Used to compute
+            road embeddings when road_embeddings is not provided.
+            Can be None when using precomputed embeddings.
         batchsize : int
             Number of trajectories to generate.
         length : int
@@ -177,6 +179,12 @@ class Diff_RNTraj(nn.Module):
         similarity_chunk_size : int | None, default=None
             Number of positions compared per batch. Uses the model setting
             when not provided.
+        
+        road_embeddings : torch.Tensor | None, default=None
+            Precomputed embeddings from encode_roads(graph), shaped
+            [num_roads + 1, embedding_dim], including padding row 0.
+            When provided, skips GNN computation and allows graph=None.
+            Must match the model's road vocabulary and device.
 
         Returns
         -------
@@ -190,13 +198,21 @@ class Diff_RNTraj(nn.Module):
             Convert generated IDs back to FMM edge_id values using
             model_ids_to_edge_ids() before exporting trajectories.
         """
+        # Reuse precomputed embeddings, or compute them from the graph.
+        if road_embeddings is None:
+            if graph is None:
+                raise ValueError(
+                    "Either graph or road_embeddings must be provided."
+                )
+
+            road_embeddings = self.encode_roads(graph)
+
         chunk_size = (
             self.similarity_chunk_size
             if similarity_chunk_size is None
             else similarity_chunk_size
         )
 
-        road_embeddings = self.encode_roads(graph)
         pre_dim = road_embeddings.size(-1)
         
         x0 = cal_x0_from_noise_ddpm(

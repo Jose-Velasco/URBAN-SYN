@@ -215,6 +215,7 @@ def count_physical_transitions(
     for path in paths:
         num_paths += 1
         observed.update(pairwise(path))
+    
     if not observed:
         raise ValueError("Input paths contain no road transitions.")
 
@@ -229,12 +230,14 @@ def count_physical_transitions(
         for pair, is_matched in zip(pairs, matched.tolist())
         if not is_matched and pair[0] == pair[1]
     )
+    
     logger.info(
         "Training cpath transitions: %d paths, %d/%d unique pairs aligned, "
         "%d/%d traversals aligned; %d unmatched self-transitions",
         num_paths, int(matched.sum()), len(observed),
         int(frequencies[matched].sum()), int(frequencies.sum()), missed_self,
     )
+    
     return counts
 
 
@@ -249,7 +252,7 @@ class AddCPathTransitionFeatures(BaseTransform):
         Parameters
         ----------
         match_csv : str | Path
-            Semicolon-delimited FMM CSV containing only training trajectories.
+            Comma-delimited training FMM match CSV produced by the shared splitter.
         smoother : TransitionSmoother | None, optional
             Counts-to-probabilities strategy; defaults to AdditiveSmoothing().
         """
@@ -262,7 +265,8 @@ class AddCPathTransitionFeatures(BaseTransform):
         Parameters
         ----------
         data : Data
-            Physical graph with canonical edge_id and directed edge_index.
+            Physical road graph with shared road-network edge_id values
+            and directed edge_index connectivity.
 
         Returns
         -------
@@ -270,7 +274,9 @@ class AddCPathTransitionFeatures(BaseTransform):
             Graph with per-edge counts and smoothed probabilities.
         """
         # FMM CSV uses semicolons because path values contain commas.
-        matches = pd.read_csv(self.match_csv, sep=";", usecols=["cpath"])
+        # Raw FMM outputs use semicolons, while post-FMM split CSVs use commas.
+        matches = pd.read_csv(self.match_csv, usecols=["cpath"])
+
         paths = (parse_road_path(value) for value in matches["cpath"])
         counts = count_physical_transitions(data, paths)
         probs = self.smoother.smooth(counts, data.edge_index.cpu(), data.num_nodes)
@@ -279,9 +285,11 @@ class AddCPathTransitionFeatures(BaseTransform):
         data.edge_transition_count = counts.to(
             dtype=torch.float32, device=data.edge_index.device
         ).unsqueeze(1)
+        
         data.edge_transition_prob = probs.to(
             dtype=torch.float32, device=data.edge_index.device
         ).unsqueeze(1)
+        
         return data
 
     def __repr__(self) -> str:

@@ -2,9 +2,7 @@
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
-
 import yaml
-
 from .builder import RoadGraphBuilder
 from .dataset import RoadGraphDataset
 from .features import SklearnRoadFeatureEncoder, make_road_preprocessor
@@ -40,6 +38,17 @@ def load_graph_config(path: str | Path) -> dict[str, Any]:
     return config
 
 
+def _validate_build_dataset_from_config(dataset, features, graph) -> None:
+    if not isinstance(dataset, Mapping) or not isinstance(features, Mapping) or not isinstance(graph, Mapping):
+        raise ValueError("dataset, features, and graph must be mappings.")
+    if any(key not in dataset for key in ("root", "network_path")):
+        raise ValueError("dataset.root and dataset.network_path are required.")
+    if unknown := set(features) - {"numeric", "categorical", "boolean", "geometry"}:
+        raise ValueError(f"Unsupported feature groups: {sorted(unknown)}")
+    if unknown := set(graph) - {"allow_self_loops", "transforms"}:
+        raise ValueError(f"Unsupported graph settings: {sorted(unknown)}")    
+
+
 def build_dataset_from_config(
     config: Mapping[str, Any], force_reload: bool = False,
 ) -> RoadGraphDataset:
@@ -66,14 +75,7 @@ def build_dataset_from_config(
     features = config["features"]
     graph = config.get("graph", {})
 
-    if not isinstance(dataset, Mapping) or not isinstance(features, Mapping) or not isinstance(graph, Mapping):
-        raise ValueError("dataset, features, and graph must be mappings.")
-    if any(key not in dataset for key in ("root", "network_path")):
-        raise ValueError("dataset.root and dataset.network_path are required.")
-    if unknown := set(features) - {"numeric", "categorical", "boolean", "geometry"}:
-        raise ValueError(f"Unsupported feature groups: {sorted(unknown)}")
-    if unknown := set(graph) - {"allow_self_loops", "transforms"}:
-        raise ValueError(f"Unsupported graph settings: {sorted(unknown)}")
+    _validate_build_dataset_from_config(dataset, features, graph)
 
     # The encoder and builder know nothing about where settings came from.
     preprocessor = make_road_preprocessor(

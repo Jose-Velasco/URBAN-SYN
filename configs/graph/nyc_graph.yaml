@@ -22,7 +22,7 @@ graph:
     # Node-level graph features
     degree_features:
       enabled: true
-      log_scale: true``
+      log_scale: true
 
     local_degree_profile:
       enabled: true
@@ -59,7 +59,9 @@ graph:
 
       # Prefiltered training-only FMM match CSV containing cpath.
       # using full for development but need to be changes once we get the train split
-      match_csv: fmm_scripts/outputs/preliminary_results_10_16_2026_drive_only/nyc_fmm_match.csv
+      # match_csv: fmm_scripts/outputs/preliminary_results_10_16_2026_drive_only/nyc_fmm_match.csv
+      match_csv: fmm_scripts/outputs/nyc_15s_enriched_moves/nyc_15s_train_fmm_matches.csv
+      # ./outputs/nyc_original/nyc_original_train_fmm_matches.csv
 
       smoothing:
         method: additive
@@ -149,7 +151,7 @@ model:
     similarity_chunk_size: 128
 
 training:
-  epochs: 2
+  epochs: 3
   batch_size: 4
   learning_rate: 0.001
   weight_decay: 0.01
@@ -157,5 +159,5 @@ training:
   
   # Maximum number of those batches the training loop processes per epoch.
   # Process all available batches
-  max_batches: null 
-  # max_batches: 1    # Train on only 1 batch per epoch used for debugging
+  # max_batches: null 
+  max_batches: 3    # Train on only 3 batch per epoch used for debugging

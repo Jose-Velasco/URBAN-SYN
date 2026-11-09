@@ -22,7 +22,7 @@ def edge_ids_to_model_ids(
     Returns
     -------
     Tensor
-        Diffusion model IDs, preserving the input shape.
+        Diffusion model IDs, preserving the input shape. with ids starting at 1 since id 0 is reserved for padding in the diffusion model
 
     Raises
     ------
@@ -54,7 +54,7 @@ def edge_ids_to_model_ids(
     if not matched.all():
         raise ValueError("Some road IDs are missing from the PyG graph.")
 
-    # Add one because diffusion model ID zero is reserved for padding.
+    # Add one because diffusion model ID zero is reserved for padding, thus ids start at 1 instead of 0.
     return (node_indices[safe_positions] + 1).reshape(edge_ids.shape)
 
 
@@ -64,6 +64,8 @@ def model_ids_to_edge_ids(
 ) -> Tensor:
     """Convert diffusion model IDs back to road IDs.
 
+    graph_edge_ids: Tensor holds the original shared edge_id that are used to map back to he road network
+
     Padding ID zero is returned as -1.
     """
     if graph_edge_ids.ndim != 1:
@@ -72,9 +74,14 @@ def model_ids_to_edge_ids(
     if (model_ids < 0).any() or (model_ids > graph_edge_ids.numel()).any():
         raise ValueError("Diffusion model ID is out of range.")
 
+    # results is the output that will hold the edge_ids without the added 0 padding
     result = torch.full_like(model_ids, -1, dtype=torch.long)
+    # excludes the 0 padding index since its id is 0
     valid = model_ids > 0
 
+    # minus 1 since each id in graph_edge_ids was increased by 1 in in edge_ids_to_model_ids
+    # this selects the road ids of the ones model_ids (basically model_ids are the ideas we want the original edge_ids)
+    # this could be all or a subset of all actual edge_ids if model_ids has all the model_ids
     result[valid] = graph_edge_ids.to(model_ids.device).long()[
         model_ids[valid].long() - 1
     ]

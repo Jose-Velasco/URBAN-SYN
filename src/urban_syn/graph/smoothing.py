@@ -87,6 +87,7 @@ class AdditiveSmoothing:
             or counts.numel() != edge_index.size(1)
         ):
             raise ValueError("counts must be [E] and edge_index must be [2, E].")
+        
         if not torch.isfinite(counts).all() or (counts < 0).any():
             raise ValueError("Transition counts must be nonnegative and finite.")
 
@@ -94,6 +95,8 @@ class AdditiveSmoothing:
         source = edge_index[0].to(device=counts.device)
         totals = counts.new_zeros(num_nodes)
         totals.index_add_(0, source, counts)
+        
         out_degree = torch.bincount(source, minlength=num_nodes).to(counts.dtype)
         denominator = totals[source] + self.alpha * out_degree[source]
+        
         return (counts + self.alpha) / denominator
