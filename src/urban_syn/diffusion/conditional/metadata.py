@@ -1,4 +1,4 @@
-"""Build weather sidecars only after exact replay of the existing conversion."""
+"""Weather-only v1 predecessor; use sparse_metadata.py for current multi-field sidecars."""
 from __future__ import annotations
 
 import argparse
@@ -34,7 +34,11 @@ def read_sequences(dataset, split):
 
 
 def replay_alignment(dataset, trip_map, fmm_matches, test_trips):
-    """Return identities indexed exactly like stored sequences, or fail closed."""
+    """Replay stored road IDs and raw rates before training normalization, or fail closed.
+
+    Split, length bucket, and bucket index are preserved; enrichment and encoder
+    preprocessing happen only after this comparison succeeds.
+    """
     dataset = Path(dataset)
     identities = pd.read_csv(trip_map, dtype={"uid": str, "tid": str, "move_id": str})
     required = {"id", "uid", "tid", "move_id", "piece",
@@ -138,6 +142,7 @@ def join_weather(rows, weather):
 
 
 def build_sidecars(dataset, trip_map, fmm_matches, test_trips, weather_path, output):
+    """Write schema-v1 weather sidecars with a training-only vocabulary and hashes."""
     output = Path(output)
     if output.exists():
         raise FileExistsError(f"Choose a new sidecar output directory: {output}")
@@ -181,6 +186,7 @@ def build_sidecars(dataset, trip_map, fmm_matches, test_trips, weather_path, out
 
 
 def load_aligned_split(dataset, metadata_dir, split="gen_train"):
+    """Load a verified v1 split as aligned IDs, raw rates, weather codes, and rows."""
     metadata_dir = Path(metadata_dir)
     manifest = json.loads((metadata_dir / "manifest.json").read_text())
     if manifest["schema_version"] != 1:

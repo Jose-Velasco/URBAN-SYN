@@ -1,4 +1,4 @@
-"""Copied from baselines/diffusion/diff_rntraj/repo/models/diff_util.py; weather pilot changes are local."""
+"""Copied from the baseline diffusion utilities; sparse conditioning uses the legacy weather argument."""
 import os
 import numpy as np
 import torch
@@ -16,7 +16,12 @@ def std_normal(size, *, device, dtype=torch.float32, generator=None):
 
 def diff_forward_x0_constraint(net, x, diffusion_hyperparams, SE, spatial_A_trans, weather):
     """
-    x: vectorized RNTraj
+    Add noise, predict it, reconstruct road embeddings, and count bad edges.
+
+    ``x`` is [B, L, D+1]. In schema v2, the parameter named ``weather`` carries
+    the complete metadata dictionary, including transportation mode and
+    temperature; v1 accepts categorical weather codes. The connectivity count
+    is nondifferentiable.
     """
     _dh = diffusion_hyperparams
     T, Alpha_bar, Alpha = _dh["T"], _dh["alpha_bar"], _dh["alpha"]
@@ -53,6 +58,11 @@ def diff_forward_x0_constraint(net, x, diffusion_hyperparams, SE, spatial_A_tran
     return xt_noise, loss, x0_loss 
 
 def cal_x0_from_noise_ddpm(net, diffusion_hyperparams, batchsize, length, feature, weather, *, generator=None):
+    """Generate [batchsize, length, feature] samples with controlled reverse noise.
+
+    In schema v2, the parameter named weather carries the complete sparse
+    metadata dictionary through every denoising step.
+    """
     _dh = diffusion_hyperparams
     T, Alpha_bar, Alpha = _dh["T"], _dh["alpha_bar"], _dh["alpha"]
     

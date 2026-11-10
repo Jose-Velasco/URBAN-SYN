@@ -1,4 +1,4 @@
-"""Additive metadata contributions with exact-zero missing-field semantics."""
+"""Encode default weather/mode/temperature and optional POI fields additively."""
 from __future__ import annotations
 
 import torch
@@ -6,6 +6,23 @@ from torch import nn
 
 
 class SparseMetadataEncoder(nn.Module):
+    """Map manifest fields to an additive [B, condition_dim] vector.
+
+    The input has this structure::
+
+        {"values": {
+            "weather_category": ...,     # categorical torch.long [B]
+            "transportation_mode": ...,  # categorical torch.long [B]
+            "temperature": ...,          # normalized floating [B]
+        }, "masks": { ... }                # corresponding bool [B] tensors
+        }
+
+    Manifest construction creates encoders["weather_category"] and
+    encoders["transportation_mode"] as nn.Embedding layers, and
+    encoders["temperature"] as an nn.Linear layer. The optional POI field uses
+    the same categorical nn.Embedding pattern. Each contribution is masked
+    first, including temperature bias, then added to the shared condition.
+    """
     def __init__(self, fields, condition_dim=8, all_dropout=0.1, field_dropout=0.1):
         super().__init__()
         if condition_dim < 1 or not 0 <= all_dropout <= 1 or not 0 <= field_dropout <= 1:
@@ -20,11 +37,14 @@ class SparseMetadataEncoder(nn.Module):
         for field in fields:
             name = field["name"]
             if field["kind"] == "categorical":
+                # weather_category, transportation_mode, and optional POI:
+                # categorical codes become one field-specific embedding each.
                 codes = sorted(field["vocabulary"].values())
                 if codes != list(range(len(codes))) or field["vocabulary"].get("<unknown>") != 0:
                     raise ValueError("Categorical vocabulary must reserve code 0 for <unknown>")
                 self.encoders[name] = nn.Embedding(len(codes), condition_dim, padding_idx=0)
             elif field["kind"] == "continuous":
+                # temperature is already training-normalized before this layer.
                 # A bias lets a known mean-valued observation differ from a missing field.
                 # The entire result, including bias, is masked for missing observations.
                 self.encoders[name] = nn.Linear(1, condition_dim)
@@ -32,6 +52,7 @@ class SparseMetadataEncoder(nn.Module):
                 raise ValueError(f"Unsupported metadata kind: {field['kind']}")
 
     def forward(self, metadata, batch_size, device, dtype):
+        """Return contributions with exact-zero output for every unavailable field."""
         if metadata is None:
             metadata = {}
         if not isinstance(metadata, dict) or set(metadata) - {"values", "masks"}:
@@ -73,13 +94,20 @@ class SparseMetadataEncoder(nn.Module):
             keep = mask & keep_all
             if self.training and self.field_dropout:
                 keep = keep & (torch.rand(batch_size, device=device) >= self.field_dropout)
-            # Enforce zero even if a checkpoint contains a nonzero embedding row 0.
+            # Mask each field contribution, then add it to the shared condition;
+            # enforce zero even if a checkpoint contains a nonzero row-0 embedding.
             condition = condition + torch.where(keep.unsqueeze(-1), contribution, 0)
         return condition
 
 
 def encode_requests(requests, fields, device="cpu"):
-    """Encode explicit per-trajectory dictionaries; omitted/None/unknown fields are absent."""
+    """Encode raw categorical/Celsius requests into values and availability masks.
+
+    Categorical values use saved training vocabularies; temperatures are
+    normalized with saved training statistics. Omitted, None, and unknown
+    values are masked. POI identities, coordinates, dates, distances, and
+    context gaps are provenance and never enter the encoder.
+    """
     names = {field["name"] for field in fields}
     if any(not isinstance(row, dict) or set(row) - names for row in requests):
         raise ValueError("Generation request contains an unsupported metadata field")
@@ -102,5 +130,6 @@ def encode_requests(requests, fields, device="cpu"):
 
 
 def slice_metadata(metadata, indices):
+    """Select a batch while preserving every sparse field's values and masks."""
     return {group: {name: value[indices] for name, value in fields.items()}
             for group, fields in metadata.items()}

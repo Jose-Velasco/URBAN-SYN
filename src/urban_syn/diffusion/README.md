@@ -1,19 +1,38 @@
 # Trajectory diffusion package
 
-The current workflow is the sparse metadata Diff-RNTraj pipeline. The weather-only
-pipeline is its predecessor and remains available for compatibility.
+This package is a local conditional extension of Diff-RNTraj. The current sparse
+pipeline supports three default fields plus one opt-in field:
 
-FMM-converted trajectories flow through exact conversion replay, verified metadata
-sidecars, conditional denoising, DDPM reverse sampling, and road-ID/rate output.
-Replay reproduces every stored road ID, normalized rate, split, length bucket, and
-bucket index before enrichment. The sidecar then joins departure-date metadata
-without rewriting the trajectory dataset. Sampling produces road-embedding
-vectors and rates; road IDs are decoded by cosine similarity against the road
-embedding table, and rates are postprocessed as (clamp(rate, -1, 1) + 1) / 2.
+| Field | Kind | Default? | Encoder input |
+| --- | --- | --- | --- |
+| weather_category | categorical | yes | training-only code, 0 = Unknown |
+| transportation_mode | categorical | yes | training-only code, 0 = Unknown |
+| temperature | continuous | yes | training-normalized Celsius value plus mask |
+| previous_stop_poi_category | categorical | opt-in | training-only code, 0 = Unknown |
 
-The pilots demonstrate conditioning diagnostics and checkpoint reconstruction, not
-trajectory quality. Documentation verification needs no full training,
-preprocessing rerun, sidecar rebuild, or FMM rerun.
+The current entrypoint is the sparse diagnostic pilot. Regular conditional
+training and a dedicated production generation CLI remain future work.
+
+## Data flow and sources
+
+FMM-converted trajectories first pass exact replay: stored road IDs and rates,
+split membership, length buckets, and bucket indices must match the complete
+conversion inputs. Verified sidecars then attach metadata without rewriting the
+trajectory binaries. The denoiser receives road embeddings, normalized rates,
+and the encoded condition. DDPM reverse sampling produces road-embedding vectors
+and rates; cosine similarity decodes road IDs, and rates are postprocessed as
+(clamp(rate, -1, 1) + 1) / 2.
+
+| Model field | Source | Association |
+| --- | --- | --- |
+| transportation_mode | trajectory map and data/output/enriched_moves.parquet | move/trajectory label |
+| weather_category | data/output/weather_enrichment.parquet | (uid, tid, departure date) |
+| temperature | data/output/weather_enrichment.parquet | same three-key date join |
+| previous_stop_poi_category | data/output/stops.parquet plus data/output/enriched_occasional.parquet | latest same-parent stop before move departure, then POI candidate policy |
+
+Other columns in data/output are not automatically model inputs. A column becomes
+an input only when a sidecar builder maps it to a declared field descriptor and
+the checkpoint records that descriptor.
 
 ## Layout
 
@@ -23,6 +42,7 @@ src/urban_syn/diffusion/
 ├── models/
 │   ├── README.md
 │   ├── __init__.py
+│   ├── factory.py
 │   ├── model.py
 │   ├── diff_module.py
 │   └── diff_util.py
@@ -33,7 +53,7 @@ src/urban_syn/diffusion/
     ├── conversion.py
     ├── metadata.py
     ├── sparse_metadata.py
-    ├── pilot.py
+    ├── road_inputs.py
     ├── sparse_pilot.py
     ├── audit_weather.py
     └── tests/
@@ -42,26 +62,26 @@ src/urban_syn/diffusion/
         └── test_sparse.py
 ~~~
 
-[models/](models/README.md) documents the architecture and equations.
-[conditional/](conditional/README.md) documents data contracts, sidecars, and
-diagnostics. conditional/tests/ contains the 13 regression tests.
+[models/](models/README.md) documents the shared denoiser, losses, sampler,
+decoding, and checkpoint interfaces. [conditional/](conditional/README.md)
+documents alignment, weather and POI contracts, sidecars, and diagnostics.
+The test package contains 16 regression and POI-policy tests.
 
-## Inputs and supported conditions
+## Required inputs
 
-The NYC run requires trajectory binaries (gen_all, gen_train, gen_test
-eid_seqs.bin and rate_seqs.bin), extra_file/raw2new_rid.json,
-extra_file/raw_rn_dict.json, graph/graph_edge.edgelist,
+The current NYC run requires trajectory binaries
+(gen_all/gen_train/gen_test eid_seqs.bin and rate_seqs.bin), road mappings
+(extra_file/raw2new_rid.json, extra_file/new2raw_rid.json, and
+raw_rn_dict.json), graph/graph_edge.edgelist,
 graph/road_embed.txt, the trajectory-ID map, FMM matches, the held-out trip
-list, and data/output/weather_enrichment.parquet.
+list, and data/output/weather_enrichment.parquet. POI-enabled runs additionally
+use data/output/stops.parquet and data/output/enriched_occasional.parquet.
+The road mappings, graph, and embeddings are reused unchanged by conditioning.
 
-Current v2 fields are categorical weather_category, categorical
-transportation_mode, and continuous temperature in degrees Celsius. These are
-departure-date enrichment values, not pointwise GPS measurements.
+## Three-field quickstart
 
-## Docker quickstart
-
-Run from the repository root. Every command supplies the Compose path, container
-working directory, and PYTHONPATH. Use a fresh output directory per run.
+Run from the repository root with a fresh output directory. Every command
+specifies the Compose file, container working directory, and PYTHONPATH.
 
 ~~~bash
 COMPOSE=fmm_scripts/diffrntraj_version/docker-compose.yml
@@ -90,35 +110,55 @@ docker compose -f "$COMPOSE" run --rm -T --user "$(id -u):$(id -g)" \
   urban_syn.diffusion.conditional.tests.test_sparse -v
 ~~~
 
-For the predecessor weather-only workflow, use another fresh directory:
+The weather-only runner has been retired. The historical weather-only metadata,
+checkpoint, and pilot results remain under
+outputs/diff_rntraj_weather_pilot/metadata/ and smoke/ for compatibility
+reference; current diagnostics use only conditional.sparse_pilot.
+
+## POI-enabled quickstart
+
+The default three fields remain active; append the opt-in field and both POI
+sources. Use a fresh output directory for the sidecar and pilot checkpoint.
 
 ~~~bash
-RUN=outputs/diff_rntraj_weather_$(date -u +%Y%m%dT%H%M%SZ)
+COMPOSE=fmm_scripts/diffrntraj_version/docker-compose.yml
+RUN=outputs/diff_rntraj_sparse_poi_$(date -u +%Y%m%dT%H%M%SZ)
 
 docker compose -f "$COMPOSE" run --rm -T --user "$(id -u):$(id -g)" \
   -e PYTHONPATH=/workspace/URBAN-SYN/src -w /workspace/URBAN-SYN \
-  diffrntraj-fmm python -m urban_syn.diffusion.conditional.metadata \
+  diffrntraj-fmm python -m urban_syn.diffusion.conditional.sparse_metadata \
   --dataset data/NYC_rerun/20261102T040340Z \
   --trip-map fmm_scripts/diffrntraj_version/data/nyc_gps_points_fmm_trip_id_map_drive.csv \
   --fmm-matches fmm_scripts/diffrntraj_version/data/nyc_drive_fmm_match.csv \
   --test-trips fmm_scripts/nyc_test.csv \
   --weather data/output/weather_enrichment.parquet \
+  --poi data/output/enriched_occasional.parquet \
+  --stops data/output/stops.parquet \
+  --fields weather_category transportation_mode temperature previous_stop_poi_category \
   --output "$RUN/metadata"
 
 docker compose -f "$COMPOSE" run --rm -T --user "$(id -u):$(id -g)" \
   -e PYTHONPATH=/workspace/URBAN-SYN/src -w /workspace/URBAN-SYN \
-  diffrntraj-fmm python -m urban_syn.diffusion.conditional.pilot \
+  diffrntraj-fmm python -m urban_syn.diffusion.conditional.sparse_pilot \
   --dataset data/NYC_rerun/20261102T040340Z \
   --metadata-dir "$RUN/metadata" --output "$RUN/smoke"
 ~~~
 
-Historical artifacts are in outputs/diff_rntraj_sparse_pilot/ and
-outputs/diff_rntraj_weather_pilot/, each with metadata/, smoke/, and pilot.pt
-where applicable. Checkpoints store configuration and state dictionaries plus
-schema and input hashes. They reconstruct with make_model(config) and need
-matching road mappings and embeddings; moving Python modules requires no
-migration. v1, v2, and unconditional architectures are distinct.
+The fresh POI artifact location used by the current diagnostic is
+outputs/diff_rntraj_sparse_poi_pilot/metadata/ and smoke/. It records 170
+combined known moves and 432 combined known pieces: 157 training moves / 406
+training pieces and 13 test moves / 26 test pieces. These are actual move- and
+trajectory-level counts, not the unrelated stop-level missingness percentage.
 
-See [models and equations](models/README.md) and
-[conditional contracts and diagnostics](conditional/README.md).
+Checkpoints store configuration, state dictionaries, field descriptors, and
+input hashes. Reconstruct them with
+from urban_syn.diffusion.models.factory import make_model
+and load matching road inputs with
+from urban_syn.diffusion.conditional.road_inputs import load_road_inputs
+They require matching road mappings and embeddings. Reorganizing Python modules
+requires no checkpoint migration, but v1, v2, and POI-enabled configurations remain distinct. No
+regular conditional training or dedicated generation command is included yet.
+
+See [model details](models/README.md) and
+[conditioning contracts and diagnostics](conditional/README.md).
 

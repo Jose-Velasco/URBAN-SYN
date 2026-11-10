@@ -1,4 +1,4 @@
-"""Copied from baselines/diffusion/diff_rntraj/repo/models/diff_module.py; weather pilot changes are local."""
+"""Copied from the baseline model module; supports weather and sparse metadata conditioning."""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -47,6 +47,7 @@ class DiffusionEmbedding(nn.Module):
         return table
 
 class diff_CSDI(nn.Module):
+    """Predict noise for [B, L, D+1] trajectories with an additive [B, C] condition."""
     def __init__(self, channels, inputdim, num_steps, embedding_dim, pre_dim, rdcl,
                  weather_categories=None, condition_dim=8, metadata_fields=None,
                  all_dropout=0.1, field_dropout=0.1):
@@ -90,15 +91,24 @@ class diff_CSDI(nn.Module):
         self.layernorm = nn.LayerNorm(inputdim)
     def forward(self, x, diffusion_step, weather=None, mask_mat=None):
         """
-        x.shape : B, T, F
+        Denoise [B, L, D+1] input while preserving the output feature shape.
+
+        In schema v2, the parameter named weather carries the complete metadata
+        dictionary, including transportation mode and temperature. The
+        metadata_encoder branch is the multi-field path; _encode_weather() is
+        the legacy weather-only path. The selected [B, C] vector is broadcast
+        to [B, L, C] and concatenated to the noisy trajectory before the input
+        projection.
         """
         
         B, step_length, c = x.shape
         if c != self.pre_dim + 1:
             raise ValueError("Noisy trajectory feature dimension must remain pre_dim + 1")
+        # Multi-field schema-v2 path: weather is the complete sparse dictionary.
         if self.metadata_encoder is not None:
             condition = self.metadata_encoder(weather, B, x.device, x.dtype)
         else:
+            # Legacy schema-v1 weather-only path.
             condition = self._encode_weather(weather, B, x.device)
         condition = condition.unsqueeze(1).expand(-1, step_length, -1)
         x = torch.cat((x, condition), dim=-1)

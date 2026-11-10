@@ -10,7 +10,7 @@ import torch
 
 from ..conversion import encode_rates
 from ..metadata import build_sidecars, iter_batches, load_aligned_split, replay_alignment
-from ..pilot import make_model
+from ...models.factory import make_model
 
 
 class AlignmentTests(unittest.TestCase):

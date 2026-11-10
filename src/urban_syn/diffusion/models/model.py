@@ -1,4 +1,4 @@
-"""Copied from baselines/diffusion/diff_rntraj/repo/models/model.py; weather pilot changes are local."""
+"""Copied from the baseline trajectory model; weather is retained as the v2 condition argument."""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -17,10 +17,12 @@ class Diff_RNTraj(nn.Module):
         
     def forward(self, spatial_A_trans, SE, src_eid_seqs, src_rate_seqs, weather=None):
         """
-        spatial_A_trans: UTGraph
-        SE: pre-trained road segment representation
-        src_eid_seqs: road segment sequence of RNTraj
-        src_rate_seqs: moving rate of RNTraj
+        Build [B, L, D+1] road-embedding/rate inputs and invoke the loss helper.
+
+        ``src_rate_seqs`` are caller-transformed rates in [-1, 1], computed as
+        ``2 * stored_rate - 1`` from converter rates stored in [0, 1]; this
+        method does not perform that transformation. The legacy ``weather``
+        argument accepts v1 codes, v2 metadata, or None.
         """
         batchsize, max_src_len = src_eid_seqs.shape
         
@@ -32,8 +34,13 @@ class Diff_RNTraj(nn.Module):
         return diff_noise, const_loss, x0_loss
 
     def generate_data(self, spatial_A_trans, SE, batchsize, length, pre_dim, weather=None, *, generator=None):
-        
-        """Ggenerate data"""
+        """Reverse-sample [B, L, D+1] states and decode them to [B, L] IDs and rates.
+
+        In schema v2, the parameter named ``weather`` carries the complete
+        metadata dictionary, including transportation mode and temperature;
+        v1 retains categorical weather codes. The caller applies baseline rate
+        postprocessing.
+        """
         
         x0 = cal_x0_from_noise_ddpm(self.diff_model, self.diffusion_param, batchsize, length, pre_dim + 1, weather, generator=generator)  # B, T, 65
         x0_road = x0[:,:,:pre_dim]  # B, T, 64

@@ -3,6 +3,11 @@
 This directory contains the copied model implementation. See the [package
 overview](../README.md) and [conditional contracts](../conditional/README.md).
 
+The shared checkpoint factory is in factory.py:
+`from urban_syn.diffusion.models.factory import make_model`. Road embeddings
+and graph keys are loaded by `conditional/road_inputs.py`:
+`from urban_syn.diffusion.conditional.road_inputs import load_road_inputs`.
+
 ## Modules and forward path
 
 model.py implements Diff_RNTraj. forward looks up SE[road IDs], concatenates each
@@ -22,6 +27,26 @@ sqrt(0.5).
 
 diff_util.py implements forward noising, reconstruction, connectivity counting,
 and the reverse DDPM update.
+
+## Shared four-field conditioning
+
+The v2 model uses one SparseMetadataEncoder for all declared fields, including
+the optional previous_stop_poi_category. Categorical fields use separate
+embeddings with code 0 reserved for Unknown. Temperature is supplied in Celsius
+to request encoding, normalized with training-only mean and scale, and passed
+with an availability mask. Each known field contributes one [B,C] vector; the
+vectors are added, then broadcast over L positions. Missing fields contribute
+exactly zero, including the bias of the temperature projection. The condition
+is concatenated before the denoiser input projection, so the prediction remains
+[B,L,D+1] regardless of how many fields are declared.
+
+The v2 argument still has the legacy name weather, but it accepts the complete
+sparse metadata dictionary with values and masks, or None for the shared
+all-missing zero-condition path. That path is not the original unconditional
+checkpoint: it is a path in the v2 model exposed by training-only whole-record
+and per-field dropout. A nonzero gradient, parameter update, or conditioning
+delta in a pilot proves wiring and trainability, not learned conditional
+fidelity or trajectory quality.
 
 ## Equations
 
@@ -70,15 +95,18 @@ The final step draws no additional noise.
 | noisy trajectory | [B,L,D+1] | D embedding features plus normalized rate |
 | road table SE | [N,D] | indexed by road IDs |
 | v1 weather | [B], torch.long | one vocabulary code per trajectory |
-| v2 values/masks | per-field [B] and bool [B] | sparse metadata dictionary |
+| v2 values/masks | per-field [B] and bool [B] | weather, mode, normalized temperature, optional POI |
 | condition | [B,C] | broadcast to [B,L,C] |
 | prediction | [B,L,D+1] | unchanged output dimensions |
 | generated IDs/rates | [B,L], [B,L] | decoded IDs and continuous rates |
 
 The legacy final argument is named weather. V1 accepts a weather tensor or None
-(None means all code zero). V2 accepts a metadata dictionary with values and
-masks or None for the shared all-missing path. Condition and trajectory must be
-on the same device, and validation preserves prediction dimensions.
+(None means all code zero). V2 accepts the complete metadata dictionary with
+per-field values and availability masks, or None for the shared all-missing
+path. Categorical values are vocabulary codes; temperature values reaching the
+encoder are already normalized; POI identities, coordinates, distances, dates,
+stop times, and context gaps are provenance only. Condition and trajectory must
+be on the same device, and validation preserves prediction dimensions.
 
 Inherited definitions unused by this trajectory forward path include
 get_torch_trans, the residual block upsample_conv2d and mel_conv, diff_CSDI’s

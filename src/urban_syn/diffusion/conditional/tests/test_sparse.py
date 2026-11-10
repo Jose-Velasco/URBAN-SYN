@@ -6,8 +6,11 @@ import pandas as pd
 import torch
 
 from ..conditioning import SparseMetadataEncoder, encode_requests
-from ..pilot import make_model
-from ..sparse_metadata import build_sparse_sidecars, fit_fields, load_sparse_split, transform_rows
+from ...models.factory import make_model
+from ..sparse_metadata import (POI_FIELD, POI_REASON_AMBIGUOUS, POI_REASON_GAP,
+                               POI_REASON_NO_STOP, POI_REASON_UNAVAILABLE,
+                               _prepare_poi_assignments, build_sparse_sidecars,
+                               fit_fields, load_sparse_split, transform_rows)
 from . import test_pilot as fixtures
 
 
@@ -149,6 +152,94 @@ class SparseEncoderTests(unittest.TestCase):
         b = model.generate_data(graph, embeddings, 2, 3, 4, null, generator=generator())
         self.assertTrue(all(torch.equal(left, right) for left, right in zip(a, b)))
         self.assertEqual(a[0].shape, (2, 3))
+
+
+class PoiSelectionTests(unittest.TestCase):
+    def _select(self, trip_rows, stop_rows, poi_rows):
+        trip_map = pd.DataFrame(trip_rows)
+        # Keep compact relative test times while exercising the real Unix-second
+        # contract used by the trajectory-ID map.
+        epoch = int(pd.Timestamp("2020-01-01", tz="UTC").timestamp())
+        trip_map["start_timestamp"] = trip_map.start_timestamp + epoch
+        stops = pd.DataFrame(stop_rows)
+        poi = pd.DataFrame(poi_rows)
+        return _prepare_poi_assignments({}, trip_map, poi, stops).set_index(["uid", "tid", "move_id"])
+
+    @staticmethod
+    def _stop(uid, tid, arrival, departure):
+        return {"uid": uid, "tid": tid, "datetime": pd.Timestamp("2020-01-01") + pd.Timedelta(seconds=arrival),
+                "leaving_datetime": pd.Timestamp("2020-01-01") + pd.Timedelta(seconds=departure)}
+
+    @staticmethod
+    def _poi(uid, tid, arrival, departure, category="shop", distance=1, index_poi=1,
+             element_type="node", osmid=1):
+        return {"uid": uid, "tid": tid,
+                "datetime": pd.Timestamp("2020-01-01") + pd.Timedelta(seconds=arrival),
+                "leaving_datetime": pd.Timestamp("2020-01-01") + pd.Timedelta(seconds=departure),
+                "category": category, "distance": distance, "index_poi": index_poi,
+                "element_type": element_type, "osmid": osmid}
+
+    def test_gap_boundaries_future_stop_and_no_backward_fallback(self):
+        trips = [
+            {"uid": "zero", "tid": "t", "move_id": "m", "start_timestamp": 1000},
+            {"uid": "nine", "tid": "t", "move_id": "m", "start_timestamp": 1900},
+            {"uid": "over", "tid": "t", "move_id": "m", "start_timestamp": 1901},
+            {"uid": "future", "tid": "t", "move_id": "m", "start_timestamp": 1000},
+            {"uid": "fallback", "tid": "t", "move_id": "m", "start_timestamp": 1900},
+        ]
+        stops = [self._stop("zero", "t", 900, 1000),
+                 self._stop("nine", "t", 900, 1000),
+                 self._stop("over", "t", 900, 1000),
+                 self._stop("future", "t", 900, 1100),
+                 self._stop("fallback", "t", 400, 500),
+                 self._stop("fallback", "t", 900, 1000)]
+        pois = [self._poi("zero", "t", 900, 1000),
+                self._poi("nine", "t", 900, 1000),
+                self._poi("fallback", "t", 400, 500, category="old")]
+        result = self._select(trips, stops, pois)
+        self.assertEqual(result.loc[("zero", "t", "m"), POI_FIELD], "shop")
+        self.assertEqual(result.loc[("nine", "t", "m"), POI_FIELD], "shop")
+        self.assertEqual(result.loc[("nine", "t", "m"), f"{POI_FIELD}_reason"], "known")
+        self.assertEqual(result.loc[("over", "t", "m"), f"{POI_FIELD}_reason"], POI_REASON_GAP)
+        self.assertEqual(result.loc[("future", "t", "m"), f"{POI_FIELD}_reason"], POI_REASON_NO_STOP)
+        self.assertEqual(result.loc[("fallback", "t", "m"), f"{POI_FIELD}_reason"], POI_REASON_UNAVAILABLE)
+
+    def test_distance_boundaries_duplicates_shuffle_and_tie_order(self):
+        trips = [{"uid": "u", "tid": "t", "move_id": "m", "start_timestamp": 1000},
+                 {"uid": "dup", "tid": "t", "move_id": "m", "start_timestamp": 1000},
+                 {"uid": "tie", "tid": "t", "move_id": "m", "start_timestamp": 1000}]
+        stops = [self._stop("u", "t", 900, 1000), self._stop("dup", "t", 900, 1000),
+                 self._stop("tie", "t", 900, 1000)]
+        pois = [
+            self._poi("u", "t", 900, 1000, category="edge", distance=0, index_poi=1),
+            self._poi("u", "t", 900, 1000, category="limit", distance=50, index_poi=2),
+            self._poi("dup", "t", 900, 1000, category="a", distance=2, index_poi=3),
+            self._poi("dup", "t", 900, 1000, category="b", distance=3, index_poi=3),
+            self._poi("tie", "t", 900, 1000, category="z", distance=1, index_poi=5, osmid=20),
+            self._poi("tie", "t", 900, 1000, category="a", distance=1, index_poi=4, osmid=10),
+        ]
+        result = self._select(trips, stops, pois)
+        self.assertEqual(result.loc[("u", "t", "m"), POI_FIELD], "edge")
+        self.assertEqual(result.loc[("dup", "t", "m"), f"{POI_FIELD}_reason"], POI_REASON_AMBIGUOUS)
+        self.assertEqual(result.loc[("tie", "t", "m"), POI_FIELD], "a")
+        shuffled = self._select(trips, stops, list(reversed(pois)))
+        pd.testing.assert_frame_equal(result, shuffled)
+        out_of_range = self._select(
+            [{"uid": "far", "tid": "t", "move_id": "m", "start_timestamp": 1000}],
+            [self._stop("far", "t", 900, 1000)],
+            [self._poi("far", "t", 900, 1000, distance=50.000001)])
+        self.assertEqual(out_of_range.iloc[0][f"{POI_FIELD}_reason"], POI_REASON_UNAVAILABLE)
+
+    def test_poi_vocabulary_is_training_only_and_unseen_is_unknown(self):
+        schema = fit_fields(pd.DataFrame({POI_FIELD: ["cafe", "cafe", None]}), [POI_FIELD])
+        self.assertEqual(schema[0]["vocabulary"], {"<unknown>": 0, "cafe": 1})
+        rows = pd.DataFrame({POI_FIELD: ["cafe", "park", "<unknown>"],
+                             f"{POI_FIELD}_reason": ["known", "known", POI_REASON_NO_STOP]})
+        transformed = transform_rows(rows, schema)
+        self.assertEqual(transformed[f"{POI_FIELD}_code"].tolist(), [1, 0, 0])
+        self.assertEqual(transformed[f"{POI_FIELD}_available"].tolist(), [True, False, False])
+        self.assertEqual(transformed[f"{POI_FIELD}_reason"].tolist(),
+                         ["known", "unseen_training_category", POI_REASON_NO_STOP])
 
 
 if __name__ == "__main__":

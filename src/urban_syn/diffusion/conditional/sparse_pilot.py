@@ -1,4 +1,4 @@
-"""One-update smoke check of known, partial, and zero metadata paths on NYC data."""
+"""Diagnostic sparse pilot for weather, mode, temperature, and optional POI metadata."""
 import argparse
 import copy
 import json
@@ -10,11 +10,13 @@ import torch
 from .conditioning import encode_requests, slice_metadata
 from ..models.diff_util import cal_x0_from_noise_ddpm
 from .metadata import sha256
-from .pilot import load_road_inputs, make_model
+from .road_inputs import load_road_inputs
+from ..models.factory import make_model
 from .sparse_metadata import load_sparse_split
 
 
 def run_sparse_pilot(dataset, metadata_dir, output):
+    """Run one update over known, partial, and all-missing metadata paths."""
     output = Path(output)
     if output.exists():
         raise FileExistsError(f"Choose a new smoke-test directory: {output}")
