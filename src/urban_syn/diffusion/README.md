@@ -159,6 +159,5 @@ They require matching road mappings and embeddings. Reorganizing Python modules
 requires no checkpoint migration, but v1, v2, and POI-enabled configurations remain distinct. No
 regular conditional training or dedicated generation command is included yet.
 
-See [model details](models/README.md) and
-[conditioning contracts and diagnostics](conditional/README.md).
+See [conditioning contracts and diagnostics](conditional/README.md).
 

@@ -140,6 +140,57 @@ Omitted or None values are unavailable; unknown categories map to unknown and
 mask. Unsupported names raise an error. The model’s legacy argument is still
 named weather, but v2 accepts this metadata dictionary or None.
 
+## Toggle conditioning
+
+The model and metadata encoder expose runtime ablation flags. These flags do not
+remove modules or parameters and therefore preserve strict checkpoint loading.
+
+~~~python
+net = model.diff_model
+
+# Disable all metadata conditioning.
+net.skip_conditioning = True
+
+# Restore full conditioning.
+net.skip_conditioning = False
+if net.metadata_encoder is not None:
+    net.metadata_encoder.skip_conditioning = False
+~~~
+
+The model-level flag takes precedence: it skips encoder execution, accepts absent
+metadata, and applies the existing input projection using only its trajectory
+feature weight slice. The encoder-only option retains the model’s conditioning
+concatenation while returning zero conditions:
+
+~~~python
+# Return zero conditions while retaining concatenation.
+net.metadata_encoder.skip_conditioning = True
+~~~
+
+Flags are runtime state and must be reapplied after checkpoint reconstruction.
+Registered modules must remain intact for strict state-dictionary loading. This
+ablation is distinct from loading the original unconditional baseline: the
+conditional model, projection, and checkpoint parameters are retained, with only
+the conditioning contribution disabled at runtime.
+
+## Structure
+
+With conditioning enabled, each categorical metadata field uses a separate embedding, while training-normalized temperature uses a linear projection. Availability masks zero each missing field’s complete contribution, including projection bias. The contributions are summed into a shared `[B,C]` condition vector, broadcast across trajectory positions, and concatenated with noisy road-embedding/rate features before the input projection. The diffusion timestep is encoded separately using sinusoidal features and learned projections; each gated dilated-convolution residual block receives a projected timestep embedding. The denoiser predicts noise with the original trajectory feature dimensions. This project-specific metadata encoder uses masked addition and input concatenation. Training includes condition dropout, while generation uses ordinary DDPM sampling without classifier-free guidance mixing.
+
+
+### Citation
+```bibtex
+@article{ho2022classifier,
+  title={Classifier-free diffusion guidance},
+  author={Ho, Jonathan and Salimans, Tim},
+  journal={arXiv preprint arXiv:2207.12598},
+  year={2022}
+}
+```
+
+Classifier-Free Diffusion Guidance - Related methodology for training conditional and unconditional paths through condition dropout. Our sampler does not implement CFG prediction mixing or a guidance scale.
+
+
 ## Diagnostics and historical results
 **Context & Scope:** These are historical pilot results sourced from existing reports, not regenerated artifacts. They serve as successful conditioning diagnostics and trainability checks, rather than evaluations of trajectory quality, road realism, or conditional fidelity.
 

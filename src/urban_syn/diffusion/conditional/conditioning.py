@@ -30,6 +30,7 @@ class SparseMetadataEncoder(nn.Module):
         self.fields = fields
         self.condition_dim = condition_dim
         self.all_dropout, self.field_dropout = all_dropout, field_dropout
+        self.skip_conditioning = False
         names = [field["name"] for field in fields]
         if len(names) != len(set(names)):
             raise ValueError("Duplicate metadata field names")
@@ -53,6 +54,8 @@ class SparseMetadataEncoder(nn.Module):
 
     def forward(self, metadata, batch_size, device, dtype):
         """Return contributions with exact-zero output for every unavailable field."""
+        if self.skip_conditioning:
+            return torch.zeros(batch_size, self.condition_dim, device=device, dtype=dtype)
         if metadata is None:
             metadata = {}
         if not isinstance(metadata, dict) or set(metadata) - {"values", "masks"}:

@@ -55,6 +55,7 @@ class diff_CSDI(nn.Module):
         self.channels = channels
         self.pre_dim = pre_dim
         self.rdcl = rdcl
+        self.skip_conditioning = False
         self.metadata_encoder = None
         if metadata_fields is not None:
             self.metadata_encoder = SparseMetadataEncoder(
@@ -104,17 +105,29 @@ class diff_CSDI(nn.Module):
         B, step_length, c = x.shape
         if c != self.pre_dim + 1:
             raise ValueError("Noisy trajectory feature dimension must remain pre_dim + 1")
-        # Multi-field schema-v2 path: weather is the complete sparse dictionary.
-        if self.metadata_encoder is not None:
-            condition = self.metadata_encoder(weather, B, x.device, x.dtype)
-        else:
-            # Legacy schema-v1 weather-only path.
-            condition = self._encode_weather(weather, B, x.device)
-        condition = condition.unsqueeze(1).expand(-1, step_length, -1)
-        x = torch.cat((x, condition), dim=-1)
         x = x.permute(0, 2, 1)   # B, F, T
-
-        x = self.input_projection(x)
+        if self.skip_conditioning:
+            # Keep the registered projection intact, but use only its trajectory
+            # feature slice when the complete conditioning path is disabled.
+            x = F.conv1d(
+                x,
+                self.input_projection.weight[:, :self.pre_dim + 1, :],
+                self.input_projection.bias,
+                stride=self.input_projection.stride,
+                padding=self.input_projection.padding,
+                dilation=self.input_projection.dilation,
+                groups=self.input_projection.groups,
+            )
+        else:
+            # Multi-field schema-v2 path: weather is the complete sparse dictionary.
+            if self.metadata_encoder is not None:
+                condition = self.metadata_encoder(weather, B, x.device, x.dtype)
+            else:
+                # Legacy schema-v1 weather-only path.
+                condition = self._encode_weather(weather, B, x.device)
+            condition = condition.unsqueeze(2).expand(-1, -1, step_length)
+            x = torch.cat((x, condition), dim=1)
+            x = self.input_projection(x)
         x = F.relu(x).permute(0, 2, 1)  # B, T, F
 
         diffusion_emb = self.diffusion_embedding(diffusion_step)
