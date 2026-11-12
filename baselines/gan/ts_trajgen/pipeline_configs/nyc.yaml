@@ -17,7 +17,7 @@ paths:
   # Read-only upstream artifacts mounted into the container.
   network: /workspace/upstream/fmm/data/road_network/nyc.gpkg
   fmm_match: /workspace/upstream/fmm/outputs/nyc_fmm_match.csv
-  parquet: /workspace/upstream/data/nyc_output_tabular/output/traj_cleaned.parquet
+  parquet: /workspace/upstream/data/nyc_output_tabular/output/enriched_moves.parquet
   trip_id_map: /workspace/upstream/fmm/data/nyc_gps_points_fmm_trip_id_map.csv
 
 # TS-TrajGen experiment/model configuration.

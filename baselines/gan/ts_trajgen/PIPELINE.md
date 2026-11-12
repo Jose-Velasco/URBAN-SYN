@@ -64,16 +64,16 @@ Inside the container, the wrapper expects:
 /workspace/upstream/fmm/data/road_network/nyc.gpkg
 /workspace/upstream/fmm/data/nyc_gps_points_fmm_trip_id_map.csv
 /workspace/upstream/fmm/outputs/nyc_fmm_match.csv
-/workspace/upstream/data/nyc_output_tabular/output/traj_cleaned.parquet
+/workspace/upstream/data/nyc_output_tabular/output/enriched_moves.parquet
 ```
 
 These files must come from the same road-network/map-matching run. Do not mix artifacts produced from different network versions.
 
 ### Trajectory IDs and split order
 
-Map matching is performed before the TS-TrajGen train/test split. `build-inputs` reads the completed FMM output and then creates `nyc_mm_train.csv` and `nyc_mm_test.csv` using `build.train_ratio`.
+Map matching is performed before the TS-TrajGen train/test split. `build-inputs` reads the completed FMM output and then creates `nyc_mm_train.csv` and `nyc_mm_test.csv` from the `split` column of `nyc_gps_points_fmm_trip_id_map.csv`: the by-user split shared by all baselines, written there by `fmm_scripts/prepare_fmm_inputs.py --test_trips ../data/split_by_user/test_trips.csv`. `build.train_ratio` is only used if that column is missing (a random split, which then differs from the other baselines).
 
-The integer trajectory `id` used in the map-matched files is the FMM ID. `nyc_gps_points_fmm_trip_id_map.csv` maps it back to `trip_key`, where `trip_key` was constructed from the processed MAT dataset's `uid` and `tid` because `tid` is not globally unique by itself.
+The integer trajectory `id` used in the map-matched files is the FMM ID. `nyc_gps_points_fmm_trip_id_map.csv` maps it back to `trip_key`, which is `uid_tid_moveid`: one trajectory per move of `enriched_moves.parquet`. (`uid` is included because `tid` is not globally unique by itself; sources without `move_id`, such as `traj_cleaned.parquet`, give `uid_tid`.)
 
 ## Local Docker usage
 

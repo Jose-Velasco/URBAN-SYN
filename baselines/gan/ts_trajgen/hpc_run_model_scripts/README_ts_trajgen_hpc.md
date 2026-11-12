@@ -56,7 +56,8 @@ For the NYC run used in this project:
 
 ```text
 Input source data:
-<URBAN-SYN>/data/nyc_output_tabular/output/traj_cleaned.parquet
+<URBAN-SYN>/data/nyc_output_tabular/output/enriched_moves.parquet
+<URBAN-SYN>/fmm_scripts/data/nyc_gps_points_fmm_trip_id_map.csv   (its split column holds the shared train/test split)
 <URBAN-SYN>/fmm_scripts/data/road_network/nyc.gpkg
 <URBAN-SYN>/fmm_scripts/outputs/nyc_fmm_match.csv
 

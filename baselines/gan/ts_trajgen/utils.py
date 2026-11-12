@@ -976,10 +976,17 @@ def _split_train_test(
     df: pd.DataFrame,
     train_ratio: float,
     random_state: int,
+    test_ids: set[str] | None = None,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Split trajectory dataframe into train and test sets.
+    With test_ids (from the split column of the FMM trip-id map) the test set is fixed;
+    otherwise it is a random draw.
     """
+    if test_ids is not None:
+        is_test = df["traj_id"].astype(str).isin(test_ids)
+        return df[~is_test].reset_index(drop=True), df[is_test].reset_index(drop=True)
+
     train = df.sample(frac=train_ratio, random_state=random_state)
     test = df.drop(train.index)
 
@@ -1056,7 +1063,8 @@ def build_mm_csvs(
     min_delta_seconds: float = 1.0,
     logger: logging.Logger | None = None,
     max_train_trajectories: int | None = None,
-    max_test_trajectories: int | None = None
+    max_test_trajectories: int | None = None,
+    test_ids: set[str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Build TS-TrajGen train/test CSVs from FMM map-matching output.
@@ -1172,7 +1180,7 @@ def build_mm_csvs(
         interp_stats.log_summary(logger)
         return df, df.copy()
 
-    train, test = _split_train_test(df, train_ratio, random_state)
+    train, test = _split_train_test(df, train_ratio, random_state, test_ids)
 
     train = _limit_trajectories(
         train,
@@ -1241,8 +1249,15 @@ def build_trip_time_lookup(
     dict[str, list[pd.Timestamp]]
         Mapping from FMM trajectory id string to timestamp list.
     """
-    df = pd.read_parquet(parquet_path, columns=[datetime_col, user_id_col, trajectory_id_col]).copy()
+    df = pd.read_parquet(parquet_path)
+    # enriched_moves.parquet stores tid and move_id as the index.
+    if trajectory_id_col not in df.columns:
+        df = df.reset_index()
     df["trip_key"] = df[user_id_col].astype(str) + "_" + df[trajectory_id_col].astype(str)
+    # One trajectory per move, matching add_fmm_trajectory_ids in fmm_scripts/utils.py.
+    if "move_id" in df.columns:
+        df["trip_key"] = df["trip_key"] + "_" + df["move_id"].astype(str)
+    df = df[[datetime_col, "trip_key"]]
 
     trip_map = pd.read_csv(trip_id_map_csv).copy()
     trip_map["id"] = trip_map["id"].astype(str)

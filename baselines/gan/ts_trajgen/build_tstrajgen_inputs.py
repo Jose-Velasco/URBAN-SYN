@@ -308,6 +308,20 @@ def build_and_save_mm_csvs(
         trip_id_map_csv=config.trip_id_map_csv,
     )
 
+    # The shared by-user split: prepare_fmm_inputs.py --test_trips writes it into the
+    # trip-id map's split column. Without that column the test set is a random draw.
+    trip_map = pd.read_csv(config.trip_id_map_csv)
+    if "split" in trip_map.columns:
+        test_ids = set(trip_map.loc[trip_map["split"] == "test", "id"].astype(str))
+        logger.info("Test set: %d trajectories from the trip-id map's split column", len(test_ids))
+    else:
+        test_ids = None
+        logger.warning(
+            "The trip-id map has no split column, so the test set is a random draw (train_ratio) "
+            "and differs from the other baselines. Rebuild the FMM inputs with --test_trips "
+            "to use the shared split."
+        )
+
     logger.info("Building train/test map-matched CSV files")
     train_df, test_df = build_mm_csvs(
         fmm_path=config.fmm_match_path,
@@ -324,6 +338,7 @@ def build_and_save_mm_csvs(
         logger=logger,
         max_train_trajectories=config.max_train_trajectories,
         max_test_trajectories=config.max_test_trajectories,
+        test_ids=test_ids,
     )
 
     train_df.to_csv(train_path, index=False)
