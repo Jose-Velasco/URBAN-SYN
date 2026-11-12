@@ -4,7 +4,8 @@ This directory contains the adapted DiffTraj baseline used for the NYC trajector
 
 The implementation is based on the original DiffTraj repository and keeps the model (the conditional UNet and
 the diffusion process) as close to the authors' code as practical. NYC data preparation and a few training settings are
-added. Data preparation and generation each come as a notebook and as a script, so the two can be compared.
+added. Generation comes as a script (for batch jobs) and as the authors' notebook adapted for NYC, so the two can be
+compared.
 
 ## Source
 
@@ -21,7 +22,6 @@ notes).
 - `hpc/train_nyc.sbatch`: HPC job that trains, then generates.
 - `README.md`: this file.
 - `repo/prepare_data.py`: builds the training and test files from the NYC moves.
-- `repo/DiffTraj_DataFormat.ipynb`: the notebook version of `prepare_data.py`.
 - `repo/generate.py`: the script version of `process/Traj_Generation.ipynb`.
 
 ## NYC adaptation notes
@@ -41,19 +41,15 @@ Training (`main.py`, `utils/config.py`):
 
 New scripts:
 
-- `prepare_data.py` (script version of `DiffTraj_DataFormat.ipynb`) builds the training and test files from the
-  MAT-Dataset NYC moves: one trajectory per move
+- `prepare_data.py` builds the training and test files from the MAT-Dataset NYC moves: one trajectory per move
   (all travel modes by default), resampled to 256 points, with DiffTraj's 8 conditions per trajectory (departure
   time slot, distance, duration, number of points, average step length, average speed, start and end cell on a
   16 x 16 grid). Normalisation statistics are computed on the training trips only.
 - `generate.py` is a script version of the generation notebook, so generation can run in a batch job. It generates
-  one trajectory per test trip, in the same order as the test conditions, so generated trajectory *i* can be
-  compared with real test trajectory *i*.
+  one trajectory per test move (one row of `head_test.npy`), in the same order as the test conditions, so
+  generated trajectory *i* can be compared with real test trajectory *i*.
 
-Notebooks:
-
-- `DiffTraj_DataFormat.ipynb` (in `repo/`, next to `prepare_data.py`): the notebook version of `prepare_data.py` (Colab or local), with extra plots of
-  the NYC trajectories and the grid, and optional saves (all trajectories, augmented training trips).
+Notebook:
 
 `process/Traj_Generation.ipynb` (the authors' generation notebook, in the authors' `process/` folder, adapted for
 NYC and Colab):
@@ -71,9 +67,13 @@ The authors' other notebook (`process/Traj2parquet.ipynb`, Chengdu data conversi
 
 ## Data-split policy
 
+- **Split:** the by-user split shared by all baselines, made by `scripts/split_enriched_moves_by_user.ipynb` in
+  `data/split_by_user/` (URBAN-SYN root). Users are shuffled (seed 101) and added to the test set until it holds
+  about 20% of the moves, so no user has trips on both sides.
 - **Train:** all trips except the test trips. Used for training and for the normalisation statistics.
-- **Test:** the same test trips as Diff-RNTraj and TS-TrajGen, read from the shared list `fmm_scripts/nyc_test.csv`
-  (`uid`, `tid`; not copied into this folder). Every move of a test trip goes to the test set. `generate.py` generates one trajectory per test trip for evaluation.
+- **Test:** the trips in `data/split_by_user/test_trips.csv` (`uid`, `tid`; not copied into this folder). Every
+  move of a test trip goes to the test set, and `generate.py` generates one trajectory per test move for
+  evaluation. With the default settings this gives 15,422 training and 3,849 test moves.
 - **No validation set:** like the original code, training has no validation split; checkpoints are simply saved
   every 50 epochs.
 
@@ -82,14 +82,16 @@ The authors' other notebook (`process/Traj2parquet.ipynb`, Chengdu data conversi
 All data and outputs are gitignored; only the code is committed.
 
 - **Raw input:** the MAT-Dataset NYC moves (`data/nyc_output_tabular/output/enriched_moves.parquet` in the
-  URBAN-SYN root) and the test list (`fmm_scripts/nyc_test.csv`, gitignored).
+  URBAN-SYN root) and the test list (`data/split_by_user/test_trips.csv`, gitignored; made by
+  `scripts/split_enriched_moves_by_user.ipynb`).
 - **Made by `prepare_data.py` (in `repo/`):** the training trajectories and conditions (`traj.npy`, `head.npy`),
   the test conditions (`head_test.npy`), the training statistics (`traj_stats.npy`), the real test trajectories
   in the same order (`real_trajectories_test.npy`), and a summary (`prepare_data_info.json`).
 - **Training output (in `repo/DiffTraj/<run>/`):** checkpoints in `models/<timestamp>/unet_<epoch>.pt`, losses in
   `results/`, logs in `logs/`, and a copy of the config and model code in `Files/<timestamp>/`.
 - **Generated trajectories:** `Files/<timestamp>/synthetic_trajectories.npy` (latitude/longitude per point), with
-  `synthetic_index.npy` (which condition each one came from) and `generation_info.json`.
+  `synthetic_index.npy` (which condition each one came from) and `generation_info.json`. Each HPC job also adds a
+  line to `run_times.txt` in the same folder (GPU, training and generation times).
 
 ## Container
 
@@ -105,7 +107,11 @@ rebuild. GPU-enabled through `gpus: all`. On the HPC the same image runs as an A
 
 ### 1. Data preparation (local, Docker Desktop running)
 
-From this folder:
+This needs the shared split, `data/split_by_user/test_trips.csv`. If it isn't there, run
+`scripts/split_enriched_moves_by_user.ipynb` once from the URBAN-SYN root (it reads
+`data/nyc_output_tabular/output/enriched_moves.parquet` and writes `data/split_by_user/`).
+
+Then, from this folder:
 ```bash
 docker compose build                                                  # once
 docker compose run --rm difftraj python prepare_data.py               # all travel modes
@@ -113,11 +119,6 @@ docker compose run --rm difftraj python prepare_data.py --modes 2 3 6 # only bus
 ```
 Other options: `--min-points N` (drop moves with fewer GPS points, default 2) and
 `--parquet .../traj_cleaned.parquet` (one trajectory per user track instead of per move).
-
-The same steps are in `repo/DiffTraj_DataFormat.ipynb` (notebook version). It runs in Colab (it mounts Google
-Drive and reads the data and test files from there) or locally from `repo/` (it reads the parquet from
-`URBAN-SYN/data/`). Its settings are at the top: `DATA_SOURCE`, `MODES` and `MIN_POINTS`. For the test split
-it reads the same `fmm_scripts/nyc_test.csv` (in Colab, a copy in the Drive folder). It also prints the training statistics that `Traj_Generation.ipynb` uses.
 
 ### 2. Train and generate
 

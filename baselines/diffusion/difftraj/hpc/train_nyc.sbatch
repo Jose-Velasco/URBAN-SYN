@@ -18,7 +18,7 @@
 #   cd ~/URBAN-SYN/baselines/diffusion/difftraj && mkdir -p logs && sbatch hpc/train_nyc.sbatch
 # Training settings (epochs, batch size, run name) come from repo/utils/config.py.
 # Outputs: repo/DiffTraj/<run>/models/<timestamp>/unet_*.pt   (checkpoints every 50 epochs)
-#          repo/DiffTraj/<run>/Files/<timestamp>/synthetic_trajectories.npy + synthetic_index.npy
+#          repo/DiffTraj/<run>/Files/<timestamp>/synthetic_trajectories.npy + synthetic_index.npy + run_times.txt
 #
 # Generation only, with an existing model (newest checkpoint unless MODEL is set, relative to repo/):
 #   sbatch --export=ALL,GENERATE_ONLY=1 --time=02:00:00 hpc/train_nyc.sbatch
@@ -89,8 +89,10 @@ echo "[$(now)] generation done in $(hms $GEN_S) - output in $(cat repo/DiffTraj/
 TOTAL_S=$((SECONDS - START))
 echo "[$(now)] total (training + generation): $(hms $TOTAL_S)"
 
-# One line per run, so the times can be compared later.
-TIMES=repo/DiffTraj/run_times.txt
-mkdir -p repo/DiffTraj
-[ -f "$TIMES" ] || echo "finished,job_id,gpu,generate_only,training,generation,total" > "$TIMES"
-echo "$(now),${SLURM_JOB_ID:-none},$GPU,${GENERATE_ONLY:-0},$(hms $TRAIN_S),$(hms $GEN_S),$(hms $TOTAL_S)" >> "$TIMES"
+# One line per run in the generation folder (Files/<timestamp>/run_times.txt), so the times stay with the outputs.
+GEN_DIR=$(cat repo/DiffTraj/last_generation.txt 2>/dev/null || true)
+GEN_DIR=repo/${GEN_DIR#/workspace/repo/}
+if [ -d "$GEN_DIR" ]; then
+    [ -f "$GEN_DIR/run_times.txt" ] || echo "finished,job_id,gpu,generate_only,training,generation,total" > "$GEN_DIR/run_times.txt"
+    echo "$(now),${SLURM_JOB_ID:-none},$GPU,${GENERATE_ONLY:-0},$(hms $TRAIN_S),$(hms $GEN_S),$(hms $TOTAL_S)" >> "$GEN_DIR/run_times.txt"
+fi
