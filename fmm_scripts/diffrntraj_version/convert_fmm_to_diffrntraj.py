@@ -16,8 +16,8 @@ NYC/
 │   ├── eid_seqs.bin
 │   ├── length_distri.npy
 │   └── rate_seqs.bin
-├── gen_train/          (same files; trips not in TS-TrajGen's test set, used for training)
-├── gen_test/           (same files; TS-TrajGen's test trips, held out for evaluation)
+├── gen_train/          (same files; trips not in the test set, used for training)
+├── gen_test/           (same files; the shared test trips, held out for evaluation)
 ├── graph/              (filled later by build_graph_nyc.py and the embed step;
 │                        graph_A.csv is not created, training uses graph_edge.edgelist)
 └── road_network/
@@ -143,8 +143,8 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--test-trips",
-        default="../nyc_test.csv",
-        help="CSV with uid, tid of the test trips (TS-TrajGen's test set). "
+        default="../../data/split_by_user/test_trips.csv",
+        help="CSV with uid, tid of the test trips (the by-user split shared by all baselines). "
              "Their trajectories go to gen_test/, the rest to gen_train/.",
     )
 
@@ -826,7 +826,7 @@ def main() -> None:
     #     fmm_path,
     #     set(roads["fid"].astype(int)),
     # )
-    # Change for Diff-RNTraj (NYC): mark TS-TrajGen's test trips while converting
+    # Change for Diff-RNTraj (NYC): mark the shared test trips while converting
     test_ids = load_test_ids(Path(args.trip_map), Path(args.test_trips))
     raw_eid_by_length, rate_by_length, test_by_length = convert_fmm_sequences(
         fmm_path,

@@ -187,7 +187,7 @@ if __name__ == '__main__':
         train_trajs_dir = path_dir + 'gen_debug/'
     else:
         # train_trajs_dir = path_dir + 'gen_all/' 
-        # Change for Diff-RNTraj (NYC): train only on gen_train/ (TS-TrajGen's test trips are held out in gen_test/)
+        # Change for Diff-RNTraj (NYC): train only on gen_train/ (the shared test trips are held out in gen_test/)
         train_trajs_dir = path_dir + 'gen_train/'
                 
                 

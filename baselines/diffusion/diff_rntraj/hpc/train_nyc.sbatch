@@ -13,8 +13,8 @@
 # Submit from the diff_rntraj folder on the HPC, e.g.
 #   cd ~/URBAN-SYN/baselines/diffusion/diff_rntraj && mkdir -p logs && sbatch hpc/train_nyc.sbatch
 
-# Extra arguments go to both multi_main.py and generate_data.py (they take the same
-# options), e.g.   sbatch hpc/train_nyc.sbatch --epochs 5
+# Trains for 1000 epochs. Extra arguments go to both multi_main.py and generate_data.py (they take
+# the same options) after --epochs 1000, so they override it, e.g.   sbatch hpc/train_nyc.sbatch --epochs 5
 
 # Outputs: repo/results/NYC/ (model, losses, run_times.txt) and repo/generate_data/NYC/ (trajectories).
 # Generation only, with the model already in repo/results/NYC/:
@@ -70,7 +70,7 @@ if [ "${GENERATE_ONLY:-0}" = 1 ]; then
     echo "[$(now)] GENERATE_ONLY=1: skipping training, using repo/results/NYC/val-best-model.pt"
 else
     echo "[$(now)] training"
-    container python multi_main.py --dataset NYC "$@"
+    container python multi_main.py --dataset NYC --epochs 1000 "$@"
 fi
 TRAIN_S=$((SECONDS - START))
 echo "[$(now)] training done in $(hms $TRAIN_S)"
@@ -78,7 +78,7 @@ echo "[$(now)] training done in $(hms $TRAIN_S)"
 # generate_data.py appends to generate_data/NYC/<length>.txt, so clear old output first.
 echo "[$(now)] generating trajectories"
 rm -rf repo/generate_data/NYC
-container python generate_data.py --dataset NYC "$@"
+container python generate_data.py --dataset NYC --epochs 1000 "$@"
 GEN_S=$((SECONDS - START - TRAIN_S))
 echo "[$(now)] generation done in $(hms $GEN_S)"
 
