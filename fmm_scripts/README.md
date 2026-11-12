@@ -53,7 +53,8 @@ uv run prepare_fmm_inputs.py \
     --canonical_road_network_output ./data/road_network/nyc.gpkg \
     --canonical_road_network_layer roads \
     --fmm_road_network_output ./data/fmm/fmm_nyc.shp \
-    --trajectory_parquet ../data/nyc_output_tabular/output/traj_cleaned.parquet \
+    --trajectory_parquet ../data/nyc_output_tabular/output/enriched_moves.parquet \
+    --test_trips ../data/split_by_user/test_trips.csv \
     --gps_output ./data/nyc_gps_points_fmm_ready.csv \
     --trip_id_map_output ./data/nyc_gps_points_fmm_trip_id_map.csv \
     --log_file ./outputs/logs/prepare_fmm_nyc.log

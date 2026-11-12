@@ -104,6 +104,13 @@ def parse_args() -> argparse.Namespace:
         help="Optional file to save run logs.",
     )
 
+    parser.add_argument(
+        "--test_trips",
+        type=Path,
+        default=None,
+        help="Optional CSV of test trips (uid, tid), e.g. ../data/split_by_user/test_trips.csv. Adds a split column to the trip-id map.",
+    )
+
     return parser.parse_args()
 
 def prepare_road_edges(
@@ -333,6 +340,7 @@ def build_fmm_points_csv(
     parquet_path: Path,
     out_csv: Path,
     trip_id_map_csv: Path | None = None,
+    test_trips_csv: Path | None = None,
 ) -> pd.DataFrame:
     """
     Build an FMM-compatible GPS observation CSV.
@@ -361,6 +369,10 @@ def build_fmm_points_csv(
 
     df = pd.read_parquet(parquet_path)
 
+    # enriched_moves.parquet stores tid and move_id as the index.
+    if "tid" not in df.columns:
+        df = df.reset_index()
+
     logger.info(
         "Parquet read completed in %s (%d rows)",
         format_duration(time.perf_counter() - start_time),
@@ -375,6 +387,14 @@ def build_fmm_points_csv(
     )
 
     trip_id_map = add_fmm_trajectory_ids(df)
+
+    if test_trips_csv is not None:
+        test = pd.read_csv(test_trips_csv, dtype=str)
+        test_trips = set(test["uid"] + "_" + test["tid"])
+        is_test = (df["uid"].astype(str) + "_" + df["tid"].astype(str)).isin(test_trips)
+        test_keys = set(df.loc[is_test, "trip_key"])
+        trip_id_map["split"] = np.where(trip_id_map["trip_key"].isin(test_keys), "test", "train")
+        logger.info("Test trajectories: %d of %d", (trip_id_map["split"] == "test").sum(), len(trip_id_map))
 
     logger.info(
         "Trajectory-ID mapping completed in %s (%d trajectories)",
@@ -532,6 +552,7 @@ def main() -> None:
         parquet_path=args.trajectory_parquet,
         out_csv=args.gps_output,
         trip_id_map_csv=args.trip_id_map_output,
+        test_trips_csv=args.test_trips,
     )
 
 

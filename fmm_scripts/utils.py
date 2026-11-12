@@ -262,6 +262,11 @@ def add_fmm_trajectory_ids(
         + df["tid"].astype(str)
     )
 
+    # One trajectory per move when the data has moves (enriched_moves.parquet);
+    # traj_cleaned.parquet has no move_id and keeps one trajectory per trip.
+    if "move_id" in df.columns:
+        df["trip_key"] = df["trip_key"] + "_" + df["move_id"].astype(str)
+
     # factorize assigns each unique trip key a stable integer ID
     # according to its first occurrence.
     df["id"], unique_trip_keys = pd.factorize(
