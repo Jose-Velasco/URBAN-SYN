@@ -46,9 +46,12 @@ WORKDIR /opt/fmm
 
 # tring this flag to maybe make it faster?
 # Build and install C++ binaries + Python module
+# make -j2 (was -j"$(nproc)"): FMM's Boost-heavy files each need a lot of memory, and one job per
+# CPU runs out of memory under Docker Desktop's default limit and slows to a crawl. Same as
+# diffrntraj_version/Dockerfile.
 RUN mkdir build && cd build && \
     cmake .. -DCMAKE_BUILD_TYPE=Release && \
-    make -j"$(nproc)" && \
+    make -j2 && \
     make install
 
 # Install Python bindings into system Python
@@ -58,6 +61,13 @@ RUN mkdir build && cd build && \
 
 # Make sure installed binaries are on PATH
 # ENV PATH="/usr/local/bin:${PATH}"
+
+# Python packages of the URBAN-SYN evaluation (evaluation/), which runs FMM itself for the
+# GPS models, so it can run in this image:
+#   docker compose -f fmm_scripts/docker-compose.yml run --rm -T -w /urban-syn fmm python -m evaluation.evaluate --model all
+# Added after the FMM build, so changing them doesn't recompile FMM.
+RUN pip3 install --no-cache-dir numpy==2.2.6 pandas==2.2.3 pyyaml==6.0.2 \
+ && python3 -c "import numpy, pandas, yaml; print('numpy', numpy.__version__, 'pandas', pandas.__version__)"
 
 WORKDIR /workspace
 

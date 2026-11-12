@@ -1,0 +1,158 @@
+# Inputs for the URBAN-SYN evaluation framework.
+#
+# Paths are relative to repo_root, itself relative to this file (".." = the URBAN-SYN folder); absolute paths also work.
+#
+# For each model:
+#   files           the files the converter reads, where the baseline wrote them; the run stops if any is missing.
+#   produced_by     how to create each file, shown in the missing-file error.
+#   options         optional converter settings.
+#
+# networks and metrics (at the end) are used by evaluate.py.
+
+repo_root: ..
+
+models:
+  difftraj:
+    files:
+      generated: baselines/diffusion/difftraj/repo/DiffTraj/NYC_moves_train_steps=500_len=256_0.05_bs=256/Files/11-07-07-32-51/synthetic_trajectories.npy
+      index: baselines/diffusion/difftraj/repo/DiffTraj/NYC_moves_train_steps=500_len=256_0.05_bs=256/Files/11-07-07-32-51/synthetic_index.npy
+      real_test: baselines/diffusion/difftraj/repo/real_trajectories_test.npy
+      real_test_ids: baselines/diffusion/difftraj/repo/traj_ids_test.npy
+      real_train: baselines/diffusion/difftraj/repo/real_trajectories_train.npy
+      real_train_ids: baselines/diffusion/difftraj/repo/traj_ids_train.npy
+    produced_by:
+      generated: generate.py
+      index: generate.py
+      real_test: prepare_data.py
+      real_test_ids: prepare_data.py --extras
+      real_train: prepare_data.py --extras
+      real_train_ids: prepare_data.py --extras
+    # FMM matches of the generated and real test moves: made by the evaluation, remade when inputs change.
+    fmm_dir: fmm_scripts/outputs/difftraj
+    options:
+      # Which FMM route the road tables use: opath = the road matched to each GPS point;
+      # cpath = the complete route, which FMM connects by construction.
+      fmm_route: opath
+
+  diffrntraj:
+    files:
+      generated_dir: baselines/diffusion/diff_rntraj/repo/generate_data/NYC_user_split_train_length
+      new2raw: baselines/diffusion/diff_rntraj/repo/data/NYC/extra_file/new2raw_rid.json
+      rn_dict: baselines/diffusion/diff_rntraj/repo/data/NYC/extra_file/rn_dict.json
+      real_test_eids: baselines/diffusion/diff_rntraj/repo/data/NYC/gen_test/eid_seqs.bin
+      real_test_rates: baselines/diffusion/diff_rntraj/repo/data/NYC/gen_test/rate_seqs.bin
+      real_train_eids: baselines/diffusion/diff_rntraj/repo/data/NYC/gen_train/eid_seqs.bin
+      real_train_rates: baselines/diffusion/diff_rntraj/repo/data/NYC/gen_train/rate_seqs.bin
+    produced_by:
+      generated_dir: the Diff-RNTraj generation run (one <length>.txt per trajectory length)
+      new2raw: fmm_scripts/diffrntraj_version/convert_fmm_to_diffrntraj.py
+      rn_dict: fmm_scripts/diffrntraj_version/convert_fmm_to_diffrntraj.py
+      real_test_eids: fmm_scripts/diffrntraj_version/convert_fmm_to_diffrntraj.py
+      real_test_rates: fmm_scripts/diffrntraj_version/convert_fmm_to_diffrntraj.py
+      real_train_eids: fmm_scripts/diffrntraj_version/convert_fmm_to_diffrntraj.py
+      real_train_rates: fmm_scripts/diffrntraj_version/convert_fmm_to_diffrntraj.py
+
+  tstrajgen:
+    files:
+      generated: baselines/gan/ts_trajgen/datasets/nyc/TS_TrajGen_GAN_generated_output.csv
+      real_test: baselines/gan/ts_trajgen/datasets/nyc/nyc_mm_test.csv
+      real_train: baselines/gan/ts_trajgen/datasets/nyc/nyc_mm_train.csv
+      geo: baselines/gan/ts_trajgen/datasets/nyc/nyc.geo
+    produced_by:
+      generated: the TS-TrajGen generate stage (run_pipeline.py)
+      real_test: the TS-TrajGen build-inputs stage (run_pipeline.py)
+      real_train: the TS-TrajGen build-inputs stage (run_pipeline.py)
+      geo: the TS-TrajGen build-inputs stage (run_pipeline.py)
+
+  mobilitygpt:
+    files:
+      generated: baselines/transformer/mobilitygpt/nyc_workflow/output/nycall_final/evaluation/generated_trajectories.jsonl
+      id_mapping: baselines/transformer/mobilitygpt/nyc_workflow/output/nycall_final/prepared/NYCAll-Taxi/id_mapping.csv
+      real_test: baselines/transformer/mobilitygpt/nyc_workflow/output/nycall_final/prepared/NYCAll-Taxi/NYCAll_Taxi_trajectory_test.csv
+      real_train: baselines/transformer/mobilitygpt/nyc_workflow/output/nycall_final/prepared/NYCAll-Taxi/NYCAll_Taxi_trajectory_train.csv
+      geo: baselines/gan/ts_trajgen/datasets/nyc/nyc.geo
+    produced_by:
+      generated: the nyc_workflow evaluation stage
+      id_mapping: the nyc_workflow prepare stage
+      real_test: the nyc_workflow prepare stage
+      real_train: the nyc_workflow prepare stage
+      geo: the TS-TrajGen build-inputs stage (MobilityGPT was prepared from the same file)
+    options:
+      # Groups to convert ("all" or a list)
+      groups: [selected_dpo_100_p1_s42]
+
+  lstm_trajgan:
+    files:
+      generated: baselines/gan/lstm_trajgan/outputs/lstm_trajgan_nyc_full/results/nyc_syn_traj_test.csv
+      real_test: baselines/gan/lstm_trajgan/data/nyc_full/nyc_test_latlon.csv
+      real_train: baselines/gan/lstm_trajgan/data/nyc_full/nyc_train_latlon.csv
+    produced_by:
+      generated: the LSTM-TrajGAN predict stage (predict.py)
+      real_test: build_lstm_trajgan_inputs.py
+      real_train: build_lstm_trajgan_inputs.py
+    # FMM matches of the generated and real test moves, made by the evaluation.
+    fmm_dir: fmm_scripts/outputs/lstm_trajgan
+    options:
+      # Which FMM route the road tables use: opath = the road matched to each GPS point;
+      # cpath = the complete route, which FMM connects by construction.
+      fmm_route: opath
+
+# FMM map matching of the GPS models (those with an fmm_dir), run by the evaluation when a model's matches are missing
+# or older than its trajectories.
+fmm:
+  # TS-TrajGen's FMM config: road network, shortest-path table (UBODT), k, r and GPS error. Only its GPS input, output
+  # file and output fields are replaced; its relative paths start at workdir.
+  template: fmm_scripts/config/fmm_config_csv_point.xml
+  workdir: fmm_scripts
+  command: fmm
+  produced_by:
+    template: fmm_scripts/config (in git)
+    network: fmm_scripts/prepare_fmm_inputs.py (the road network TS-TrajGen is built on)
+    ubodt: ubodt_gen ./config/ubodt_config.xml, in fmm_scripts, after prepare_fmm_inputs.py
+
+# Road networks. A road table's `network` column names one of these.
+#   tstrajgen         geo_id of TS-TrajGen's nyc.geo; nyc.rel lists which road follows which
+#   diffrntraj_drive  fid of nyc_drive.gpkg (table roads); road b follows road a when u(b) = v(a)
+networks:
+  tstrajgen:
+    files:
+      geo: baselines/gan/ts_trajgen/datasets/nyc/nyc.geo
+      rel: baselines/gan/ts_trajgen/datasets/nyc/nyc.rel
+    produced_by:
+      geo: the TS-TrajGen build-inputs stage (run_pipeline.py)
+      rel: the TS-TrajGen build-inputs stage (run_pipeline.py)
+  diffrntraj_drive:
+    files:
+      gpkg: fmm_scripts/diffrntraj_version/data/road_network/nyc_drive.gpkg
+    produced_by:
+      gpkg: fmm_scripts/diffrntraj_version (road network download)
+
+# Metric settings
+metrics:
+  seed: 42                    # every random sample uses this seed
+  jsd_draws: 10               # if the set sizes differ, the larger is sampled down this many times (mean reported)
+  max_pairs: 5000             # trajectory metrics: at most this many pairs, sampled with the seed
+  grid:
+    cell_deg: 0.005           # gives the 87 x 90 grid with the bounds below
+    lng_bounds: [-74.2963164, -73.868091]
+    lat_bounds: [40.4983251, 40.9410935]
+    sweep_deg: [0.0025, 0.005, 0.01]
+  trip_distance: {bins: 1000, max_km: 40.71}   # plus one overflow bin for longer trips
+  radius: {bins: 100, max_km: 10.6}            # plus one overflow bin
+  edr: {eps_m: 100, sweep_m: [50, 100, 200]}
+  fallback_pairing:           # for models without ref_id (Diff-RNTraj) and the real-train floor
+    rule: same_cell           # same_cell: a real trajectory with the same start and end cell;
+                              # nearest: the closest real trajectory by start, end, length and 32-point distance
+    candidates: 50            # nearest only: candidates kept before the 32-point distance
+  # Trajectory metrics additional pairings -> same_cell: same start and end cell (strict, drops trajectories without a
+  # match); nearest: the closest real trajectory (start, end, length, then path; scores every trajectory).
+  compare_pairing: [same_cell, nearest]
+  privacy:
+    points: 32                # every trajectory is resampled to this many evenly spaced points
+    sample: null              # null = every trajectory; a number samples each set to that size
+    uniqueness_m: 50
+    uniqueness_sweep_m: [25, 50, 100]
+  off_network:
+    network: tstrajgen        # the canonical network, used for every model
+    tau_m: 30
+    sweep_m: [20, 30, 50]

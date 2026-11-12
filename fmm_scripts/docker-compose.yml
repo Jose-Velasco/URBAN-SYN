@@ -5,4 +5,7 @@ services:
       dockerfile: Dockerfile
     volumes:
       - .:/workspace
+      # The whole URBAN-SYN folder, for the evaluation (evaluation/README.md), which runs here
+      # because this image has FMM: ... run --rm -T -w /urban-syn fmm python -m evaluation.evaluate --model all
+      - ..:/urban-syn
     command: sleep infinity
