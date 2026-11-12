@@ -12,8 +12,8 @@ paths:
   # source: /workspace/upstream/data/nyc_output_tabular/output/traj_cleaned.parquet
 
   # for an already split dataset
-  train_source: /workspace/upstream/data/preliminary_results_drive_only_10_14_2026/nyc_gps_train.parquet
-  test_source: /workspace/upstream/data/preliminary_results_drive_only_10_14_2026/nyc_gps_test.parquet
+  train_source: /workspace/upstream/data/split_by_user/enriched_moves_train.parquet
+  test_source: /workspace/upstream/data/split_by_user/enriched_moves_test.parquet
 
   # Project-owned adapter.
   builder: /workspace/build_lstm_trajgan_inputs.py

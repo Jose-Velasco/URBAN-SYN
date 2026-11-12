@@ -31,8 +31,8 @@ The active configuration is `pipeline_configs/nyc.yaml`:
 paths:
   data: /workspace/data/nyc_full
   outputs: /workspace/outputs/lstm_trajgan_nyc_full
-  train_source: /workspace/upstream/data/preliminary_results_drive_only_10_14_2026/nyc_gps_train.parquet
-  test_source: /workspace/upstream/data/preliminary_results_drive_only_10_14_2026/nyc_gps_test.parquet
+  train_source: /workspace/upstream/data/split_by_user/enriched_moves_train.parquet
+  test_source: /workspace/upstream/data/split_by_user/enriched_moves_test.parquet
 
 build:
   train_ratio: null
@@ -85,20 +85,22 @@ The LSTM-TrajGAN baseline directory itself is mounted as `/workspace`, so genera
 
 ### Current source inputs
 
-The current fixed NYC split is:
+The current fixed NYC split is the by-user split shared by all baselines, made by
+`scripts/split_enriched_moves_by_user.ipynb`: users are shuffled (seed 101) and added to the test set until it holds
+about 20% of the moves, so no user has trips on both sides.
 
 ```text
-<URBAN-SYN>/data/preliminary_results_drive_only_10_14_2026/
-├── nyc_gps_train.parquet
-└── nyc_gps_test.parquet
+<URBAN-SYN>/data/split_by_user/
+├── enriched_moves_train.parquet
+└── enriched_moves_test.parquet
 ```
 
 Inside Docker/Apptainer these are:
 
 ```text
-/workspace/upstream/data/preliminary_results_drive_only_10_14_2026/
-├── nyc_gps_train.parquet
-└── nyc_gps_test.parquet
+/workspace/upstream/data/split_by_user/
+├── enriched_moves_train.parquet
+└── enriched_moves_test.parquet
 ```
 
 For the default `constant` category mode, source files must contain:
@@ -110,6 +112,10 @@ lat
 lng OR lon
 datetime
 ```
+
+If the source also has a `move_id` column (as `enriched_moves` does), each `(tid, move_id)` is one trajectory, like
+in the other baselines; otherwise each `tid` is one trajectory. With the current split this gives 15,579 training
+and 3,895 test trajectories from 18,762 users.
 
 The optional `top10` semantic mode additionally requires a `category` column.
 
@@ -249,7 +255,7 @@ HPC/Slurm runtime logs are maintained separately by the HPC scripts.
 Use the project wrapper instead of manually calling each upstream script:
 
 ```text
-nyc_gps_train.parquet + nyc_gps_test.parquet
+enriched_moves_train.parquet + enriched_moves_test.parquet
                     ↓
                   build
                     ↓
@@ -326,16 +332,16 @@ build_lstm_trajgan_inputs.py
 **Inputs**
 
 ```text
-/workspace/upstream/data/preliminary_results_drive_only_10_14_2026/nyc_gps_train.parquet
-/workspace/upstream/data/preliminary_results_drive_only_10_14_2026/nyc_gps_test.parquet
+/workspace/upstream/data/split_by_user/enriched_moves_train.parquet
+/workspace/upstream/data/split_by_user/enriched_moves_test.parquet
 ```
 
 **Command**
 
 ```bash
 python build_lstm_trajgan_inputs.py \
-  --train_input_path /workspace/upstream/data/preliminary_results_drive_only_10_14_2026/nyc_gps_train.parquet \
-  --test_input_path /workspace/upstream/data/preliminary_results_drive_only_10_14_2026/nyc_gps_test.parquet \
+  --train_input_path /workspace/upstream/data/split_by_user/enriched_moves_train.parquet \
+  --test_input_path /workspace/upstream/data/split_by_user/enriched_moves_test.parquet \
   --out_dir /workspace/data/nyc_full \
   --dataset_name nyc \
   --random_state 101 \

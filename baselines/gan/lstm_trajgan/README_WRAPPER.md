@@ -40,8 +40,8 @@ The current YAML uses an explicit train/test pair:
 
 ```yaml
 paths:
-  train_source: /workspace/upstream/data/preliminary_results_drive_only_10_14_2026/nyc_gps_train.parquet
-  test_source: /workspace/upstream/data/preliminary_results_drive_only_10_14_2026/nyc_gps_test.parquet
+  train_source: /workspace/upstream/data/split_by_user/enriched_moves_train.parquet
+  test_source: /workspace/upstream/data/split_by_user/enriched_moves_test.parquet
 ```
 
 Therefore the wrapper uses **pre-split mode**:
@@ -50,7 +50,8 @@ Therefore the wrapper uses **pre-split mode**:
 input_mode = pre_split
 ```
 
-The adapter preserves those memberships and does **not** perform another random train/test split. `build.train_ratio` is only required when `paths.source` is used instead of the explicit `train_source`/`test_source` pair.
+These are the by-user split shared by all baselines (`data/split_by_user/`, made by
+`scripts/split_enriched_moves_by_user.ipynb`). The adapter preserves those memberships and does **not** perform another random train/test split. `build.train_ratio` is only required when `paths.source` is used instead of the explicit `train_source`/`test_source` pair.
 
 ## Data locations
 
@@ -60,8 +61,8 @@ The baseline directory is mounted at `/workspace`, while the project-wide `data/
 
 | Data/artifact | Repository / host location | Container location |
 |---|---|---|
-| Current train source | `<URBAN-SYN>/data/preliminary_results_drive_only_10_14_2026/nyc_gps_train.parquet` | `/workspace/upstream/data/preliminary_results_drive_only_10_14_2026/nyc_gps_train.parquet` |
-| Current test source | `<URBAN-SYN>/data/preliminary_results_drive_only_10_14_2026/nyc_gps_test.parquet` | `/workspace/upstream/data/preliminary_results_drive_only_10_14_2026/nyc_gps_test.parquet` |
+| Current train source | `<URBAN-SYN>/data/split_by_user/enriched_moves_train.parquet` | `/workspace/upstream/data/split_by_user/enriched_moves_train.parquet` |
+| Current test source | `<URBAN-SYN>/data/split_by_user/enriched_moves_test.parquet` | `/workspace/upstream/data/split_by_user/enriched_moves_test.parquet` |
 | Prepared LSTM-TrajGAN data | `baselines/gan/lstm_trajgan/data/nyc_full/` | `/workspace/data/nyc_full/` |
 | Training checkpoints | `baselines/gan/lstm_trajgan/outputs/lstm_trajgan_nyc_full/training_params/` | `/workspace/outputs/lstm_trajgan_nyc_full/training_params/` |
 | Final generated trajectories | `baselines/gan/lstm_trajgan/outputs/lstm_trajgan_nyc_full/results/nyc_syn_traj_test.csv` | `/workspace/outputs/lstm_trajgan_nyc_full/results/nyc_syn_traj_test.csv` |
@@ -118,8 +119,8 @@ Adapt project GPS trajectory files to the CSV representation expected by LSTM-Tr
 **Current inputs**
 
 ```text
-/workspace/upstream/data/preliminary_results_drive_only_10_14_2026/nyc_gps_train.parquet
-/workspace/upstream/data/preliminary_results_drive_only_10_14_2026/nyc_gps_test.parquet
+/workspace/upstream/data/split_by_user/enriched_moves_train.parquet
+/workspace/upstream/data/split_by_user/enriched_moves_test.parquet
 ```
 
 For the current `category_mode: constant`, each source requires:
@@ -128,29 +129,32 @@ For the current `category_mode: constant`, each source requires:
 uid, tid, lat, lng|lon, datetime
 ```
 
+plus `move_id` in `enriched_moves`, which makes each `(tid, move_id)` its own trajectory.
+
 **Important transformations**
 
 The adapter:
 
 1. loads both explicit split files;
-2. verifies that source `tid` values do not overlap across train/test;
-3. validates and cleans `uid`, `tid`, coordinates, and `datetime`;
-4. derives `day` (`Monday=0 ... Sunday=6`) and `hour` (`0 ... 23`);
-5. assigns category `0` to every point for the current GPS+temporal baseline;
-6. maps source user IDs to contiguous integer `label` values;
-7. maps source trajectory IDs to contiguous integer `tid` values;
-8. preserves the supplied train/test memberships;
-9. sorts each split by `tid` and `datetime`;
-10. calculates the global latitude/longitude centroid and trajectory-length statistics;
-11. creates both absolute-coordinate and centroid-deviation CSV views;
-12. writes mapping and metadata files.
+2. if there is a `move_id` column, makes each move its own trajectory (`tid` becomes `<tid>_<move_id>`);
+3. verifies that source `tid` values do not overlap across train/test;
+4. validates and cleans `uid`, `tid`, coordinates, and `datetime`;
+5. derives `day` (`Monday=0 ... Sunday=6`) and `hour` (`0 ... 23`);
+6. assigns category `0` to every point for the current GPS+temporal baseline;
+7. maps source user IDs to contiguous integer `label` values;
+8. maps source trajectory IDs to contiguous integer `tid` values;
+9. preserves the supplied train/test memberships;
+10. sorts each split by `tid` and `datetime`;
+11. calculates the global latitude/longitude centroid and trajectory-length statistics;
+12. creates both absolute-coordinate and centroid-deviation CSV views;
+13. writes mapping and metadata files.
 
 **Current command resolved by the wrapper**
 
 ```bash
 python /workspace/build_lstm_trajgan_inputs.py \
-  --train_input_path /workspace/upstream/data/preliminary_results_drive_only_10_14_2026/nyc_gps_train.parquet \
-  --test_input_path /workspace/upstream/data/preliminary_results_drive_only_10_14_2026/nyc_gps_test.parquet \
+  --train_input_path /workspace/upstream/data/split_by_user/enriched_moves_train.parquet \
+  --test_input_path /workspace/upstream/data/split_by_user/enriched_moves_test.parquet \
   --out_dir /workspace/data/nyc_full \
   --dataset_name nyc \
   --random_state 101 \
@@ -547,8 +551,8 @@ Do not configure both source modes at the same time.
 If someone only needs to know where to find the current LSTM-TrajGAN data:
 
 ```text
-Original train/test inputs:
-<URBAN-SYN>/data/preliminary_results_drive_only_10_14_2026/
+Original train/test inputs (shared by-user split):
+<URBAN-SYN>/data/split_by_user/
 
 LSTM-TrajGAN prepared inputs/intermediates:
 baselines/gan/lstm_trajgan/data/nyc_full/
