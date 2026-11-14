@@ -8,6 +8,7 @@ dependencies = [
     "geopandas>=1.2.0",
     "joblib>=1.6.0",
     "matplotlib>=3.10.9",
+    "mlflow>=3.18.0",
     "networkit>=11.2.2",
     "pandas>=3.0.2",
     "pandera[pandas]>=0.31.1",

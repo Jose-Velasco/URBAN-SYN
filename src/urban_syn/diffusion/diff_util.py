@@ -1,7 +1,16 @@
+"""Forward diffusion, denoising, and DDPM sampling operations.
+
+Training objectives and road-connectivity calculations are handled
+separately by the loss implementations.
+"""
+
+from dataclasses import dataclass
+
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from torch import Tensor, nn
+
 from .road_ids import encode_transition_keys
+from .sampling.ddpm import cal_x0_from_noise_ddpm
 
 # Changed for our model version
 # Temporary compatibility for the original UTGraph connectivity check.
@@ -9,12 +18,111 @@ from .road_ids import encode_transition_keys
 # This avoids copying build_graph_nyc.py just to satisfy that import.
 # EDGE_KEY_BASE = 1 << 32
 
-def std_normal(size):
-    """
-    Generate the standard Gaussian variable of a certain size
+@dataclass(frozen=True)
+class DiffusionForwardOutput:
+    """Intermediate tensors from forward diffusion and denoising.
+
+    Attributes
+    ----------
+    clean : Tensor
+        Original clean trajectory representations [B, T, F].
+    noisy : Tensor
+        Noisy representations at sampled timesteps [B, T, F].
+    sampled_noise : Tensor
+        Gaussian noise added to the clean trajectories [B, T, F].
+    predicted_noise : Tensor
+        Denoiser's predicted noise [B, T, F].
+    reconstructed : Tensor
+        Clean representations estimated from predicted noise [B, T, F].
+    timesteps : Tensor
+        Sampled diffusion timestep per trajectory [B, 1].
     """
 
-    return torch.normal(0, 1, size=size).cuda()
+    clean: Tensor
+    noisy: Tensor
+    sampled_noise: Tensor
+    predicted_noise: Tensor
+    reconstructed: Tensor
+    timesteps: Tensor
+
+
+def std_normal(
+    size: tuple[int, ...],
+    device: torch.device | None = None,
+    dtype: torch.dtype | None = None
+) -> Tensor:
+    """Draw standard normal noise.
+
+    Parameters
+    ----------
+    size : tuple[int, ...]
+        Shape of the generated tensor.
+    device : torch.device | None, default=None
+        Device for the generated tensor.
+    dtype : torch.dtype | None, default=None
+        Tensor dtype.
+
+    Returns
+    -------
+    Tensor
+        Gaussian noise of the requested shape and dtype.
+    """
+    return torch.randn(size, device=device, dtype=dtype)
+
+
+def diffuse_and_denoise(
+    net: nn.Module,
+    clean: Tensor,
+    diffusion_hyperparams: dict
+) -> DiffusionForwardOutput:
+    """Apply forward diffusion, predict noise, and reconstruct clean input.
+
+    Parameters
+    ----------
+    net : nn.Module
+        Denoiser taking (noisy_trajectories, timesteps).
+    clean : Tensor
+        Clean trajectories with shape [B, T, F].
+    diffusion_hyperparams : dict
+        Diffusion schedule with T and alpha_bar.
+
+    Returns
+    -------
+    DiffusionForwardOutput
+        Shared forward and denoising tensors for independent losses.
+    """
+    if clean.ndim != 3:
+        raise ValueError("Expected clean trajectories with shape [B, T, F].")
+
+    batch_size = clean.size(0)
+    diffusion_steps = int(diffusion_hyperparams["T"])
+    alpha_bar = diffusion_hyperparams["alpha_bar"]
+
+    timesteps = torch.randint(
+        diffusion_steps,
+        (batch_size, 1),
+        device=clean.device
+    )
+    alpha_bar_t = alpha_bar[timesteps].unsqueeze(-1)
+    sampled_noise = torch.randn_like(clean)
+
+    sqrt_alpha = torch.sqrt(alpha_bar_t)
+    sqrt_one_minus_alpha = torch.sqrt(1 - alpha_bar_t)
+    noisy = sqrt_alpha * clean + sqrt_one_minus_alpha * sampled_noise
+
+    predicted_noise = net(noisy, timesteps)
+    reconstructed = (
+        noisy - sqrt_one_minus_alpha * predicted_noise
+    ) / sqrt_alpha
+
+    return DiffusionForwardOutput(
+        clean=clean,
+        noisy=noisy,
+        sampled_noise=sampled_noise,
+        predicted_noise=predicted_noise,
+        reconstructed=reconstructed,
+        timesteps=timesteps
+    )
 
 def diff_forward_x0_constraint(
         net: nn.Module,
@@ -114,24 +222,24 @@ def diff_forward_x0_constraint(
     
     return xt_noise, loss, x0_loss 
 
-def cal_x0_from_noise_ddpm(net, diffusion_hyperparams, batchsize, length,  feature):
-    _dh = diffusion_hyperparams
-    T, Alpha_bar, Alpha = _dh["T"], _dh["alpha_bar"], _dh["alpha"]
+# def cal_x0_from_noise_ddpm(net, diffusion_hyperparams, batchsize, length,  feature):
+#     _dh = diffusion_hyperparams
+#     T, Alpha_bar, Alpha = _dh["T"], _dh["alpha_bar"], _dh["alpha"]
     
-    diff_input = std_normal((batchsize, length, feature))
+#     diff_input = std_normal((batchsize, length, feature))
     
-    with torch.no_grad():
-        for t in range(T-1, -1, -1):
+#     with torch.no_grad():
+#         for t in range(T-1, -1, -1):
             
-            predict_noise = net(diff_input, t)  
+#             predict_noise = net(diff_input, t)  
             
-            coeff1 = 1 / (Alpha[t] ** 0.5)
-            coeff2 = (1 - Alpha[t]) / ((1 - Alpha_bar[t]) ** 0.5)
-            diff_input = coeff1 * (diff_input - coeff2 * predict_noise)
+#             coeff1 = 1 / (Alpha[t] ** 0.5)
+#             coeff2 = (1 - Alpha[t]) / ((1 - Alpha_bar[t]) ** 0.5)
+#             diff_input = coeff1 * (diff_input - coeff2 * predict_noise)
             
-            if t>0:
-                noise = std_normal(diff_input.shape)
-                sigma = ( (1 - Alpha_bar[t-1]) / (1 - Alpha_bar[t]) * (1 - Alpha[t]) ) ** 0.5
-                diff_input += sigma * noise
+#             if t>0:
+#                 noise = std_normal(diff_input.shape)
+#                 sigma = ( (1 - Alpha_bar[t-1]) / (1 - Alpha_bar[t]) * (1 - Alpha[t]) ) ** 0.5
+#                 diff_input += sigma * noise
                 
-    return diff_input
+#     return diff_input

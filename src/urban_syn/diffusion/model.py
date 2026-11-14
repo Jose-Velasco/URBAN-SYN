@@ -1,10 +1,38 @@
 import torch
 import torch.nn as nn
-from .diff_util import diff_forward_x0_constraint, cal_x0_from_noise_ddpm
-
+# from .diff_util import diff_forward_x0_constraint, cal_x0_from_noise_ddpm
+from .diff_util import (
+    DiffusionForwardOutput,
+    diffuse_and_denoise
+)
+from dataclasses import dataclass
 from torch_geometric.data import Data
 from urban_syn.gnn.encoder import RoadGNNEncoder
 from .road_ids import encode_transition_keys
+from collections.abc import Mapping
+from .losses import (
+    LossComposer,
+    LossContext,
+    LossResult,
+    original_loss_composer
+)
+from .sampling.base import Sampler
+
+@dataclass(frozen=True)
+class JointTrainingOutput:
+    """Outputs shared by diffusion objectives and road-link losses.
+
+    Attributes
+    ----------
+    diffusion : DiffusionForwardOutput
+        Intermediate tensors from forward noising and denoising.
+    road_embeddings : torch.Tensor
+        GNN-generated road embeddings, including the padding row.
+        Retains autograd history for joint training.
+    """
+
+    diffusion: DiffusionForwardOutput
+    road_embeddings: torch.Tensor
 
 class Diff_RNTraj(nn.Module):
     def __init__(
@@ -106,53 +134,124 @@ class Diff_RNTraj(nn.Module):
 
         return torch.cat((padding, embeddings), dim=0)
         
-    def forward(
-            self,
-            graph: Data,
-            src_eid_seqs: torch.Tensor,
-            src_rate_seqs: torch.Tensor,
-        ):
-        """
-        Compute the original three losses
-
-        src_eid_seqs: road segment sequence of RNTraj
-        src_rate_seqs: moving rate of RNTraj
+    def compute_training_outputs(
+        self,
+        graph: Data,
+        src_eid_seqs: torch.Tensor,
+        src_rate_seqs: torch.Tensor
+    ) -> JointTrainingOutput:
+        """Encode roads and compute diffusion outputs without calculating losses.
 
         Parameters
         ----------
         graph : Data
-            Road graph containing selected GNN features.
+            Road graph containing the GNN's selected features.
         src_eid_seqs : Tensor
-            One-based diffusion road IDs [B, T], with zero padding.
+            Model road IDs of shape [B, T], with zero reserved for padding.
         src_rate_seqs : Tensor
-            Position rates [B, T].
+            Position rates of shape [B, T], normalized to [-1, 1].
+
+        Returns
+        -------
+        JointTrainingOutput
+            Diffusion intermediate tensors and trainable road embeddings.
+            The road embeddings can be reused by additional objectives.
+        """
+        road_embeddings = self.encode_roads(graph)
+        embedded_roads = road_embeddings[src_eid_seqs.long()]
+
+        clean = torch.cat(
+            (embedded_roads, src_rate_seqs.unsqueeze(-1)),
+            dim=-1
+        )
+
+        diffusion = diffuse_and_denoise(
+            self.diff_model,
+            clean,
+            self.diffusion_param
+        )
+
+        return JointTrainingOutput(
+            diffusion=diffusion,
+            road_embeddings=road_embeddings
+        )
+
+    def compute_training_losses(
+        self,
+        output: JointTrainingOutput,
+        composer: LossComposer,
+        step: int = 0,
+        batch: Mapping[str, torch.Tensor] | None = None
+    ) -> LossResult:
+        """Evaluate independently configured objectives on shared model outputs.
+
+        Parameters
+        ----------
+        output : JointTrainingOutput
+            Output from compute_training_outputs for the current batch.
+        composer : LossComposer
+            Injected loss implementations and their combination policy.
+        step : int, default=0
+            Zero-based optimizer step controlling metric-only frequency.
+        batch : Mapping[str, Tensor] | None, default=None
+            Optional auxiliary tensors for additional objectives.
+
+        Returns
+        -------
+        LossResult
+            Weighted total, gradient-bearing total, and component values.
+        """
+        context = LossContext(
+            diffusion=output.diffusion,
+            road_embeddings=output.road_embeddings,
+            valid_transition_keys=self.valid_transition_keys,
+            road_id_base=self.edge_ids.numel() + 1,
+            similarity_chunk_size=self.similarity_chunk_size,
+            batch={} if batch is None else batch
+        )
+
+        return composer(context, step=step)
+
+    def forward(
+        self,
+        graph: Data,
+        src_eid_seqs: torch.Tensor,
+        src_rate_seqs: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Preserve the original three-loss training interface.
+
+        Parameters
+        ----------
+        graph : Data
+            Road graph containing the GNN's selected features.
+        src_eid_seqs : Tensor
+            Model road IDs of shape [B, T].
+        src_rate_seqs : Tensor
+            Normalized position rates of shape [B, T].
 
         Returns
         -------
         tuple[Tensor, Tensor, Tensor]
-            Noise prediction, connectivity, and reconstruction losses.
+            Noise MSE, hard connectivity count, and reconstruction MSE.
+            The connectivity count remains non-differentiable.
         """
-        # batchsize, max_src_len = src_eid_seqs.shape
-
-        # Recompute embeddings during training to preserve gradient flow
-        road_embeddings = self.encode_roads(graph)
-        id_embeddings = road_embeddings[src_eid_seqs.long()] # B, T, d
-        
-        # id_embed = SE[src_eid_seqs]  # B, T, d
-        # input_data = torch.cat((id_embed, src_rate_seqs.unsqueeze(-1)), -1)  # B, T, d+1
-        input_data = torch.cat((id_embeddings, src_rate_seqs.unsqueeze(-1)), dim=-1) # B, T, d+1
-        
-        diff_noise, const_loss, x0_loss = diff_forward_x0_constraint(
-            self.diff_model,
-            input_data,
-            self.diffusion_param,
-            road_embeddings,
-            self.valid_transition_keys, # pyright: ignore[reportArgumentType]
-            road_id_base=self.edge_ids.numel() + 1, # pyright: ignore[reportCallIssue]
-            similarity_chunk_size=self.similarity_chunk_size,
+        output = self.compute_training_outputs(
+            graph,
+            src_eid_seqs,
+            src_rate_seqs
         )
-        
-        return diff_noise, const_loss, x0_loss
+
+        losses = self.compute_training_losses(
+            output,
+            original_loss_composer()
+        )
+
+        return (
+            losses.values["noise_mse"],
+            losses.values["hard_connectivity"],
+            losses.values["reconstruction_mse"]
+        )
+
 
     @torch.no_grad()
     def generate_data(
@@ -160,8 +259,9 @@ class Diff_RNTraj(nn.Module):
         graph: Data | None,
         batchsize: int,
         length: int,
+        sampler: Sampler,
         similarity_chunk_size: int | None = None,
-        road_embeddings: torch.Tensor | None = None
+        road_embeddings: torch.Tensor | None = None,
         ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Generate road-ID sequences and position rates
@@ -185,6 +285,9 @@ class Diff_RNTraj(nn.Module):
             [num_roads + 1, embedding_dim], including padding row 0.
             When provided, skips GNN computation and allows graph=None.
             Must match the model's road vocabulary and device.
+
+        sampler : Sampler
+            diffusion sampling strategy.
 
         Returns
         -------
@@ -214,14 +317,24 @@ class Diff_RNTraj(nn.Module):
         )
 
         pre_dim = road_embeddings.size(-1)
-        
-        x0 = cal_x0_from_noise_ddpm(
-            self.diff_model,
-            self.diffusion_param,
-            batchsize,
-            length,
-            pre_dim + 1
-        )  # B, T, pre_dim + 1
+
+        # selected_sampler = sampler if sampler is not None else DDPMSampler()
+
+        x0 = sampler.sample(
+            denoiser=self.diff_model,
+            schedule=self.diffusion_param,
+            batch_size=batchsize,
+            sequence_length=length,
+            feature_dim=pre_dim + 1
+        )
+
+        # x0 = cal_x0_from_noise_ddpm(
+        #     self.diff_model,
+        #     self.diffusion_param,
+        #     batchsize,
+        #     length,
+        #     pre_dim + 1
+        # )  # B, T, pre_dim + 1
 
         # Separate the reconstructed road vectors from position rates
         x0_road = x0[..., :pre_dim]  # B, T, pre_dim + 1

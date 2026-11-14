@@ -30,10 +30,13 @@ import pandas as pd
 import torch
 from torch import Tensor, nn
 from torch_geometric.data import Data
+
+from urban_syn.experiment.factories import build_sampler
 from .config import JointTrainingSettings, load_joint_training_config
 from .reconstruction import load_road_geometries, reconstruct_gps_trajectory
 from .road_ids import encode_transition_keys, model_ids_to_edge_ids
 from .training import build_joint_model, load_training_graph
+from .sampling.base import Sampler
 
 logger = logging.getLogger(__name__)
 
@@ -350,18 +353,36 @@ def generate_gps_trajectories(
     road_embeddings: Tensor,
     road_geometries: Mapping,
     length_counts: Mapping[int, int],
+    sampler: Sampler,
     batch_size: int = 2,
     similarity_chunk_size: int | None = None,
 ) -> pd.DataFrame:
-    """Generate GPS observations using a precomputed road embedding table.
+    """Generate GPS trajectories using an injectable diffusion sampler.
 
-    Args:
-        road_vocab: Shared road-network edge IDs in PyG node order, [N].
-        road_embeddings: Cached GNN output including padding row 0, [N+1, D].
-        length_counts: Number of trajectories to generate for each length.
+    Parameters
+    ----------
+    model : nn.Module
+        Trained joint GNN and diffusion model.
+    road_vocab : Tensor
+        Physical road IDs in PyG node order, shape [N].
+    road_embeddings : Tensor
+        Precomputed road embeddings, including padding, shape [N + 1, D].
+    road_geometries : Mapping
+        Road geometries used to reconstruct GPS coordinates.
+    length_counts : Mapping[int, int]
+        Number of trajectories to generate for each sequence length.
+    batch_size : int, default=2
+        Maximum number of trajectories generated per batch.
+    similarity_chunk_size : int | None, default=None
+        Number of trajectory positions decoded per similarity chunk.
+    sampler : Sampler
+        Sampling strategy injected into the model's generation method.
 
-    Returns:
-        One row per generated observation, including road IDs, rates and GPS.
+    Returns
+    -------
+    pd.DataFrame
+        Generated GPS observations with trajectory IDs, road IDs,
+        normalized and decoded rates, and geographic coordinates.
     """
     _validate_on_generate_gps_trajectories(batch_size, road_vocab, road_embeddings)
 
@@ -385,8 +406,9 @@ def generate_gps_trajectories(
                 graph=None,
                 batchsize=batch_count,
                 length=length,
+                sampler=sampler,
                 similarity_chunk_size=similarity_chunk_size,
-                road_embeddings=road_embeddings,
+                road_embeddings=road_embeddings
             ) # pyright: ignore[reportCallIssue]
 
             model_ids = torch.as_tensor(model_ids).detach().cpu().long()
@@ -477,11 +499,24 @@ def main() -> None:
     if missing_roads:
         raise ValueError(f"GeoPackage lacks {len(missing_roads):,} roads present in the PyG graph.")
 
+    sampler = build_sampler("ddpm")
+
     generated = generate_gps_trajectories(
-        model, road_vocab, road_embeddings, roads, length_counts,
+        model,
+        road_vocab,
+        road_embeddings,
+        roads,
+        length_counts,
+        sampler=sampler,
         batch_size=args.batch_size,
-        similarity_chunk_size=args.similarity_chunk_size,
+        similarity_chunk_size=args.similarity_chunk_size
     )
+
+    # generated = generate_gps_trajectories(
+    #     model, road_vocab, road_embeddings, roads, length_counts,
+    #     batch_size=args.batch_size,
+    #     similarity_chunk_size=args.similarity_chunk_size,
+    # )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     generated.to_parquet(args.output, index=False)

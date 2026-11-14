@@ -1,0 +1,116 @@
+# Local GPU smoke run: current three-term objective.
+# Uses existing prepared graph/sequence inputs; paths must match your machine.
+# V1: joint training with trainable GNN road embeddings.
+# Run from the URBAN-SYN repository root (Docker/Apptainer: /workspace).
+# The graph YAML supplies graph/GNN settings. Diff-RNTraj settings live HERE.
+experiment:
+  name: nyc_joint_pipeline_smoke
+  seed: 101
+
+paths:
+  graph_config: configs/graph/nyc_graph.yaml
+  train_sequences: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_train_prepared_road_sequences.parquet
+  test_sequences: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_test_prepared_road_sequences.parquet
+  trip_id_map: fmm_scripts/data/nyc_15s_fmm_trip_id_map.csv
+  road_network: fmm_scripts/data/road_network/nyc.gpkg
+  length_distribution: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_train_length_distribution.npy
+  # Must be confirmed with Yun's evaluator before enabling evaluator handoff.
+  test_reference_gps: null
+  output_root: outputs/experiments
+
+model:
+  # Diff-RNTraj hyperparameters are owned by this experiment (not graph YAML).
+  # Values below match current DiffusionSettings defaults; check your prior
+  # smoke-test YAML before committing to a controlled training comparison.
+  diffusion:
+    hidden_dim: 128
+    residual_layers: 10
+    diffusion_steps: 1000
+    beta_start: 0.0001
+    beta_end: 0.02
+    similarity_chunk_size: 128
+
+  road_encoder:
+    mode: joint
+  conditioning:
+    enabled: false
+
+training:
+  epochs: 4
+  batch_size: 16
+  max_batches: 4
+  grad_clip_norm: 1.0
+
+  optimizer:
+    name: adamw
+    learning_rate: 0.001
+    weight_decay: 0.01
+
+  scheduler:
+    name: none
+
+  losses:
+    noise_mse:
+      enabled: true
+      weight: 1.0
+      include_in_total: true
+    reconstruction_mse:
+      enabled: true
+      weight: 1.0
+      include_in_total: true
+    hard_connectivity:
+      enabled: true
+      weight: 1.0
+      include_in_total: true   # Preserve original reported three-term objective.
+      every_steps: 1          # Needed when included in the total.
+
+  validation:
+    enabled: false
+    fraction: 0.1
+    split_group_columns: [uid, tid]
+
+  checkpoint:
+    monitor: auto     # validation loss when enabled, training loss otherwise
+    save_last: true
+    save_best: true
+    every_epochs: 1
+    resume_from: null
+
+tracking:
+  enabled: true
+  provider: mlflow
+  tracking_uri: null  # Resolve via MLFLOW_TRACKING_URI / runtime default.
+  experiment_name: gnn_diff_rntraj_nyc_pipeline_smoke
+  run_name: smoke_joint_and_generation
+  tags:
+    dataset: nyc_15s_enriched_moves
+    model: gnn_diff_rntraj
+    training_strategy: joint
+  logging:
+    metrics_every_steps: 1
+    gnn_diagnostics_every_steps: 1
+    gnn_embedding_probe_size: 128
+    log_system_metrics: false
+    log_resolved_config: true
+    log_git_info: true
+  artifacts:
+    log_best_checkpoint: true
+    log_last_checkpoint: false
+    log_generated_trajectories: true
+    log_training_logs: true
+
+generation:
+  enabled: true
+  checkpoint: null  # all uses best.pt from the training stage; standalone: supply a path.
+  checkpoint_choice: best
+  road_layer: roads
+  num_trajectories: 2
+  output_name: nyc_generated_gps.parquet
+  batch_size: 1
+  sampler:
+    name: ddpm  # Only implemented sampler; uses the trained diffusion schedule.
+
+runtime:
+  device: cuda
+  precision: fp32
+  num_workers: 0
