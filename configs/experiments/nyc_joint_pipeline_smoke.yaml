@@ -80,6 +80,7 @@ tracking:
   enabled: true
   provider: mlflow
   tracking_uri: null  # Resolve via MLFLOW_TRACKING_URI / runtime default.
+  storage_scope: shared  # shared | job
   experiment_name: gnn_diff_rntraj_nyc_pipeline_smoke
   run_name: smoke_joint_and_generation
   tags:

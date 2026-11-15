@@ -1,0 +1,117 @@
+# Short HPC run for the joint road GNN and Diff-RNTraj pipeline.
+# Run from the URBAN-SYN repository root, mounted at /workspace in Apptainer.
+# This file specifies every supported experiment-level setting.
+# GNN architecture and graph preprocessing remain in paths.graph_config.
+
+experiment:
+  name: nyc_joint_hpc_short
+  seed: 101
+
+paths:
+  graph_config: configs/graph/nyc_graph.yaml
+  train_sequences: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_train_prepared_road_sequences.parquet
+  test_sequences: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_test_prepared_road_sequences.parquet
+  trip_id_map: fmm_scripts/data/nyc_15s_fmm_trip_id_map.csv
+  road_network: fmm_scripts/data/road_network/nyc.gpkg
+  length_distribution: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_train_length_distribution.npy
+  test_reference_gps: null  # No evaluator handoff for this run.
+  output_root: outputs/experiments
+
+model:
+  diffusion:
+    hidden_dim: 128
+    residual_layers: 10
+    diffusion_steps: 500
+    beta_start: 0.0001
+    beta_end: 0.02
+    similarity_chunk_size: 256
+  road_encoder:
+    mode: joint
+  conditioning:
+    enabled: false
+
+training:
+  epochs: 4
+  batch_size: 32
+  max_batches: 8  # Per epoch, so at most four training batches total.
+  grad_clip_norm: 1.0
+
+  optimizer:
+    name: adamw
+    learning_rate: 0.001
+    weight_decay: 0.01
+
+  scheduler:
+    name: none
+    min_lr: 0.0
+    patience_epochs: 5
+
+  losses:
+    noise_mse:
+      enabled: true
+      weight: 1.0
+      include_in_total: true
+      every_steps: 1
+    reconstruction_mse:
+      enabled: true
+      weight: 1.0
+      include_in_total: true
+      every_steps: 1
+    hard_connectivity:
+      enabled: true
+      weight: 1.0
+      include_in_total: true
+      every_steps: 1  # Non-differentiable, retained in the reported objective.
+
+  validation:
+    enabled: false
+    fraction: 0.1
+    split_group_columns: [uid, tid]
+
+  checkpoint:
+    monitor: auto  # Uses training objective when validation is disabled.
+    save_last: true
+    save_best: true
+    every_epochs: 1
+    resume_from: null  # Start an independent run, do not resume another run.
+
+tracking:
+  enabled: true
+  provider: mlflow
+  tracking_uri: null  # Use the automatic local SQLite backend.
+  storage_scope: shared  # Compare sequential runs in the same MLflow database.
+  experiment_name: gnn_diff_rntraj_nyc
+  run_name: hpc_short_train_generate
+  tags:
+    dataset: nyc_15s_enriched_moves
+    model: gnn_diff_rntraj
+    training_strategy: joint
+    purpose: hpc_pipeline_verification
+  logging:
+    metrics_every_steps: 1
+    gnn_diagnostics_every_steps: 1
+    gnn_embedding_probe_size: 256
+    log_system_metrics: false  # Slurm script collects separate resource logs.
+    log_resolved_config: true
+    log_git_info: true
+  artifacts:
+    log_best_checkpoint: true
+    log_last_checkpoint: false
+    log_generated_trajectories: true
+    log_training_logs: true
+
+generation:
+  enabled: true
+  checkpoint: null  # `all` loads the best checkpoint from this training run.
+  checkpoint_choice: best
+  road_layer: roads
+  output_name: nyc_generated_gps.parquet
+  num_trajectories: 16
+  batch_size: 2
+  sampler:
+    name: ddpm
+
+runtime:
+  device: cuda
+  precision: fp32
+  num_workers: 0

@@ -1,0 +1,24 @@
+name: urban-syn-joint
+
+services:
+  joint:
+    image: urban-syn-joint:cu118
+    build:
+      # Paths are relative to this Compose file, not the command's cwd.
+      context: ../..
+      dockerfile: hpc/urban_syn/Dockerfile
+    working_dir: /workspace
+    volumes:
+      # Keep the prepared NYC inputs, graph cache, and experiment output on
+      # the host. The container's /opt/venv is outside this mount.
+      - ../..:/workspace
+    gpus: all
+    shm_size: "10gb"
+    stdin_open: true
+    tty: true
+    # Set LOCAL_UID / LOCAL_GID if the repository has different ownership.
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    environment:
+      HOME: /tmp
+      MPLCONFIGDIR: /tmp/urban-syn-matplotlib
+    command: ["bash"]

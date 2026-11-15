@@ -367,14 +367,22 @@ def _experiment_parameters(config: ResolvedExperimentConfig) -> dict[str, Any]:
     return parameters
 
 
-def _slurm_store_suffix() -> str | None:
-    """Construct an isolated tracking-store suffix for a Slurm job.
+def _slurm_store_suffix(scope: str) -> str | None:
+    """Derive a job-specific store directory when requested by YAML.
+
+    Parameters
+    ----------
+    scope : str
+        Validated ``tracking.storage_scope`` value: ``job`` or ``shared``.
 
     Returns
     -------
     str | None
-        Sanitized job/array identifier, or None outside Slurm.
+        Sanitized Slurm job/array identifier, or None for shared/local runs.
     """
+    if scope == "shared":
+        return None
+
     job_id = os.environ.get("SLURM_JOB_ID")
     if not job_id:
         return None
@@ -442,7 +450,9 @@ class MLflowTracker:
 
     A missing tracking URI uses local SQLite storage. Slurm jobs default to
     isolated SQLite databases, avoiding concurrent writes to one shared file.
-    Configured tracking URIs take precedence over these local defaults.
+    Set ``tracking.storage_scope: shared`` in the experiment YAML to use
+    one database and artifact directory across jobs. Explicit tracking URIs
+    always take precedence.
     """
 
     def __init__(self, config: ResolvedExperimentConfig):
@@ -458,7 +468,7 @@ class MLflowTracker:
         self.experiment_name = settings.experiment_name
 
         store_root = config.settings.paths.output_root / "mlflow"
-        suffix = _slurm_store_suffix()
+        suffix = _slurm_store_suffix(settings.storage_scope)
         if suffix is not None:
             store_root = store_root / "jobs" / suffix
         self.store_root = store_root
@@ -502,6 +512,7 @@ class MLflowTracker:
         """
         tags = dict(self.config.settings.tracking.tags)
         tags["experiment_config"] = self.config.settings.experiment.name
+        tags["mlflow_storage_scope"] = self.config.settings.tracking.storage_scope
         for environment, tag in (
             ("SLURM_JOB_ID", "slurm_job_id"),
             ("SLURM_ARRAY_TASK_ID", "slurm_array_task_id")

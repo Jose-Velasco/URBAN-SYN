@@ -12,6 +12,8 @@ dist/
 build/
 .eggs/
 pip-wheel-metadata/
+hypothesis/
+htmlcov/
 
 # Virtual environments
 .venv/
@@ -45,6 +47,7 @@ coverage/
 .tox/
 *.coverage
 *.prof
+ruff_cache/
 
 # ======================================================
 # Project-specific ignores
@@ -53,6 +56,11 @@ coverage/
 # Data
 data/
 outputs/
+/data/
+/datasets/
+/outputs/
+/fmm_scripts/data/
+/fmm_scripts/outputs/
 *.nii
 *.nii.gz
 *.mha
@@ -74,6 +82,10 @@ models/
 experiments/
 wandb/
 mlruns/
+*.sqlite
+*.sqlite3
+*.db
+*.sif
 
 # Large trained model bundles
 *.pt
@@ -85,6 +97,9 @@ mlruns/
 *.tar
 *.tar.gz
 *.zip
+*.parquet
+*.npy
+*.npz
 
 # ======================================================
 # Repo-specific directories
@@ -125,15 +140,20 @@ Thumbs.db
 secret_*
 config.json
 token.json
-
+*.p12
+*.pfx
+*credentials*.json
+*token*.json
 
 # Git
-.git
+.git/
 .gitignore
+.history/
 
 baselines/**/data/
 baselines/**/outputs/
 baselines/**/params/
+baselines/**/datasets/
 
 baselines/**/*.npy
 baselines/**/*.h5
@@ -145,3 +165,8 @@ baselines/**/*.csv
 fmm/
 
 temp-baseline/
+
+container_exports/
+
+# Preserve Python source, YAML configs, and project metadata in case future
+# Dockerfiles need to COPY them. Do not exclude src/, configs/, or models/.

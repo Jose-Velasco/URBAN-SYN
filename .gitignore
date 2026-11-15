@@ -298,3 +298,6 @@ baselines/diffusion/diff_rntraj/**/*.txt
 # Training runs (checkpoints, logs, generated trajectories) and Slurm logs
 baselines/diffusion/difftraj/repo/DiffTraj/
 baselines/diffusion/difftraj/logs/
+
+### urban_syn model ###
+container_exports/

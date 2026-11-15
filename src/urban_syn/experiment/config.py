@@ -220,6 +220,9 @@ class TrackingSettings(_Settings):
     provider: Literal["mlflow"] = "mlflow"
     # None delegates to MLFLOW_TRACKING_URI or a runtime-specific default.
     tracking_uri: str | None = None
+    # Choose the default local SQLite layout when no explicit URI is provided.
+    # A job-specific directory is used only when SLURM_JOB_ID is present.
+    storage_scope: Literal["job", "shared"] = "shared"
     experiment_name: str = Field(default="gnn_diff_rntraj_nyc", min_length=1)
     run_name: str | None = None
     tags: dict[str, str] = Field(default_factory=dict)
