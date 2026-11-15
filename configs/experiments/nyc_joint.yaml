@@ -26,46 +26,48 @@ paths:
 
 model:
   diffusion:
-    hidden_dim: 512              # Diffusion denoiser hidden width (even integer >= 4).
-    residual_layers: 10          # Number of denoising residual blocks.
-    diffusion_steps: 1000         # Noise schedule length; DDPM sampling uses this same schedule.
-    beta_start: 0.0001           # First diffusion noise variance.
-    beta_end: 0.02               # Final diffusion noise variance (>= beta_start).
-    similarity_chunk_size: 2048   # Road-similarity scoring chunk size; lower if GPU memory is tight.
+    hidden_dim: 512                     # Diffusion denoiser hidden width (even integer >= 4).
+    residual_layers: 10                 # Number of denoising residual blocks.
+    diffusion_steps: 1000               # Noise schedule length; DDPM sampling uses this same schedule.
+    beta_start: 0.0001                  # First diffusion noise variance.
+    beta_end: 0.02                      # Final diffusion noise variance (>= beta_start).
+    similarity_chunk_size: 2048         # Road-similarity scoring chunk size; lower if GPU memory is tight.
   road_encoder:
-    mode: joint                  # Supported: joint. GNN and denoiser are updated together.
+    mode: joint                         # Supported: joint. GNN and denoiser are updated together.
   conditioning:
-    enabled: false              # Must remain false until Jessica's conditioning integration is implemented.
+    enabled: false                      # Must remain false until Jessica's conditioning integration is implemented.
 
 
 training:
-  epochs: 1000                     # Full training epochs; adjust for the planned HPC experiment.
-  batch_size: 256                 # Trajectories per batch; reduce if GPU memory is insufficient.
-  max_batches: null             # null = use all training batches each epoch; integer = limit per epoch.
-  grad_clip_norm: 1.0           # Clip total gradient norm before updating weights.
+  epochs: 1000                        # Full training epochs; adjust for the planned HPC experiment.
+  batch_size: 256                     # Trajectories per batch; reduce if GPU memory is insufficient.
+  max_batches: null                   # null = use all training batches each epoch; integer = limit per epoch.
+  grad_clip_norm: 1.0                 # Clip total gradient norm before updating weights.
 
   optimizer:
-    name: adamw                  # Supported: adam | adamw.
-    learning_rate: 0.001        # Initial learning rate.
-    weight_decay: 0.01          # Weight-decay regularization.
+    name: adamw                        # Supported: adam | adamw.
+    learning_rate: 0.001               # Initial learning rate.
+    weight_decay: 0.01                 # Weight-decay regularization.
 
   scheduler:
     name: reduce_on_plateau                   # Supported: none | cosine | reduce_on_plateau.
-    mode: min
-    factor: 0.5
-    threshold: 0.0001
-    threshold_mode: rel
-    cooldown: 0
-    min_lr: 0.000001                 # Used by cosine; must be below optimizer learning_rate.
-    patience_epochs: 10         # Used by reduce_on_plateau.
-    eps: 1.0e-8
+    # For cosine, only min_lr is used, and it must be a scalar < the initial LR.
+    # For reduce_on_plateau, all the options below are passed to PyTorch.
+    mode: min                                 # min | max. Current validation/train objectives are minimized.
+    factor: 0.5                               # Multiply LR by this factor on a plateau (0 < factor < 1).
+    threshold: 0.0001                         # Minimum significant change to count as improvement.
+    threshold_mode: rel                       # rel | abs, relative or absolute threshold.
+    cooldown: 0                               # Epochs to wait after a reduction before normal monitoring resumes.
+    min_lr: 0.000001                          # Float >= 0, or a list with one value per optimizer parameter group.
+    patience: 20                              # Number of non-improving epochs tolerated (>= 0).
+    eps: 1.0e-8                               # Ignore LR changes smaller than this value.
 
   losses:
     noise_mse:
       enabled: true             # Predict the noise added during forward diffusion.
       weight: 1.0               # Contribution multiplier when included in total objective.
       include_in_total: true    # Include in reported objective and gradient-bearing optimization.
-      every_steps: 1           # Must be 1 when included in the objective.
+      every_steps: 1            # Must be 1 when included in the objective.
     reconstruction_mse:
       enabled: true             # Reconstruct clean road embeddings.
       weight: 1.0
@@ -75,11 +77,11 @@ training:
       enabled: true             # Count invalid transitions between predicted road segments.
       weight: 1.0
       include_in_total: true    # Included in reported total and best-checkpoint selection.
-      every_steps: 1           # Non-differentiable: contributes no gradients.
+      every_steps: 1            # Non-differentiable: contributes no gradients.
 
   validation:
-    enabled: false               # true | false Hold out part of the *training* split, not the final test split.
-    fraction: 0.1               # Fraction reserved for validation (0 < fraction < 1).
+    enabled: false                   # true | false Hold out part of the *training* split, not the final test split.
+    fraction: 0.1                    # Fraction reserved for validation (0 < fraction < 1).
     split_group_columns: [uid, tid]  # Required grouping; keep trip pieces together.
 
   checkpoint:
@@ -87,13 +89,13 @@ training:
                                 # auto uses val/objective with validation, otherwise train/objective.
     save_last: true             # Save latest weights and optimizer state for resuming.
     save_best: true             # Save checkpoint minimizing the monitored total objective.
-    every_epochs: 100            # Save a numbered checkpoint every N epochs; adjust for disk usage.
-    resume_from: null          # null = new run; set a last.pt path to continue a previous run.
+    every_epochs: 100           # Save a numbered checkpoint every N epochs; adjust for disk usage.
+    resume_from: null           # null = new run; set a last.pt path to continue a previous run.
 
 generation:
-  enabled: true                 # Include generation in the 'all' target.
+  enabled: true                # Include generation in the 'all' target.
   checkpoint: null             # null = use a checkpoint from this training run.
-                                # For standalone 'generate', specify a compatible .pt path.
+                              # For standalone 'generate', specify a compatible .pt path.
   checkpoint_choice: best      # Supported: best | last.
   road_layer: roads            # GeoPackage layer containing road geometries.
   output_name: nyc_generated_gps.parquet  # Filename inside the run's generated/ directory.
@@ -104,35 +106,35 @@ generation:
 
 
 tracking:
-  enabled: true                 # Disable MLflow if desired; JSONL metrics and checkpoints still save.
-  provider: mlflow              # Currently supported provider: mlflow.
-  tracking_uri: null           # null = automatic local SQLite backend; an explicit URI overrides storage_scope.
-  storage_scope: shared        # Supported: shared | job. Shared is convenient for sequential run comparisons.
+  enabled: true                                        # Disable MLflow if desired; JSONL metrics and checkpoints still save.
+  provider: mlflow                                     # Currently supported provider: mlflow.
+  tracking_uri: null                                   # null = automatic local SQLite backend; an explicit URI overrides storage_scope.
+  storage_scope: shared                                # Supported: shared | job. Shared is convenient for sequential run comparisons.
   experiment_name: gnn_urban_syn_joint_road_embed_nyc  # MLflow grouping for related runs.
-  run_name: null               # null = automatically named; set a label if helpful.
-  tags:                        # String labels for searching and filtering runs.
-    dataset: nyc_15s_enriched_moves
-    model: gnn_urban_syn_joint
-    training_strategy: joint
-    conditioning: none
-    losses: nose_cleanX_oldSpatial
-    road_embedding_training: end2end
+  run_name: null                                       # null = automatically named; set a label if helpful.
+  tags:                                                # String labels for searching and filtering runs.
+    dataset: nyc_15s_enriched_moves           # <-- change this when doing conditioning version its only for tagging so not critical if for get
+    model: gnn_urban_syn_joint                # <-- change this when doing conditioning version its only for tagging so not critical if for get
+    training_strategy: joint                  # <-- change this when doing conditioning version its only for tagging so not critical if for get
+    conditioning: none                        # <-- change this when doing conditioning version its only for tagging so not critical if for get
+    losses: nose_cleanX_oldSpatial            # <-- change this when doing conditioning version its only for tagging so not critical if for get
+    road_embedding_training: end2end          # <-- change this when doing conditioning version its only for tagging so not critical if for get
 
   logging:
-    metrics_every_steps: 100        # Frequency of step-level MLflow metric logging. (batches, not epochs)
-    gnn_diagnostics_every_steps: 100  # Frequency of GNN/denoiser gradient diagnostics.
-    gnn_embedding_probe_size: 256  # Fixed road subset for eval-mode embedding drift at checkpoints.
-    log_system_metrics: true      # Slurm runner collects separate CPU/GPU resource logs.
-    log_resolved_config: true      # Save the settings used by this run.
-    log_git_info: true             # Record Git revision information where available.
+    metrics_every_steps: 100              # Frequency of step-level MLflow metric logging. (batches, not epochs)
+    gnn_diagnostics_every_steps: 100      # Frequency of GNN/denoiser gradient diagnostics.
+    gnn_embedding_probe_size: 256         # Fixed road subset for eval-mode embedding drift at checkpoints.
+    log_system_metrics: true              # Slurm runner collects separate CPU/GPU resource logs.
+    log_resolved_config: true             # Save the settings used by this run.
+    log_git_info: true                    # Record Git revision information where available.
 
   artifacts:
-    log_best_checkpoint: true       # Copy best.pt into MLflow artifacts.
-    log_last_checkpoint: false      # Avoid duplicating another potentially large checkpoint.
+    log_best_checkpoint: true             # Copy best.pt into MLflow artifacts.
+    log_last_checkpoint: true            # Avoid duplicating another potentially large checkpoint.
     log_generated_trajectories: true
     log_training_logs: true
 
 runtime:
-  device: cuda                  # Supported: auto | cpu | cuda.
-  precision: fp32              # Only supported precision currently: fp32.
-  num_workers: 4               # DataLoader workers; set 0 if multiprocessing causes issues.
+  device: cuda           # Supported: auto | cpu | cuda.
+  precision: fp32        # Only supported precision currently: fp32.
+  num_workers: 4         # DataLoader workers; set 0 if multiprocessing causes issues.
