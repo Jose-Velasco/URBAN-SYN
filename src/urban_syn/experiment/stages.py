@@ -1,66 +1,53 @@
-"""Build pipeline stages from an already validated experiment configuration."""
+"""Define source checks and execution stages for the experiment pipeline."""
 
 from pathlib import Path
 
-import yaml
-
 from .config import ResolvedExperimentConfig
+from .graph_preparation import graph_paths, graph_rebuild_sources
 from .stage import Stage
 
 
-TARGETS = ("validate", "train", "generate", "export-eval", "all")
-
-
-def _project_path(value: str, root: Path) -> Path:
-    """Interpret graph-YAML paths relative to the repository root."""
-    candidate = Path(value).expanduser()
-    return (candidate if candidate.is_absolute() else root / candidate).resolve()
-
-
-def _graph_inputs(config: ResolvedExperimentConfig) -> tuple[Path, ...]:
-    """Locate the source GeoPackage and preprocessed PyG graph files.
-
-    ``RoadGraphDataset.processed_file_names`` defines these two cache files.
-    We check for them without constructing a graph or triggering processing.
-    """
-    graph_yaml = config.settings.paths.graph_config
-    with graph_yaml.open("r", encoding="utf-8") as stream:
-        graph_settings = yaml.safe_load(stream)
-
-    dataset = graph_settings.get("dataset") if isinstance(graph_settings, dict) else None
-    if not isinstance(dataset, dict):
-        raise ValueError(f"Graph configuration requires a dataset mapping: {graph_yaml}")
-
-    for name in ("root", "network_path"):
-        if not isinstance(dataset.get(name), str) or not dataset[name].strip():
-            raise ValueError(f"Graph configuration requires dataset.{name}: {graph_yaml}")
-
-    root = _project_path(dataset["root"], config.project_root)
-    network = _project_path(dataset["network_path"], config.project_root)
-    return (
-        network,
-        root / "processed" / "road_graph.pt",
-        root / "processed" / "preprocessor.joblib"
-    )
+TARGETS = ("validate", "prepare-graph", "train", "generate", "export-eval", "all")
 
 
 def _required_items(paths: list[Path | None]) -> tuple[Path, ...]:
-    """Return configured file paths while preserving order."""
+    """Return configured source paths once, preserving their order.
+
+    Parameters
+    ----------
+    paths : list[Path | None]
+        Possible source files, including optional paths.
+
+    Returns
+    -------
+    tuple[Path, ...]
+        Non-null unique paths.
+    """
     return tuple(dict.fromkeys(path for path in paths if path is not None))
 
 
 def _stage_map(config: ResolvedExperimentConfig) -> dict[str, Stage]:
-    """Define input checks and dependencies without executing model code."""
+    """Declare inputs, separating source files from generated graph caches.
+
+    Parameters
+    ----------
+    config : ResolvedExperimentConfig
+        Validated experiment settings.
+
+    Returns
+    -------
+    dict[str, Stage]
+        Stages with only pre-existing inputs listed as requirements.
+    """
     paths = config.settings.paths
-    graph_inputs = _graph_inputs(config)
-    training_files = [paths.graph_config, paths.train_sequences]
-    training_files.extend(graph_inputs)
+    _, graph_network, _ = graph_paths(config)
+
+    graph_files = [paths.graph_config, graph_network, *graph_rebuild_sources(config)]
+    training_files = [*graph_files, paths.train_sequences]
     if config.settings.training.validation.enabled:
         training_files.append(paths.trip_id_map)
     training_inputs = _required_items(training_files)
 
-    # Generation requires a full road-geometry GeoPackage, specified in YAML.
-    road_network = paths.road_network
     generation_missing = tuple(
         name for name, value in (
             ("paths.length_distribution", paths.length_distribution),
@@ -74,25 +61,30 @@ def _stage_map(config: ResolvedExperimentConfig) -> dict[str, Stage]:
     return {
         "validate": Stage(
             name="validate",
-            description="Check existing road graph and training inputs without loading a GPU model.",
+            description="Check training and road-network source inputs.",
             required_files=training_inputs
+        ),
+        "prepare-graph": Stage(
+            name="prepare-graph",
+            description="Reuse or build the PyG road graph and fitted preprocessor.",
+            required_files=_required_items(graph_files)
         ),
         "train": Stage(
             name="train",
             description="Train the joint road GNN and Diff-RNTraj model.",
             required_files=training_inputs,
-            depends_on=("validate",)
+            depends_on=("prepare-graph",)
         ),
         "generate": Stage(
             name="generate",
             description="Generate trajectories using a trained joint checkpoint.",
-            required_files=_required_items([road_network, paths.length_distribution]),
+            required_files=_required_items([paths.road_network, paths.length_distribution]),
             missing_settings=generation_missing,
-            depends_on=("train",)
+            depends_on=("prepare-graph",)
         ),
         "export-eval": Stage(
             name="export-eval",
-            description="Prepare generated trajectories and held-out references for shared evaluation.",
+            description="Prepare generated trajectories and references for shared evaluation.",
             required_files=_required_items([paths.test_reference_gps]),
             missing_settings=export_missing,
             depends_on=("generate",)
@@ -101,21 +93,32 @@ def _stage_map(config: ResolvedExperimentConfig) -> dict[str, Stage]:
 
 
 def stages_for_target(config: ResolvedExperimentConfig, target: str) -> tuple[Stage, ...]:
-    """Select either one independent stage or the configured full pipeline.
+    """Select stages, inserting graph preparation before graph consumers.
 
-    Selecting ``generate`` alone does not silently retrain the model.
-    ``all`` respects ``generation.enabled`` in the experiment YAML.
+    Parameters
+    ----------
+    config : ResolvedExperimentConfig
+        Validated experiment configuration.
+    target : str
+        Requested pipeline stage or ``all``.
+
+    Returns
+    -------
+    tuple[Stage, ...]
+        Stages in execution order. Standalone generation never retrains.
     """
     if target not in TARGETS:
         raise ValueError(f"Unknown target {target!r}. Choose from: {', '.join(TARGETS)}")
 
     stage_map = _stage_map(config)
     if target == "all":
-        names = ["validate", "train"]
+        names = ["validate", "prepare-graph", "train"]
         if config.settings.generation.enabled:
             names.append("generate")
             if config.settings.paths.test_reference_gps is not None:
                 names.append("export-eval")
+    elif target in ("train", "generate"):
+        names = ["prepare-graph", target]
     else:
         names = [target]
 

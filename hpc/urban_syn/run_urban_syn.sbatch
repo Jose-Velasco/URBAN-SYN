@@ -25,7 +25,7 @@ usage() {
 Usage:
   sbatch hpc/urban_syn/run_urban_syn.sbatch [stage] [config] [mode]
 
-Stages: all | validate | train | generate | export-eval
+Stages: all | validate | prepare-graph | train | generate | export-eval
 Config: Path relative to the repository root (default: configs/experiments/nyc_joint.yaml).
 Mode:   --validate-only | --dry-run (optional)
 
@@ -36,7 +36,7 @@ USAGE
 }
 
 case "$STAGE" in
-    all|validate|train|generate|export-eval) ;;
+    all|validate|prepare-graph|train|generate|export-eval) ;;
     -h|--help) usage; exit 0 ;;
     *) echo "ERROR: Unsupported stage '$STAGE'" >&2; usage >&2; exit 2 ;;
 esac

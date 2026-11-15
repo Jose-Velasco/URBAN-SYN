@@ -152,6 +152,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         training_run_dir = None
         generated_path = None
 
+        def prepare_graph_handler(experiment: ResolvedExperimentConfig) -> None:
+            """Reuse or generate the cached road graph before model loading.
+
+            Parameters
+            ----------
+            experiment : ResolvedExperimentConfig
+                Settings locating the source GeoPackage and graph cache.
+
+            Returns
+            -------
+            None
+                Both graph artifacts are available for downstream stages.
+            """
+            from .graph_preparation import prepare_experiment_graph
+
+            prepare_experiment_graph(experiment)
+
         def train_handler(experiment: ResolvedExperimentConfig) -> None:
             """Train and retain the run directory for the generation stage.
 
@@ -217,6 +234,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"  Evaluator handoff: {handoff}")
 
         PipelineRunner(config, handlers={
+            "prepare-graph": prepare_graph_handler,
             "train": train_handler,
             "generate": generate_handler,
             "export-eval": export_handler
