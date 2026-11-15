@@ -142,6 +142,9 @@ model:
         normalization: layer_norm
         plain_last: true
 
+
+  # below is OLD!!! use the training pipeline in /experiment to handle training config
+
   diffusion:
     hidden_dim: 128
     residual_layers: 10

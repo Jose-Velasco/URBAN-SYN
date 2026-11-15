@@ -60,12 +60,6 @@ def resolve_device(selection: str) -> torch.device:
     raise ValueError(f"Unsupported runtime device: {selection!r}")
 
 
-def _project_path(path: str | Path, project_root: Path) -> Path:
-    """Resolve graph-YAML data paths using the experiment's project root."""
-    candidate = Path(path).expanduser()
-    return (candidate if candidate.is_absolute() else project_root / candidate).resolve()
-
-
 def load_experiment_graph(config: ResolvedExperimentConfig, device: torch.device) -> Data:
     """Load the existing processed graph and select the configured features.
 
@@ -75,17 +69,14 @@ def load_experiment_graph(config: ResolvedExperimentConfig, device: torch.device
     """
     from torch_geometric.data import Data
 
-    from urban_syn.graph.config import build_dataset_from_config, load_graph_config
+    from urban_syn.graph.config import build_dataset_from_config
     from urban_syn.graph.selection import select_graph_features
     from urban_syn.graph.validation import validate_graph_features
 
-    graph_config = load_graph_config(config.settings.paths.graph_config)
-    dataset_config = dict(graph_config["dataset"])
-    for key in ("root", "network_path"):
-        dataset_config[key] = str(_project_path(dataset_config[key], config.project_root))
-    graph_config["dataset"] = dataset_config
+    from .graph_preparation import resolve_graph_settings
 
-    processed_dir = Path(dataset_config["root"]) / "processed"
+    graph_config = resolve_graph_settings(config)
+    processed_dir = Path(graph_config["dataset"]["root"]) / "processed"
     for filename in ("road_graph.pt", "preprocessor.joblib"):
         artifact = processed_dir / filename
         if not artifact.is_file():

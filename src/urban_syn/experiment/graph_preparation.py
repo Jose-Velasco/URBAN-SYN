@@ -26,6 +26,51 @@ def _project_path(value: str, project_root: Path) -> Path:
     return (path if path.is_absolute() else project_root / path).resolve()
 
 
+def resolve_graph_settings(config: ResolvedExperimentConfig) -> dict:
+    """Resolve file paths in the graph configuration consistently.
+
+    Both graph preparation and later graph loads must use the same normalized
+    paths. PyG records the preprocessing transform representation in its cache;
+    changing only the spelling of a source path triggers a mismatch warning.
+
+    Parameters
+    ----------
+    config : ResolvedExperimentConfig
+        Experiment settings identifying the graph YAML and project root.
+
+    Returns
+    -------
+    dict
+        Graph settings with absolute input and cache paths.
+    """
+    from urban_syn.graph.config import load_graph_config
+
+    settings = load_graph_config(config.settings.paths.graph_config)
+    dataset = dict(settings["dataset"])
+    for name in ("root", "network_path"):
+        dataset[name] = str(_project_path(dataset[name], config.project_root))
+    settings["dataset"] = dataset
+
+    graph = settings.get("graph") or {}
+    transforms = graph.get("transforms") or {}
+    transition = transforms.get("edge_transition_count") or {}
+    if transition.get("enabled", False):
+        match_csv = transition.get("match_csv")
+        if not isinstance(match_csv, str) or not match_csv.strip():
+            raise ValueError("graph.transforms.edge_transition_count.match_csv is required.")
+        settings["graph"] = {
+            **graph,
+            "transforms": {
+                **transforms,
+                "edge_transition_count": {
+                    **transition,
+                    "match_csv": str(_project_path(match_csv, config.project_root))
+                }
+            }
+        }
+    return settings
+
+
 def graph_paths(config: ResolvedExperimentConfig) -> tuple[Path, Path, tuple[Path, Path]]:
     """Find the source road network and both builder-produced cache files.
 
@@ -114,29 +159,16 @@ def prepare_experiment_graph(config: ResolvedExperimentConfig) -> None:
         raise FileNotFoundError(f"Road network required to build graph: {network}")
 
     # Load the graph implementation only during execution, never during planning
-    # or --validate-only. This also reuses the feature transforms from graph YAML.
-    from urban_syn.graph.config import build_dataset_from_config, load_graph_config
+    # or --validate-only. Use exactly the same path resolution as graph loading.
+    from urban_syn.graph.config import build_dataset_from_config
 
-    graph_settings = load_graph_config(config.settings.paths.graph_config)
-    dataset = dict(graph_settings["dataset"])
-    dataset["root"] = str(root)
-    dataset["network_path"] = str(network)
-    graph_settings["dataset"] = dataset
-
-    # The optional transition-count transform reads a file directly. Resolve
-    # it against the repository just like the network and cache locations.
-    transforms = (graph_settings.get("graph") or {}).get("transforms") or {}
-    transition = transforms.get("edge_transition_count") or {}
-    if transition.get("enabled", False):
-        sources = graph_rebuild_sources(config)
-        missing_sources = [path for path in sources if not path.is_file()]
-        if missing_sources:
-            raise FileNotFoundError(
-                f"Graph transform requires: {', '.join(map(str, missing_sources))}"
-            )
-        graph_settings["graph"]["transforms"]["edge_transition_count"] = {
-            **transition, "match_csv": str(sources[0])
-        }
+    graph_settings = resolve_graph_settings(config)
+    sources = graph_rebuild_sources(config)
+    missing_sources = [path for path in sources if not path.is_file()]
+    if missing_sources:
+        raise FileNotFoundError(
+            f"Graph transform requires: {', '.join(map(str, missing_sources))}"
+        )
 
     print(f"  Preparing road graph from: {network}", flush=True)
     build_dataset_from_config(graph_settings)
