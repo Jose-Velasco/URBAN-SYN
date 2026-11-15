@@ -1,53 +1,118 @@
-# URBAN-SYN — Slurm + Apptainer
+# URBAN-SYN on SJSU HPC: Slurm + Apptainer
 
-Run the existing `urban_syn.experiment` pipeline on SJSU CoE HPC. The Slurm scripts allocate resources, start the Apptainer image, collect system logs, and invoke the **same Python CLI and experiment YAML** used locally. They do not implement a second trainer or generator.
+This guide explains how to run the existing URBAN-SYN experiment pipeline on SJSU's GPU cluster. Slurm allocates the hardware, Apptainer supplies the software environment, and the Python pipeline handles graph preparation, training, and generation.
 
-## Prerequisites
+There is **no separate HPC training implementation**. The same experiment YAML and `urban_syn.experiment` stages work locally and on HPC.
 
-- A working SIF at `~/containers/urban-syn.sif` (or set `URBAN_SYN_SIF` to its absolute path).
-- A checkout of URBAN-SYN on HPC containing the experiment YAML and required **non-Git** inputs: prepared road-sequence Parquet, road-network GeoPackage, PyG graph cache, and generation length distribution.
-- An available A100 GPU. Verify current partitions and limits with `sinfo` and `scontrol show partition gpuqm`.
+For building and transferring the container, see [README.md](README.md). For model configuration and NYC data preparation, see the [experiment README](../../src/urban_syn/experiment/README.md). For downloading runs and viewing them in a browser, see [README_MLFLOW.md](README_MLFLOW.md).
 
-The runner mounts the project checkout at `/workspace` and uses `/opt/venv/bin/python` inside the image. It does not run `uv sync`, use the local `.venv`, or modify the model code.
+## 1. What you need on HPC
 
-## Run a stage
+- An Apptainer image at `$HOME/containers/urban-syn.sif`, or a custom absolute path via `URBAN_SYN_SIF`.
+- A checkout of the URBAN-SYN repository with its experiment and graph YAML files.
+- The prepared **training** road-sequence Parquet and the shared road-network GeoPackage.
+- The training trajectory-length distribution when running generation.
+- The training FMM matches CSV **if** the graph's transition-count feature is enabled and the graph cache must be built.
+- A valid GPU allocation, using the partition and GPU type allowed by the cluster.
 
-From the HPC checkout root:
+**You do not need to transfer `road_graph.pt` or `preprocessor.joblib` for a new checkout.** The `prepare-graph` stage generates them from the source GeoPackage and graph YAML if either is missing. The pipeline does not perform sampling, FMM map matching, or the train/test split. Prepare those inputs before submitting a model job.
+
+The scripts mount the repository at `/workspace` and execute `/opt/venv/bin/python` inside the SIF. Package installation is not repeated during jobs. Both input and output paths are resolved to absolute locations during execution, while the experiment YAML can keep its convenient repository-relative paths.
+
+## 2. Choose and submit a pipeline stage
+
+Run these commands from the HPC URBAN-SYN repository root:
 
 ```bash
-# Train, then generate if generation.enabled: true in YAML.
-bash hpc/urban_syn/submit.sh all configs/experiments/nyc_joint.yaml
+# Full workflow: validate, prepare graph, train, then generate if enabled.
+bash hpc/urban_syn/submit.sh all \
+  configs/experiments/nyc_joint.yaml
 
-# Train only.
-bash hpc/urban_syn/submit.sh train configs/experiments/nyc_joint.yaml
+# Train only; prepares the graph when necessary.
+bash hpc/urban_syn/submit.sh train \
+  configs/experiments/nyc_joint.yaml
 
-# Generate only from an existing trained checkpoint (see below).
-bash hpc/urban_syn/submit.sh generate configs/experiments/nyc_joint.yaml
+# Generate from a specified checkpoint, without retraining.
+bash hpc/urban_syn/submit.sh generate \
+  configs/experiments/nyc_joint.yaml
 
-# Inspect the planned stages and verify inputs without running the model.
-bash hpc/urban_syn/submit.sh all configs/experiments/nyc_joint.yaml --validate-only
+# Prepare or reuse the graph cache only.
+bash hpc/urban_syn/submit.sh prepare-graph \
+  configs/experiments/nyc_joint.yaml
 ```
 
-Other supported stages are `validate` and `export-eval`; `--dry-run` is also available. Each submission is one Slurm job. `all` preserves the current run's selected training checkpoint for generation automatically.
+Two useful planning modes are available:
 
-### Generation without retraining
+```bash
+# Display the selected stages without checking files.
+bash hpc/urban_syn/submit.sh all \
+  configs/experiments/nyc_joint.yaml --dry-run
 
-Set `generation.checkpoint` in the selected experiment YAML to a **real existing checkpoint** on HPC, relative to the project root:
+# Check source inputs and settings without building the graph or training.
+bash hpc/urban_syn/submit.sh all \
+  configs/experiments/nyc_joint.yaml --validate-only
+```
+
+`all` runs `validate`, `prepare-graph`, and `train`. It adds `generate` when `generation.enabled: true`, and adds `export-eval` when a held-out GPS reference is configured. The optional handoff writes a manifest for the shared evaluator; it does not run evaluation metrics.
+
+### Standalone generation
+
+For a generation-only job, set `generation.checkpoint` to an existing, compatible training checkpoint in the YAML:
 
 ```yaml
 generation:
-  checkpoint: outputs/experiments/nyc_joint_gnn_v1/<run_id>/checkpoints/best.pt
+  enabled: true
+  checkpoint: outputs/experiments/nyc_joint_example/<run_id>/checkpoints/best.pt
   checkpoint_choice: best
   num_trajectories: 100
   sampler:
     name: ddpm
 ```
 
-Replace `<run_id>` with the specific training run directory. Also configure `paths.road_network` and `paths.length_distribution`. Then run the standalone `generate` command above. **`generation.enabled` controls whether `all` includes generation; it does not disable the explicitly selected `generate` stage.** Generation writes into the selected checkpoint's run directory under `generated/`, so use a distinct `generation.output_name` if you want to preserve an earlier generation output from that same checkpoint.
+Replace `<run_id>` with the actual run directory. Configure `paths.road_network` and `paths.length_distribution` as well. The `generate` target loads that checkpoint and prepares the graph if required, but **does not train**. For `all`, leave `generation.checkpoint: null` to use the selected checkpoint from the current training run.
 
-## MLflow: choose the store in the experiment YAML
+Generation writes into the checkpoint's run directory. Choose a different `generation.output_name` if you want multiple exports from the same checkpoint without replacing the earlier generated file.
 
-Use the same centralized experiment YAML for both the model and experiment tracking. No MLflow server is required **to log runs**. To choose the default local SQLite layout, set:
+## 3. Slurm resources
+
+The runner's normal resource request is:
+
+| Resource | Default request |
+|---|---|
+| Partition | `gpuqm` |
+| GPU | 1 A100 |
+| CPU | 8 cores |
+| Memory | 64 GB |
+| Wall time | 1 day |
+
+You can override these **for a single submission** without editing the `.sbatch` file. For example:
+
+```bash
+SBATCH_PARTITION=gpuqs \
+SBATCH_TIMELIMIT=00:30:00 \
+SBATCH_GRES=gpu:a100:1 \
+SBATCH_CPUS_PER_TASK=4 \
+SBATCH_MEM_PER_NODE=32G \
+bash hpc/urban_syn/submit.sh all \
+  configs/experiments/nyc_joint.yaml
+```
+
+These `SBATCH_*` variables request Slurm resources without changing model hyperparameters. **Use the YAML for epochs, batches, optimizer, checkpoints, generation, and MLflow.** Partition, GPU, CPU, RAM, and wall time are scheduling choices. Confirm site-supported settings with `sinfo` or `scontrol`, and verify the actual allocation with `scontrol show job JOB_ID`, because the applied resources can differ from the requested overrides.
+
+The `submit.sh` helper also sets absolute job working-directory and stdout/stderr paths. Use it for normal submissions rather than calling the batch script with `bash`.
+
+If the SIF or project checkout is in a different place, set:
+
+```bash
+export URBAN_SYN_PROJECT_ROOT=/absolute/path/to/URBAN-SYN
+export URBAN_SYN_SIF=/absolute/path/to/urban-syn.sif
+```
+
+The selected YAML must be inside the project checkout so its path can be mapped into `/workspace`.
+
+## 4. MLflow tracking
+
+MLflow records separate runs, with their parameters, metrics, tags, and selected artifacts. **You do not need a running MLflow server to log**. Tracking storage is controlled centrally by the experiment YAML:
 
 ```yaml
 tracking:
@@ -55,78 +120,73 @@ tracking:
   provider: mlflow
   experiment_name: gnn_diff_rntraj_nyc
   tracking_uri: null
-  storage_scope: job  # job | shared
+  storage_scope: shared  # shared or job
 ```
 
-| `tracking.storage_scope` | SQLite database | Artifact root | Use when |
-|---|---|---|---|
-| `job` (default) | `outputs/experiments/mlflow/jobs/<job_id>/tracking.db` | `.../jobs/<job_id>/artifacts/` | Multiple simultaneous jobs; isolated SQLite writers |
-| `shared` | `outputs/experiments/mlflow/tracking.db` | `outputs/experiments/mlflow/artifacts/` | Sequential jobs; compare runs together in a single MLflow UI |
+| Scope | Backend location under `outputs/experiments/` | When to use it |
+|---|---|---|
+| `shared` | `mlflow/tracking.db` | Sequential runs that should appear together in one MLflow UI |
+| `job` | `mlflow/jobs/<job_id>/tracking.db` | Concurrent jobs where SQLite writers should be isolated |
 
-`job` chooses a job subdirectory only when Slurm supplies `SLURM_JOB_ID`. Outside Slurm, it uses the common local `outputs/experiments/mlflow/tracking.db` directory. Each MLflow run still has a unique run ID and its own artifacts, even with `shared` storage. Both modes record Slurm job IDs as run tags.
+Choose the scope **explicitly** in the YAML. A new run has its own MLflow ID in either mode; reusing the same YAML does not overwrite previous runs. With per-job databases, runs are preserved but cannot automatically be compared in one MLflow UI without consolidation. A shared SQLite backend is convenient for sequential experiments, but concurrent access on network storage can lead to locking problems.
 
-The storage scope determines a default **only when `tracking.tracking_uri` is null**. An explicit URI in YAML takes precedence; a provided `MLFLOW_TRACKING_URI` is the next fallback. `URBAN_SYN_MLFLOW_SCOPE` is no longer used. The Slurm scripts pass `SLURM_JOB_ID` into Apptainer with `--cleanenv`, and the tracking adapter applies the YAML setting.
+If `tracking.tracking_uri` is set explicitly, it takes precedence over the automatic layout. The runner passes the Slurm job ID into Apptainer so it can be recorded with the run and used when `storage_scope: job`. For local snapshot viewing, including Windows 11 Git Bash path conversion, follow [README_MLFLOW.md](README_MLFLOW.md).
 
-### Comparing runs
+## 5. Where files and logs go
 
-- **Shared database:** open a single MLflow UI backed by `outputs/experiments/mlflow/tracking.db` and select multiple runs in the same experiment for comparison. No server is required during training; the UI is started only to view results.
-- **Per-job databases:** each database contains only its corresponding job's runs. You can inspect them one backend at a time, or query them individually using `mlflow.MlflowClient` to produce a combined report. To compare all runs in **one MLflow UI**, you must first consolidate them into a common tracking backend (with artifact paths preserved). Merely placing the database files in one directory does not merge them.
-- **Concurrent jobs:** sharing one SQLite database on an HPC network filesystem can cause locking or reliability issues. Prefer `job` for concurrency. For central concurrent tracking at scale, use a proper MLflow backend (for example, PostgreSQL behind a tracking service), rather than shared SQLite.
+Model outputs are written to the **mounted repository**, not to the SIF:
 
-**Generation tracking:** Standalone generation can attach to the same MLflow run when it can reach the original tracking URI. If the checkpoint refers to another per-job database, the adapter creates a new linked run rather than overwriting the previous one.
+```text
+outputs/experiments/
+├── <experiment_name>/<run_id>/
+│   ├── resolved_config.json
+│   ├── checkpoints/
+│   ├── metrics/history.jsonl
+│   ├── logs/train.log
+│   └── generated/
+└── mlflow/
+    └── ...
+```
 
-## Slurm resources and paths
+Slurm logs are kept in `hpc/urban_syn/logs/`:
 
-The default allocation is deliberately sized for longer GPU experiments:
-
-| Resource | Default |
+| File | What it contains |
 |---|---|
-| Partition | `gpuqm` |
-| GPU | 1 × A100 |
-| CPU | 8 cores |
-| RAM | 64 GB |
-| Wall time | 1 day |
-| Apptainer image | `~/containers/urban-syn.sif` |
+| `urban-syn-<job_id>.out` | Pipeline messages and progress |
+| `urban-syn-<job_id>.err` | Errors and warnings |
+| `gpu-<job_id>.csv` | GPU activity, memory, temperature, and power samples |
+| `resources-<job_id>.log` | CPU and memory samples from Slurm |
+| `job-<job_id>.txt` | Job details, resolved paths, Git revision, and exit code |
 
-For a shorter job or to change limits, pass Slurm flags directly to the batch file:
-
-```bash
-mkdir -p hpc/urban_syn/logs
-sbatch --partition=gpuqs --time=01:00:00 --mem=32G \
-  --cpus-per-task=4 \
-  --output="$PWD/hpc/urban_syn/logs/%x-%j.out" \
-  --error="$PWD/hpc/urban_syn/logs/%x-%j.err" \
-  hpc/urban_syn/run_urban_syn.sbatch all configs/experiments/nyc_joint.yaml
-```
-
-For direct `sbatch`, the experiment YAML still controls the MLflow storage scope. The `submit.sh` helper sets `--chdir`, exports the project root, and selects the Slurm log destinations automatically.
-
-Override the checkout and image paths if needed:
-
-```bash
-export URBAN_SYN_PROJECT_ROOT=/absolute/path/to/URBAN-SYN
-export URBAN_SYN_SIF=/absolute/path/to/urban-syn.sif
-```
-
-Experiment configuration paths remain repo-relative. The YAML must reside inside the checkout so the runner can translate its path to `/workspace/...`.
-
-## Outputs and job monitoring
-
-| Item | Persistent path under the HPC repository |
-|---|---|
-| Checkpoints, training metrics, generated GPS | `outputs/experiments/<experiment.name>/<run_id>/` |
-| Offline MLflow | `outputs/experiments/mlflow/` (layout depends on scope) |
-| Slurm stdout / stderr | `hpc/urban_syn/logs/urban-syn-<job_id>.out` / `.err` |
-| GPU utilization and memory samples | `hpc/urban_syn/logs/gpu-<job_id>.csv` |
-| CPU / RAM usage samples | `hpc/urban_syn/logs/resources-<job_id>.log` |
-| Job metadata and exit code | `hpc/urban_syn/logs/job-<job_id>.txt` |
+To check a submitted job:
 
 ```bash
 squeue -u "$USER"
-tail -f hpc/urban_syn/logs/urban-syn-<job_id>.out
-sacct -j <job_id> --format=JobID,State,Elapsed,ExitCode,MaxRSS
 ```
 
-All outputs remain outside the SIF on the mounted checkout. Checkpoint resume follows the existing YAML `training.checkpoint.resume_from` behavior; an interrupted job can resume only from a checkpoint it previously finished writing. Slurm signals do **not** trigger a new emergency checkpoint.
+` squeue ` shows waiting and running jobs, not completed jobs. For a finished job, use:
 
-The optional `export-eval` stage writes an input handoff for the team's evaluator; it does not implement evaluation metrics. The runner does not yet support multi-GPU training, automatic requeueing, or dependent Slurm jobs.
+```bash
+sacct -j JOB_ID --format=JobID,JobName,State,ExitCode,Elapsed,MaxRSS
+```
+
+Then inspect its messages:
+
+```bash
+tail -n 80 hpc/urban_syn/logs/urban-syn-JOB_ID.err
+tail -n 80 hpc/urban_syn/logs/urban-syn-JOB_ID.out
+```
+
+Replace `JOB_ID` with the Slurm job number. You can also follow a running job with:
+
+```bash
+tail -f hpc/urban_syn/logs/urban-syn-JOB_ID.out
+```
+
+Common first checks are the configured input files, the SIF path, the CUDA allocation, and whether the graph YAML refers to a training FMM CSV available on HPC. A missing PyG cache alone is not an error if source files exist and graph preparation is enabled.
+
+## 6. Resuming and limitations
+
+To continue interrupted training, set `training.checkpoint.resume_from` to a compatible `last.pt` path in the YAML and submit `train` or `all` again. Checkpoints are saved according to the configured epoch cadence. Receiving a Slurm timeout or termination signal does **not** force the runner to write an extra emergency checkpoint.
+
+The current scripts execute one pipeline target per Slurm job on one GPU. They do not provide automatic requeueing, distributed multi-GPU training, or dependent train/generate job submission. These can be added without changing the existing model runner if later experiments require them.

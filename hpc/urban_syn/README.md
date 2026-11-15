@@ -1,20 +1,30 @@
-# Joint GNN + Diff-RNTraj — Docker environment
+# URBAN-SYN Container Environment
 
-This directory defines the **execution environment** for the existing `urban_syn.experiment` pipeline. It does not duplicate model code or create a second training pipeline. VS Code's `.devcontainer/` remains independent and unchanged.
+This directory contains the **Docker environment used for local execution and HPC deployment**. It supports the URBAN-SYN model as it evolves, not just the current GNN + Diff-RNTraj implementation.
 
-## Layout
+The model itself lives in `src/urban_syn/`; Docker and Apptainer only provide its Python and GPU environment. The VS Code `.devcontainer/` remains separate and is not changed by these files.
 
-- `Dockerfile`: Python 3.11 and third-party packages from the repository's `uv.lock` (including its PyTorch CUDA 11.8 wheels).
-- `compose.yaml`: local GPU execution, with the URBAN-SYN repository bind-mounted at `/workspace`.
-- `../../.dockerignore`: excludes local data, checkpoints, secrets, and caches from the Docker build context.
+For model options and pipeline stages, see the [experiment README](../../src/urban_syn/experiment/README.md). For batch jobs, see [README_SLURM.md](README_SLURM.md). For metrics and viewing HPC runs locally, see [README_MLFLOW.md](README_MLFLOW.md).
 
-The container stores Python dependencies in **`/opt/venv`**, outside the source mount. Python imports the mounted code from **`/workspace/src`**. The Docker image does **not** contain your datasets, processed graphs, checkpoints, or working source tree.
+## What is in this directory?
 
-> **Requirements:** Docker with GPU support, Linux/amd64 container support, and a committed/current `uv.lock` matching `pyproject.toml`. The host NVIDIA driver must support the CUDA version in the locked PyTorch wheels. The lockfile is supplied by your repository; it is not included in this Stage 4 file bundle.
+| File | Purpose |
+|---|---|
+| `Dockerfile` | Creates a Python 3.11 environment with dependencies from the project's `uv.lock` |
+| `compose.yaml` | Runs the image locally with GPU access and the repository mounted at `/workspace` |
+| `submit.sh` | Submits a single experiment stage to Slurm on HPC |
+| `run_urban_syn.sbatch` | Starts the Apptainer image on a GPU node, runs the pipeline, and records resource logs |
+| `README_SLURM.md` | HPC-specific setup, job submission, tracking, and troubleshooting |
+| `README_MLFLOW.md` | Tracking choices, saved metrics, download/snapshot instructions, and browser UI |
+| `../../.dockerignore` | Excludes datasets, outputs, and local environments from the image build context |
 
-## 1. Build locally
+The image uses **`/opt/venv`** for installed packages and **`/workspace`** for the mounted repository. This keeps Python dependencies out of the mounted local `.venv` and avoids installing packages each time a job starts.
 
-Run these commands **from the URBAN-SYN repository root**:
+The Docker image does **not** contain the NYC dataset, GeoPackage, generated graph cache, checkpoints, or experiment outputs. These remain on the host and are accessible through the repository mount.
+
+## 1. Build on your local machine
+
+Run the following commands from the **URBAN-SYN repository root** on the host, not from inside the VS Code Dev Container:
 
 ```bash
 docker build \
@@ -22,24 +32,32 @@ docker build \
   -t urban-syn-joint:cu118 .
 ```
 
-Or build through Compose:
+Or use Compose:
 
 ```bash
 docker compose -f hpc/urban_syn/compose.yaml build
 ```
 
-The build installs dependencies once using `uv sync --locked --no-dev --no-install-project`. A stale `uv.lock` causes the build to fail rather than silently resolving new versions. When you update dependencies, update the lockfile locally and rebuild the image.
+The current project uses CUDA 11.8 PyTorch wheels selected by `pyproject.toml` and `uv.lock`. The Docker build installs locked dependencies once. If dependencies change, update the lockfile and rebuild the image. Changes only to Python source or YAML generally do not require rebuilding, because the repository is mounted at runtime.
 
-## 2. Verify the container locally
+## 2. Run locally with Docker Compose
 
-Run the GPU and library check:
+Check that the image can see your GPU:
 
 ```bash
 docker compose -f hpc/urban_syn/compose.yaml run --rm joint \
-  python -c "import torch, torch_geometric; print('torch:', torch.__version__); print('CUDA:', torch.version.cuda); print('GPU ready:', torch.cuda.is_available()); assert torch.cuda.is_available()"
+  python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
 ```
 
-Verify pipeline inputs (requires the configured local files):
+Inspect the selected pipeline stages:
+
+```bash
+docker compose -f hpc/urban_syn/compose.yaml run --rm joint \
+  python -m urban_syn.experiment all \
+  --config configs/experiments/nyc_joint.yaml --dry-run
+```
+
+Check configured inputs:
 
 ```bash
 docker compose -f hpc/urban_syn/compose.yaml run --rm joint \
@@ -47,7 +65,7 @@ docker compose -f hpc/urban_syn/compose.yaml run --rm joint \
   --config configs/experiments/nyc_joint.yaml --validate-only
 ```
 
-Run your selected experiment:
+Execute the pipeline:
 
 ```bash
 docker compose -f hpc/urban_syn/compose.yaml run --rm joint \
@@ -55,43 +73,84 @@ docker compose -f hpc/urban_syn/compose.yaml run --rm joint \
   --config configs/experiments/nyc_joint.yaml
 ```
 
-Other supported targets are `validate`, `train`, `generate`, and `export-eval`. Experiment settings, MLflow storage, and checkpoint behavior are controlled by the **existing experiment YAML**, not Compose. Container commands intentionally call `python` directly rather than `uv run`, to avoid syncing your mounted development `.venv` or mutating the image's locked environment.
+You can replace `all` with `prepare-graph`, `train`, `generate`, or another supported target. All experiment settings remain in the YAML, including MLflow storage and checkpoint choice. We invoke the image's `python` directly, rather than running `uv sync` or `uv run` inside the container.
 
-On Linux, the Compose service defaults to UID/GID `1000:1000` to avoid root-owned host output files. If needed, set `LOCAL_UID` and `LOCAL_GID` to your host user/group IDs. Compose GPU access requires the NVIDIA Container Toolkit (or equivalent Docker GPU support).
+**Note for Windows and Dev Containers:** Docker bind mounts are resolved by the Docker daemon. Run these Compose commands from the host repository directory if a nested container would point the mount at the wrong location.
 
-## 3. Local image → HPC → Apptainer
+## 3. Export the image and upload it to HPC
 
-Once local checks work, export the built image to a **directory outside the repository**:
+We use the same approach as our previous baselines: **save the Docker image as an uncompressed TAR locally, upload it, then convert it to a SIF on a CPU compute node**. The TAR holds the image, not a snapshot of a running container.
 
-```bash
-mkdir -p ../container_exports
-docker save urban-syn-joint:cu118 | gzip -1 > ../container_exports/urban-syn-joint-cu118.tar.gz
-```
-
-Upload that archive to HPC with your usual file-transfer tool. On HPC, where Apptainer is available, convert the uploaded archive:
+On your local computer:
 
 ```bash
-apptainer build urban-syn-joint-cu118.sif \
-  docker-archive:urban-syn-joint-cu118.tar.gz
+mkdir -p ./container_exports
+
+docker save -o ./container_exports/urban-syn-hpc.tar \
+  urban-syn-joint:cu118
 ```
 
-Apptainer accepts gzip-compressed Docker archives. Ensure the conversion directory and `APPTAINER_TMPDIR` have sufficient free space; this image includes large PyTorch wheels. If you use another location for the archive, use its absolute path after `docker-archive:`.
-
-On a **GPU compute node**, a basic check will look like:
+Upload it to your HPC account, replacing the hostname and user as necessary. Create `~/containers/` on HPC beforehand if it does not already exist:
 
 ```bash
-apptainer exec --nv --cleanenv \
-  --bind /path/to/URBAN-SYN:/workspace \
-  urban-syn-joint-cu118.sif \
-  python -c "import torch; print('GPU ready:', torch.cuda.is_available())"
+scp ./container_exports/urban-syn-hpc.tar \
+  USER@HPC_HOST:~/containers/
 ```
 
-Use your actual mounted repository path. The final GPU execution, resource requests, persistent storage paths, and monitoring will be handled in the **next Stage 4 step (Slurm runner)**. A successful local Docker check does not yet establish HPC driver compatibility.
+On the HPC login node, request a CPU allocation for image conversion. Do not perform the build on the login node:
 
-## Design notes
+```bash
+srun \
+  --partition=defq \
+  --nodes=1 \
+  --ntasks=1 \
+  --cpus-per-task=2 \
+  --mem=8G \
+  --time=01:00:00 \
+  --pty bash
+```
 
-- **No source/data duplication:** the same YAML and Python stages work in local Docker and HPC Apptainer.
-- **No runtime package installs:** Slurm jobs run the image's installed `/opt/venv/bin/python`.
-- **No new trainer:** container and job scripts invoke `python -m urban_syn.experiment <target> --config <yaml>`.
-- **CUDA:** the project specifies PyTorch `cu118` wheels. The base is a small Python image rather than a second CUDA runtime image; NVIDIA's host driver is exposed through Docker GPU support / Apptainer `--nv`.
-- **Persistence:** experiment outputs and MLflow data are written to paths in the bind-mounted repository according to the YAML.
+Inside the allocated CPU node:
+
+```bash
+apptainer build \
+  "$HOME/containers/urban-syn.sif" \
+  "docker-archive:$HOME/containers/urban-syn-hpc.tar"
+```
+
+Check Python and PyTorch after the build:
+
+```bash
+apptainer exec "$HOME/containers/urban-syn.sif" \
+  /opt/venv/bin/python -c "import torch; print(torch.__version__)"
+```
+
+The image can now be used for GPU jobs by passing `--nv` at execution time. For an interactive GPU check, first allocate a GPU node through Slurm, then use:
+
+```bash
+apptainer exec --nv "$HOME/containers/urban-syn.sif" \
+  /opt/venv/bin/python -c "import torch; print(torch.cuda.is_available())"
+```
+
+Exit the temporary allocation when finished. Keep the TAR until the SIF is verified; afterward it can be removed to save space. Rebuilding the SIF is only needed when the image contents, such as installed dependencies, change.
+
+## 4. Run the project on HPC
+
+The Slurm runner bind-mounts the HPC repository checkout into `/workspace`, exposes the GPU with Apptainer `--nv`, and runs the same `urban_syn.experiment` commands used locally.
+
+```bash
+bash hpc/urban_syn/submit.sh all \
+  configs/experiments/nyc_joint.yaml
+```
+
+Before the job starts, the HPC checkout must contain the necessary **input artifacts**, including the prepared road-sequence Parquet, source road GeoPackage, generation length distribution, and training FMM matches if the graph's transition-count feature needs them. The processed `road_graph.pt` and `preprocessor.joblib` do **not** have to be uploaded: the `prepare-graph` stage builds them when missing.
+
+For the train/test split and data conversion procedure, see the [experiment README](../../src/urban_syn/experiment/README.md). For resource overrides, generation-only runs, and job logs, see [README_SLURM.md](README_SLURM.md). To inspect experiments on your desktop, see [README_MLFLOW.md](README_MLFLOW.md).
+
+## Design principles
+
+- **One environment for the model:** future GNN or diffusion changes reuse this image as long as the dependencies remain compatible.
+- **One experiment runner:** Docker and Slurm invoke the same Python pipeline; there is no second trainer.
+- **Reproducible packages:** locked dependencies live inside the image, not in the mounted project `.venv`.
+- **Persistent outputs:** checkpoints, generated trajectories, and MLflow records are written outside the immutable SIF.
+- **Separate development tools:** VS Code's Dev Container continues to work independently.

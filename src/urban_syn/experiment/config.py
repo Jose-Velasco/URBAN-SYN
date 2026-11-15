@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -87,12 +87,61 @@ class OptimizerSettings(_Settings):
     weight_decay: float = Field(default=0.01, ge=0, allow_inf_nan=False)
 
 
+NonNegativeLearningRate = Annotated[float, Field(ge=0, allow_inf_nan=False)]
+
+
 class SchedulerSettings(_Settings):
-    """Scheduler selection. Training implementation will interpret parameters."""
+    """Configure an epoch-level learning-rate scheduler.
+
+    ReduceLROnPlateau options follow PyTorch's constructor. The deprecated
+    ``patience_epochs`` key is accepted in older YAML files and normalized to
+    ``patience`` so existing experiments keep their original behavior.
+    """
 
     name: Literal["none", "cosine", "reduce_on_plateau"] = "none"
-    min_lr: float = Field(default=0.0, ge=0, allow_inf_nan=False)
-    patience_epochs: int = Field(default=5, ge=1)
+    min_lr: NonNegativeLearningRate | list[NonNegativeLearningRate] = 0.0
+
+    # ReduceLROnPlateau settings (ignored when the scheduler is not selected).
+    mode: Literal["min", "max"] = "min"
+    factor: float = Field(default=0.1, gt=0, lt=1, allow_inf_nan=False)
+    patience: int = Field(default=5, ge=0)
+    threshold: float = Field(default=1e-4, ge=0, allow_inf_nan=False)
+    threshold_mode: Literal["rel", "abs"] = "rel"
+    cooldown: int = Field(default=0, ge=0)
+    eps: float = Field(default=1e-8, ge=0, allow_inf_nan=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_patience(cls, value: Any) -> Any:
+        """Accept older ``patience_epochs`` configs without duplicate settings.
+
+        Parameters
+        ----------
+        value : Any
+            Incoming scheduler settings.
+
+        Returns
+        -------
+        Any
+            Settings with the legacy key migrated, if present.
+        """
+        if not isinstance(value, dict) or "patience_epochs" not in value:
+            return value
+        if "patience" in value:
+            raise ValueError("Specify either scheduler.patience or patience_epochs, not both.")
+        migrated = dict(value)
+        migrated["patience"] = migrated.pop("patience_epochs")
+        return migrated
+
+    @model_validator(mode="after")
+    def validate_min_lr_shape(self) -> Self:
+        """Restrict cosine annealing to one scalar minimum learning rate."""
+        if isinstance(self.min_lr, list):
+            if not self.min_lr:
+                raise ValueError("scheduler.min_lr list cannot be empty.")
+            if self.name == "cosine":
+                raise ValueError("cosine scheduler requires a scalar min_lr.")
+        return self
 
 
 class WeightedLossSettings(_Settings):
@@ -192,8 +241,10 @@ class TrainingExperimentSettings(_Settings):
     def validate_checkpoint_monitor(self) -> Self:
         if self.checkpoint.monitor == "val_loss" and not self.validation.enabled:
             raise ValueError("checkpoint.monitor=val_loss requires validation.enabled=true.")
-        if self.scheduler.min_lr >= self.optimizer.learning_rate and self.scheduler.name == "cosine":
-            raise ValueError("cosine scheduler min_lr must be smaller than optimizer.learning_rate.")
+        if self.scheduler.name == "cosine":
+            # Scalar min_lr is guaranteed by SchedulerSettings validation.
+            if self.scheduler.min_lr >= self.optimizer.learning_rate:
+                raise ValueError("cosine scheduler min_lr must be smaller than optimizer.learning_rate.")
         return self
 
 
@@ -221,7 +272,7 @@ class TrackingSettings(_Settings):
     # None delegates to MLFLOW_TRACKING_URI or a runtime-specific default.
     tracking_uri: str | None = None
     # Choose the default local SQLite layout when no explicit URI is provided.
-    # A job-specific directory is used only when SLURM_JOB_ID is present.
+    # Shared SQLite is the default; job scope isolates Slurm jobs when selected.
     storage_scope: Literal["job", "shared"] = "shared"
     experiment_name: str = Field(default="gnn_diff_rntraj_nyc", min_length=1)
     run_name: str | None = None

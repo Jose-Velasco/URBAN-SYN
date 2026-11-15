@@ -301,3 +301,4 @@ baselines/diffusion/difftraj/logs/
 
 ### urban_syn model ###
 container_exports/
+hpc_mlflow_snapshot/

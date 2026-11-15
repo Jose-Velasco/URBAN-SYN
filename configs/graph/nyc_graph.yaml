@@ -114,11 +114,11 @@ model:
     # - laplacian_edge_features
 
   gnn:
-    architecture: gine  # gatv2 | gine
+    architecture: gatv2  # gatv2 | gine
 
-    hidden_dim: 128
+    hidden_dim: 256
     output_dim: 128
-    num_layers: 2
+    num_layers: 3
     dropout: 0.1
     activation: relu
     normalization: layer  # layer | batch | none
@@ -135,8 +135,8 @@ model:
       train_eps: true
       eps: 0.0
       mlp:
-        hidden_dim: 128
-        num_layers: 2
+        hidden_dim: 256
+        num_layers: 3
         activation: relu
         dropout: 0.1
         normalization: layer_norm

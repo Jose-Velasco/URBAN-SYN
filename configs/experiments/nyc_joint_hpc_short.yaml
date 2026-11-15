@@ -69,7 +69,8 @@ training:
     split_group_columns: [uid, tid]
 
   checkpoint:
-    monitor: auto  # Uses training objective when validation is disabled.
+    # Uses training objective when validation is disabled. 
+    monitor: auto  # auto | train_loss | val_loss
     save_last: true
     save_best: true
     every_epochs: 1

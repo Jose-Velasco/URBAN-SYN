@@ -156,9 +156,25 @@ def build_scheduler(
     if settings.name == "none":
         return None
     if settings.name == "cosine":
+        if isinstance(settings.min_lr, list):
+            raise ValueError("cosine scheduler requires a scalar min_lr.")
         return CosineAnnealingLR(optimizer, T_max=epochs, eta_min=settings.min_lr)
     if settings.name == "reduce_on_plateau":
-        return ReduceLROnPlateau(optimizer, mode="min", patience=settings.patience_epochs)
+        if isinstance(settings.min_lr, list) and len(settings.min_lr) != len(optimizer.param_groups):
+            raise ValueError(
+                "reduce_on_plateau min_lr list must contain one value per optimizer parameter group."
+            )
+        return ReduceLROnPlateau(
+            optimizer,
+            mode=settings.mode,
+            factor=settings.factor,
+            patience=settings.patience,
+            threshold=settings.threshold,
+            threshold_mode=settings.threshold_mode,
+            cooldown=settings.cooldown,
+            min_lr=settings.min_lr,
+            eps=settings.eps
+        )
     raise ValueError(f"Unsupported scheduler: {settings.name!r}")
 
 

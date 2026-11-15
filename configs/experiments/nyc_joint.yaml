@@ -1,114 +1,138 @@
-# V1: joint training with trainable GNN road embeddings.
-# Run from the URBAN-SYN repository root (Docker/Apptainer: /workspace).
-# The graph YAML supplies graph/GNN settings. Diff-RNTraj settings live HERE.
+# URBAN-SYN joint GNN + Diff-RNTraj experiment.
+# Run from the repository root. Relative paths resolve from that root.
+# Graph features, preprocessing, and GNN architecture are configured separately
+# in configs/graph/nyc_graph.yaml.
+#
+# Local: uv run python -m urban_syn.experiment all --config configs/experiments/nyc_joint.yaml
+# HPC:   bash hpc/urban_syn/submit.sh all configs/experiments/nyc_joint.yaml
+#
+# Review the training and generation budgets before starting a long HPC run.
+
 experiment:
-  name: nyc_joint_gnn_v1
-  seed: 101
+  name: nyc_joint_gnn_v1          # Output folder name; each new run gets a unique run ID.
+  seed: 101                      # Random seed for training and generation.
+
 
 paths:
-  graph_config: configs/graph/nyc_graph.yaml
+  graph_config: configs/graph/nyc_graph.yaml  # Road features, graph transforms, and GNN architecture.
   train_sequences: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_train_prepared_road_sequences.parquet
   test_sequences: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_test_prepared_road_sequences.parquet
-  trip_id_map: fmm_scripts/data/nyc_15s_fmm_trip_id_map.csv
-  road_network: fmm_scripts/data/road_network/nyc.gpkg
+  trip_id_map: fmm_scripts/data/nyc_15s_fmm_trip_id_map.csv  # Original identities used for grouped validation.
+  road_network: fmm_scripts/data/road_network/nyc.gpkg       # Road geometry for graph building and GPS reconstruction.
   length_distribution: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_train_length_distribution.npy
-  # Must be confirmed with Yun's evaluator before enabling evaluator handoff.
-  test_reference_gps: null
-  output_root: outputs/experiments
+  test_reference_gps: null       # Set only when a compatible held-out GPS reference is ready for evaluator handoff.
+  output_root: outputs/experiments  # Per-run checkpoints, metrics, generated files, and default MLflow storage.
+
 
 model:
-  # Diff-RNTraj hyperparameters are owned by this experiment (not graph YAML).
-  # Values below match current DiffusionSettings defaults; check your prior
-  # smoke-test YAML before committing to a controlled training comparison.
   diffusion:
-    hidden_dim: 128
-    residual_layers: 10
-    diffusion_steps: 500
-    beta_start: 0.0001
-    beta_end: 0.02
-    similarity_chunk_size: 128
-
+    hidden_dim: 512              # Diffusion denoiser hidden width (even integer >= 4).
+    residual_layers: 10          # Number of denoising residual blocks.
+    diffusion_steps: 1000         # Noise schedule length; DDPM sampling uses this same schedule.
+    beta_start: 0.0001           # First diffusion noise variance.
+    beta_end: 0.02               # Final diffusion noise variance (>= beta_start).
+    similarity_chunk_size: 2048   # Road-similarity scoring chunk size; lower if GPU memory is tight.
   road_encoder:
-    mode: joint
+    mode: joint                  # Supported: joint. GNN and denoiser are updated together.
   conditioning:
-    enabled: false
+    enabled: false              # Must remain false until Jessica's conditioning integration is implemented.
+
 
 training:
-  # epochs: 30
-  epochs: 3
-  # batch_size: 32
-  batch_size: 16
-  # For a debug/smoke-test, set training.max_batches to a small number
-  max_batches: 3 
-  # max_batches: null
-  grad_clip_norm: 1.0
+  epochs: 1000                     # Full training epochs; adjust for the planned HPC experiment.
+  batch_size: 256                 # Trajectories per batch; reduce if GPU memory is insufficient.
+  max_batches: null             # null = use all training batches each epoch; integer = limit per epoch.
+  grad_clip_norm: 1.0           # Clip total gradient norm before updating weights.
 
   optimizer:
-    name: adamw
-    learning_rate: 0.001
-    weight_decay: 0.01
+    name: adamw                  # Supported: adam | adamw.
+    learning_rate: 0.001        # Initial learning rate.
+    weight_decay: 0.01          # Weight-decay regularization.
 
   scheduler:
-    name: none
+    name: reduce_on_plateau                   # Supported: none | cosine | reduce_on_plateau.
+    mode: min
+    factor: 0.5
+    threshold: 0.0001
+    threshold_mode: rel
+    cooldown: 0
+    min_lr: 0.000001                 # Used by cosine; must be below optimizer learning_rate.
+    patience_epochs: 10         # Used by reduce_on_plateau.
+    eps: 1.0e-8
 
   losses:
     noise_mse:
-      enabled: true
-      weight: 1.0
-      include_in_total: true
+      enabled: true             # Predict the noise added during forward diffusion.
+      weight: 1.0               # Contribution multiplier when included in total objective.
+      include_in_total: true    # Include in reported objective and gradient-bearing optimization.
+      every_steps: 1           # Must be 1 when included in the objective.
     reconstruction_mse:
-      enabled: true
+      enabled: true             # Reconstruct clean road embeddings.
       weight: 1.0
       include_in_total: true
+      every_steps: 1
     hard_connectivity:
-      enabled: true
+      enabled: true             # Count invalid transitions between predicted road segments.
       weight: 1.0
-      include_in_total: true   # Preserve original reported three-term objective.
-      every_steps: 1          # Needed when included in the total.
+      include_in_total: true    # Included in reported total and best-checkpoint selection.
+      every_steps: 1           # Non-differentiable: contributes no gradients.
 
   validation:
-  # validation enabled, the best checkpoint is selected using a validation split from the training dataset
-  # otherwise, it uses the full training with no validation split 
-    enabled: false
-    fraction: 0.1
-    split_group_columns: [uid, tid]
+    enabled: false               # true | false Hold out part of the *training* split, not the final test split.
+    fraction: 0.1               # Fraction reserved for validation (0 < fraction < 1).
+    split_group_columns: [uid, tid]  # Required grouping; keep trip pieces together.
 
   checkpoint:
-    monitor: auto     # validation loss when enabled, training loss otherwise
-    save_last: true
-    save_best: true
-    every_epochs: 1
-    resume_from: null
+    monitor: auto               # Supported: auto | train_loss | val_loss.
+                                # auto uses val/objective with validation, otherwise train/objective.
+    save_last: true             # Save latest weights and optimizer state for resuming.
+    save_best: true             # Save checkpoint minimizing the monitored total objective.
+    every_epochs: 100            # Save a numbered checkpoint every N epochs; adjust for disk usage.
+    resume_from: null          # null = new run; set a last.pt path to continue a previous run.
+
+generation:
+  enabled: true                 # Include generation in the 'all' target.
+  checkpoint: null             # null = use a checkpoint from this training run.
+                                # For standalone 'generate', specify a compatible .pt path.
+  checkpoint_choice: best      # Supported: best | last.
+  road_layer: roads            # GeoPackage layer containing road geometries.
+  output_name: nyc_generated_gps.parquet  # Filename inside the run's generated/ directory.
+  num_trajectories: null         # Positive integer; null uses counts from the training length distribution.
+  batch_size: 16                # Number of trajectories sampled per generation batch.
+  sampler:
+    name: ddpm                 # Only supported sampler currently: ddpm.
+
 
 tracking:
-  enabled: true
-  provider: mlflow
-  tracking_uri: null  # Resolve via MLFLOW_TRACKING_URI / runtime default.
-  experiment_name: gnn_diff_rntraj_nyc
-  run_name: null
-  tags:
+  enabled: true                 # Disable MLflow if desired; JSONL metrics and checkpoints still save.
+  provider: mlflow              # Currently supported provider: mlflow.
+  tracking_uri: null           # null = automatic local SQLite backend; an explicit URI overrides storage_scope.
+  storage_scope: shared        # Supported: shared | job. Shared is convenient for sequential run comparisons.
+  experiment_name: gnn_urban_syn_joint_road_embed_nyc  # MLflow grouping for related runs.
+  run_name: null               # null = automatically named; set a label if helpful.
+  tags:                        # String labels for searching and filtering runs.
     dataset: nyc_15s_enriched_moves
-    model: gnn_diff_rntraj
+    model: gnn_urban_syn_joint
     training_strategy: joint
+    conditioning: none
+    losses: nose_cleanX_oldSpatial
+    road_embedding_training: end2end
+
   logging:
-    metrics_every_steps: 100
-    log_system_metrics: false
-    log_resolved_config: true
-    log_git_info: true
+    metrics_every_steps: 100        # Frequency of step-level MLflow metric logging. (batches, not epochs)
+    gnn_diagnostics_every_steps: 100  # Frequency of GNN/denoiser gradient diagnostics.
+    gnn_embedding_probe_size: 256  # Fixed road subset for eval-mode embedding drift at checkpoints.
+    log_system_metrics: true      # Slurm runner collects separate CPU/GPU resource logs.
+    log_resolved_config: true      # Save the settings used by this run.
+    log_git_info: true             # Record Git revision information where available.
+
   artifacts:
-    log_best_checkpoint: true
-    log_last_checkpoint: false
+    log_best_checkpoint: true       # Copy best.pt into MLflow artifacts.
+    log_last_checkpoint: false      # Avoid duplicating another potentially large checkpoint.
     log_generated_trajectories: true
     log_training_logs: true
 
-generation:
-  enabled: false  # Enable once training/generation orchestration is implemented.
-  num_trajectories: null
-  batch_size: 2
-  sampler:
-    name: ddpm  # Only implemented sampler; uses the trained diffusion schedule.
-
 runtime:
-  device: auto
-  precision: fp32
-  num_workers: 4
+  device: cuda                  # Supported: auto | cpu | cuda.
+  precision: fp32              # Only supported precision currently: fp32.
+  num_workers: 4               # DataLoader workers; set 0 if multiprocessing causes issues.
