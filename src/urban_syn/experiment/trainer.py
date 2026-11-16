@@ -33,7 +33,12 @@ from .checkpoint import (
 )
 from .config import ResolvedExperimentConfig
 from .datasets import DatasetSplit, build_epoch_loader, load_training_dataset
-from .diagnostics import EmbeddingProbe, gradient_norm
+from .diagnostics import (
+    EmbeddingProbe,
+    gradient_norm,
+    should_log_gradient_diagnostics,
+    should_probe_epoch,
+)
 from .factories import TrainingComponents, build_loss_composer, build_training_components, step_scheduler
 from .tracking import ExperimentTracker, TrackingRun
 
@@ -271,7 +276,7 @@ def run_epoch(
     run : TrackingRun | None, default=None
         Optional tracker run for step-level metrics.
     gnn_diagnostics_every_steps : int, default=100
-        Frequency of optional GNN diagnostics, in optimizer steps.
+        Frequency of optional gradient diagnostics, in optimizer steps; 0 disables.
 
     Returns
     -------
@@ -308,7 +313,7 @@ def run_epoch(
                 losses.total.backward()
                 if global_step == 0:
                     _assert_joint_gradients(model)
-                if (global_step + 1) % gnn_diagnostics_every_steps == 0 or global_step == 0:
+                if should_log_gradient_diagnostics(global_step + 1, gnn_diagnostics_every_steps):
                     diagnostic_metrics = {
                         "train/gnn_grad_norm": gradient_norm(model.road_encoder),
                         "train/denoiser_grad_norm": gradient_norm(model.diff_model)
@@ -425,13 +430,14 @@ def _train_epochs(
     best_loss = float(restored["best_loss"]) if restored else math.inf
     best_epoch = int(restored["best_epoch"]) if restored else 0
     run.set_tags({"checkpoint_monitor": monitor})
-    embedding_probe = EmbeddingProbe(
-        settings.tracking.logging.gnn_embedding_probe_size,
-        settings.experiment.seed
+    diagnostic_logging = settings.tracking.logging
+    embedding_probe = (
+        EmbeddingProbe(diagnostic_logging.gnn_embedding_probe_size, settings.experiment.seed)
+        if diagnostic_logging.gnn_embedding_enabled else None
     )
-    # Capture the initial/restored model as the comparison baseline, without
-    # changing its training mode or consuming the training random stream.
-    embedding_probe.observe(components.model, components.graph)
+    if embedding_probe is not None:
+        # The initial/restored snapshot is only a reference, not a logged epoch.
+        embedding_probe.observe(components.model, components.graph)
 
     for epoch in range(start_epoch, training.epochs + 1):
         train_batches = build_epoch_loader(
@@ -490,15 +496,10 @@ def _train_epochs(
             best_loss = monitored_loss
             best_epoch = epoch
 
-        # Observe only when at least one checkpoint will be saved. This adds
-        # one no-gradient full-graph GNN forward per selected epoch, not per
-        # training batch, and measures the actual post-optimization weights.
-        checkpoint_due = (
-            (improved and training.checkpoint.save_best)
-            or training.checkpoint.save_last
-            or epoch % training.checkpoint.every_epochs == 0
-        )
-        if checkpoint_due:
+        # Embedding diagnostics are scheduled independently of all checkpoint files.
+        if embedding_probe is not None and should_probe_epoch(
+            epoch, enabled=True, every_epochs=diagnostic_logging.gnn_embedding_every_epochs
+        ):
             metrics.update(embedding_probe.observe(components.model, components.graph))
 
         _record_epoch_metrics(run_dir / "metrics" / "history.jsonl", epoch, global_step, metrics)

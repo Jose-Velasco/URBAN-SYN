@@ -9,7 +9,7 @@
 # Review the training and generation budgets before starting a long HPC run.
 
 experiment:
-  name: nyc_joint_gnn_v1          # Output folder name; each new run gets a unique run ID.
+  name: nyc_joint_gnn_v1          # Output folder name; each new run gets a unique run ID. # Unique output folder for this experiment.
   seed: 101                      # Random seed for training and generation.
 
 
@@ -87,7 +87,7 @@ training:
   checkpoint:
     monitor: auto               # Supported: auto | train_loss | val_loss.
                                 # auto uses val/objective with validation, otherwise train/objective.
-    save_last: true             # Save latest weights and optimizer state for resuming.
+    save_last: false             # Save latest weights and optimizer state for resuming. saves model after every epoch in last.pt
     save_best: true             # Save checkpoint minimizing the monitored total objective.
     every_epochs: 100           # Save a numbered checkpoint every N epochs; adjust for disk usage.
     resume_from: null           # null = new run; set a last.pt path to continue a previous run.
@@ -110,19 +110,23 @@ tracking:
   provider: mlflow                                     # Currently supported provider: mlflow.
   tracking_uri: null                                   # null = automatic local SQLite backend; an explicit URI overrides storage_scope.
   storage_scope: shared                                # Supported: shared | job. Shared is convenient for sequential run comparisons.
+
+  # MLflow groups runs with this name for comparison. Reuse across related experiments; use the same tracking database.
   experiment_name: gnn_urban_syn_joint_road_embed_nyc  # MLflow grouping for related runs.
-  run_name: null                                       # null = automatically named; set a label if helpful.
+  run_name: null                                       # null = automatically named; set a label if helpful. # Optional descriptive run name. example no_spatial_loss_1000ep
   tags:                                                # String labels for searching and filtering runs.
-    dataset: nyc_15s_enriched_moves           # <-- change this when doing conditioning version its only for tagging so not critical if for get
-    model: gnn_urban_syn_joint                # <-- change this when doing conditioning version its only for tagging so not critical if for get
-    training_strategy: joint                  # <-- change this when doing conditioning version its only for tagging so not critical if for get
-    conditioning: none                        # <-- change this when doing conditioning version its only for tagging so not critical if for get
-    losses: nose_cleanX_oldSpatial            # <-- change this when doing conditioning version its only for tagging so not critical if for get
-    road_embedding_training: end2end          # <-- change this when doing conditioning version its only for tagging so not critical if for get
+    dataset: nyc_15s_enriched_moves           # ideally update to help with mlflow
+    model: gnn_urban_syn_joint                # ideally update to help with mlflow
+    training_strategy: joint                  # ideally update to help with mlflow
+    conditioning: none                        # ideally update to help with mlflow
+    losses: nose_cleanX_oldSpatial            # ideally update to help with mlflow
+    road_embedding_training: end2end          # ideally update to help with mlflow
 
   logging:
-    metrics_every_steps: 100              # Frequency of step-level MLflow metric logging. (batches, not epochs)
-    gnn_diagnostics_every_steps: 100      # Frequency of GNN/denoiser gradient diagnostics.
+    metrics_every_steps: 150              # Frequency of step-level MLflow metric logging. (batches, not epochs)
+    gnn_diagnostics_every_steps: 500     # Frequency of GNN/denoiser gradient diagnostics.  0 disables branch gradient diagnostics.
+    gnn_embedding_enabled: true           # false disables embedding diagnostics.
+    gnn_embedding_every_epochs: 10        # Probe every 10 epochs, independent of checkpoints.
     gnn_embedding_probe_size: 256         # Fixed road subset for eval-mode embedding drift at checkpoints.
     log_system_metrics: true              # Slurm runner collects separate CPU/GPU resource logs.
     log_resolved_config: true             # Save the settings used by this run.

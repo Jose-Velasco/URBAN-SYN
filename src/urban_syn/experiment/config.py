@@ -250,7 +250,11 @@ class TrainingExperimentSettings(_Settings):
 
 class TrackingLoggingSettings(_Settings):
     metrics_every_steps: int = Field(default=100, ge=1)
-    gnn_diagnostics_every_steps: int = Field(default=100, ge=1)
+    # 0 disables gradient diagnostics. Step metrics remain unaffected.
+    gnn_diagnostics_every_steps: int = Field(default=100, ge=0)
+    # Embedding diagnostics have their own cadence, independent of checkpoint writes.
+    gnn_embedding_enabled: bool = True
+    gnn_embedding_every_epochs: int = Field(default=1, ge=1)
     gnn_embedding_probe_size: int = Field(default=128, ge=1)
     log_system_metrics: bool = False
     log_resolved_config: bool = True

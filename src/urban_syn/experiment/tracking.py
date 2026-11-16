@@ -445,6 +445,39 @@ def _git_info(project_root: Path) -> dict[str, str]:
     return tags
 
 
+def build_config_tags(config: ResolvedExperimentConfig) -> dict[str, str]:
+    """Create compact, searchable tags from the resolved model configuration.
+
+    Tag names are stable and do not depend on manually authored run labels.
+    Only enabled losses with nonzero weight contribute to the active objective.
+    """
+    experiment = config.settings
+    losses = experiment.training.losses
+    choices = (
+        ("noise_mse", losses.noise_mse),
+        ("reconstruction_mse", losses.reconstruction_mse),
+        ("hard_connectivity", losses.hard_connectivity),
+    )
+    included = [
+        name for name, choice in choices
+        if choice.enabled and choice.include_in_total and choice.weight > 0
+    ]
+    diagnostic = [
+        name for name, choice in choices
+        if choice.enabled and not (choice.include_in_total and choice.weight > 0)
+    ]
+    return {
+        "gnn.architecture": str(config.joint_settings.gnn.architecture),
+        "road_encoder.mode": experiment.model.road_encoder.mode,
+        "losses.in_total": ",".join(included),
+        "losses.diagnostic_only": ",".join(diagnostic),
+        "optimizer": experiment.training.optimizer.name,
+        "scheduler": experiment.training.scheduler.name,
+        "validation.enabled": str(experiment.training.validation.enabled).lower(),
+        "conditioning.enabled": str(experiment.model.conditioning.enabled).lower(),
+    }
+
+
 class MLflowTracker:
     """Manage MLflow runs; handle backend matching and resume internally.
 
@@ -510,7 +543,9 @@ class MLflowTracker:
         dict[str, str]
             Run tags populated from configuration and available runtime data.
         """
+        # Derived configuration tags take precedence over manually supplied labels.
         tags = dict(self.config.settings.tracking.tags)
+        tags.update(build_config_tags(self.config))
         tags["experiment_config"] = self.config.settings.experiment.name
         tags["mlflow_storage_scope"] = self.config.settings.tracking.storage_scope
         for environment, tag in (

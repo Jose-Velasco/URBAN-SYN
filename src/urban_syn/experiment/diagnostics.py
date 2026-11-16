@@ -1,11 +1,13 @@
-"""GNN gradient and deterministic road-embedding diagnostics.
+"""Read-only gradient and fixed-road embedding diagnostics.
 
-Gradient norms are measured from existing backpropagation results. Embedding
-measurements use a fixed road subset from a full-graph encoder pass in eval
-mode, so training dropout does not inflate observed representation drift.
+The probe owns deterministic road selection and one evaluation-mode graph pass.
+Injected metrics compute scalar measurements from the same selected embeddings.
 """
 
 from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import Protocol
 
 import torch
 import torch.nn.functional as F
@@ -13,19 +15,11 @@ from torch import Tensor, nn
 from torch_geometric.data import Data
 
 
+_METRIC_PREFIX = "train/gnn_embedding_"
+
+
 def gradient_norm(module: nn.Module) -> float:
-    """Measure the Euclidean gradient norm of one model branch.
-
-    Parameters
-    ----------
-    module : nn.Module
-        Trainable submodule after backward() and before gradient clipping.
-
-    Returns
-    -------
-    float
-        Norm of the available parameter gradients, or zero if none exist.
-    """
+    """Return the Euclidean norm of existing parameter gradients, or zero."""
     norms = [
         parameter.grad.detach().float().norm(2)
         for parameter in module.parameters()
@@ -36,89 +30,159 @@ def gradient_norm(module: nn.Module) -> float:
     return float(torch.linalg.vector_norm(torch.stack(norms)).item())
 
 
-class EmbeddingProbe:
-    """Compare fixed road representations at successive model snapshots.
+def should_log_gradient_diagnostics(step: int, every_steps: int) -> bool:
+    """Select the first optimizer step and subsequent scheduled steps.
 
-    The same non-padding road indices are sampled deterministically. Every
-    observation computes embeddings from the full graph with the road encoder
-    in eval mode, then restores its previous train/eval state. A baseline
-    observation can be taken immediately before training or after a resume.
+    A frequency of zero disables these diagnostics entirely.
+    ``step`` is the next completed optimizer-step number (1-based).
+    """
+    return every_steps > 0 and (step == 1 or step % every_steps == 0)
+
+
+def should_probe_epoch(epoch: int, enabled: bool, every_epochs: int) -> bool:
+    """Decide whether a completed epoch needs a full-graph probe."""
+    return enabled and epoch > 0 and every_epochs > 0 and epoch % every_epochs == 0
+
+
+class EmbeddingMetric(Protocol):
+    """Stateless strategy for computing metrics from fixed road embeddings."""
+
+    def compute(self, current: Tensor, previous: Tensor | None) -> dict[str, float]:
+        """Return scalar metrics; ``previous`` is the preceding observation."""
+        ...
+
+
+class NormStatistics:
+    """Mean and population standard deviation of per-road embedding norms."""
+
+    def compute(self, current: Tensor, previous: Tensor | None) -> dict[str, float]:
+        """Measure representation magnitudes at the current observation."""
+        norms = torch.linalg.vector_norm(current, dim=-1)
+        return {
+            f"{_METRIC_PREFIX}norm_mean": float(norms.mean().item()),
+            f"{_METRIC_PREFIX}norm_std": float(norms.std(unbiased=False).item()),
+        }
+
+
+class CosineDrift:
+    """Mean directional change in each road embedding since last observation."""
+
+    def compute(self, current: Tensor, previous: Tensor | None) -> dict[str, float]:
+        """Return no metric for the first observation without a reference."""
+        if previous is None:
+            return {}
+        current_norms = torch.linalg.vector_norm(current, dim=-1)
+        previous_norms = torch.linalg.vector_norm(previous, dim=-1)
+        cosine = F.cosine_similarity(current, previous, dim=-1, eps=1e-8)
+        both_zero = (current_norms <= 1e-8) & (previous_norms <= 1e-8)
+        cosine = torch.where(both_zero, torch.ones_like(cosine), cosine)
+        return {
+            f"{_METRIC_PREFIX}cosine_drift": float((1 - cosine).clamp_min(0).mean().item())
+        }
+
+
+class L2Drift:
+    """Mean Euclidean movement per road since the previous observation."""
+
+    def compute(self, current: Tensor, previous: Tensor | None) -> dict[str, float]:
+        """Return no drift until an earlier observation exists."""
+        if previous is None:
+            return {}
+        distances = torch.linalg.vector_norm(current - previous, dim=-1)
+        return {f"{_METRIC_PREFIX}l2_drift": float(distances.mean().item())}
+
+
+class PairwiseSimilarity:
+    """Cosine similarity between distinct, sampled non-padding road embeddings.
+
+    Only the upper triangle is used, excluding self-similarity. The high
+    similarity fraction counts pairs whose cosine similarity exceeds 0.99.
     """
 
-    def __init__(self, sample_size: int, seed: int):
-        """Initialize the fixed road selection and comparison state.
+    def __init__(self, high_threshold: float = 0.99):
+        """Set the high-similarity threshold for the pairwise diagnostic."""
+        if not -1.0 <= high_threshold <= 1.0:
+            raise ValueError("high_threshold must lie between -1 and 1.")
+        self.high_threshold = high_threshold
 
-        Parameters
-        ----------
-        sample_size : int
-            Maximum number of non-padding road embeddings to compare.
-        seed : int
-            Seed for road selection, independent of the training random state.
-        """
+    def compute(self, current: Tensor, previous: Tensor | None) -> dict[str, float]:
+        """Measure similarities across different sampled road segments."""
+        if current.shape[0] < 2:
+            return {}
+        # Normalization removes the effect of absolute embedding scale.
+        normalized = F.normalize(current, dim=-1, eps=1e-8)
+        similarity = normalized @ normalized.T
+        row, column = torch.triu_indices(current.shape[0], current.shape[0], offset=1)
+        pairs = similarity[row, column]
+        return {
+            "train/gnn_pairwise_cosine_mean": float(pairs.mean().item()),
+            "train/gnn_pairwise_cosine_high_fraction": float(
+                (pairs > self.high_threshold).float().mean().item()
+            ),
+        }
+
+
+def default_embedding_metrics() -> tuple[EmbeddingMetric, ...]:
+    """Provide a default suite while allowing different strategies to be injected."""
+    return (NormStatistics(), CosineDrift(), L2Drift(), PairwiseSimilarity())
+
+
+class EmbeddingProbe:
+    """Compute injected diagnostics using a deterministic subset of road IDs.
+
+    A single full-graph GNN pass supplies all metric strategies. The result is
+    retained on CPU, never as a gradient-bearing tensor. The model's prior
+    training/evaluation state is restored, including when a metric fails.
+    """
+
+    def __init__(
+        self,
+        sample_size: int,
+        seed: int,
+        metrics: Sequence[EmbeddingMetric] | None = None,
+    ):
+        """Configure the fixed subset, seed, and optional metric strategies."""
         if sample_size < 1:
             raise ValueError("sample_size must be positive.")
         self.sample_size = sample_size
         self.seed = seed
+        self.metrics = tuple(metrics) if metrics is not None else default_embedding_metrics()
         self._indices: Tensor | None = None
         self._previous: Tensor | None = None
         self._num_roads: int | None = None
 
+    def _select_roads(self, embeddings: Tensor) -> Tensor:
+        """Choose road rows once, reserving row zero for padding."""
+        if embeddings.ndim != 2 or embeddings.shape[0] < 2:
+            raise ValueError("Expected road embeddings [N + 1, D], N >= 1.")
+        num_roads = embeddings.shape[0] - 1
+        if self._indices is None:
+            generator = torch.Generator(device="cpu").manual_seed(self.seed)
+            self._indices = torch.randperm(num_roads, generator=generator)[:self.sample_size] + 1
+            self._num_roads = num_roads
+        elif num_roads != self._num_roads:
+            raise ValueError("The road vocabulary size changed between observations.")
+
+        selected = embeddings.index_select(0, self._indices.to(embeddings.device))
+        return selected.detach().float().cpu().clone()
+
     @torch.no_grad()
     def observe(self, model: nn.Module, graph: Data) -> dict[str, float]:
-        """Measure norm statistics and drift using evaluation-mode embeddings.
-
-        Parameters
-        ----------
-        model : nn.Module
-            Joint model exposing road_encoder and encode_roads(graph).
-        graph : Data
-            Complete road graph on the same device as the model.
-
-        Returns
-        -------
-        dict[str, float]
-            Fixed-probe mean/standard deviation of embedding norms and mean
-            cosine drift since the prior snapshot (if one exists).
-        """
+        """Take one eval-mode snapshot and run all injected metric strategies."""
         encoder = model.road_encoder
         was_training = encoder.training
         encoder.eval()
         try:
-            # Full-graph message passing is required even though only a small
-            # subset of the resulting road embeddings is retained.
-            embeddings = model.encode_roads(graph)
-            if embeddings.ndim != 2 or embeddings.shape[0] < 2:
-                raise ValueError("Expected road embeddings [N + 1, D], N >= 1.")
-
-            num_roads = embeddings.shape[0] - 1
-            if self._indices is None:
-                generator = torch.Generator(device="cpu").manual_seed(self.seed)
-                self._indices = (
-                    torch.randperm(num_roads, generator=generator)[:self.sample_size] + 1
-                )
-                self._num_roads = num_roads
-            elif num_roads != self._num_roads:
-                raise ValueError("The road vocabulary size changed between observations.")
-
-            # Copy only the selected rows to CPU; never retain the full-graph
-            # output or its computation graph between measurements.
-            probe = embeddings.index_select(0, self._indices.to(embeddings.device))
-            probe = probe.detach().float().cpu().clone()
-            norms = torch.linalg.vector_norm(probe, dim=-1)
-            result = {
-                "train/gnn_embedding_norm_mean": float(norms.mean().item()),
-                "train/gnn_embedding_norm_std": float(norms.std(unbiased=False).item())
-            }
-
-            if self._previous is not None:
-                previous_norms = torch.linalg.vector_norm(self._previous, dim=-1)
-                cosine = F.cosine_similarity(probe, self._previous, dim=-1, eps=1e-8)
-                both_zero = (norms <= 1e-8) & (previous_norms <= 1e-8)
-                cosine = torch.where(both_zero, torch.ones_like(cosine), cosine)
-                drift = (1 - cosine).clamp_min(0)
-                result["train/gnn_embedding_cosine_drift"] = float(drift.mean().item())
-
-            self._previous = probe
+            # Message passing needs the entire graph before subset extraction.
+            current = self._select_roads(model.encode_roads(graph))
+            result: dict[str, float] = {}
+            for metric in self.metrics:
+                values = metric.compute(current, self._previous)
+                overlap = result.keys() & values.keys()
+                if overlap:
+                    raise ValueError(f"Embedding diagnostics returned duplicate keys: {sorted(overlap)}")
+                result.update(values)
+            self._previous = current
             return result
         finally:
             encoder.train(was_training)

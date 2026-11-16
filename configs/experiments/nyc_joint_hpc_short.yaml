@@ -3,8 +3,10 @@
 # This file specifies every supported experiment-level setting.
 # GNN architecture and graph preprocessing remain in paths.graph_config.
 
+# Can be used todo smoke test in hpc before a long run
+
 experiment:
-  name: nyc_joint_hpc_short
+  name: nyc_joint_hpc_short # Unique output folder for this experiment.
   seed: 101
 
 paths:
@@ -71,7 +73,7 @@ training:
   checkpoint:
     # Uses training objective when validation is disabled. 
     monitor: auto  # auto | train_loss | val_loss
-    save_last: true
+    save_last: false
     save_best: true
     every_epochs: 1
     resume_from: null  # Start an independent run, do not resume another run.
@@ -81,8 +83,9 @@ tracking:
   provider: mlflow
   tracking_uri: null  # Use the automatic local SQLite backend.
   storage_scope: shared  # Compare sequential runs in the same MLflow database.
+  # MLflow groups runs with this name for comparison. Reuse across related experiments; use the same tracking database.
   experiment_name: gnn_diff_rntraj_nyc
-  run_name: hpc_short_train_generate
+  run_name: hpc_short_train_generate  # Optional descriptive run name.
   tags:
     dataset: nyc_15s_enriched_moves
     model: gnn_diff_rntraj
@@ -90,7 +93,7 @@ tracking:
     purpose: hpc_pipeline_verification
   logging:
     metrics_every_steps: 1
-    gnn_diagnostics_every_steps: 1
+    gnn_diagnostics_every_steps: 1 # 0 disables branch gradient diagnostics.
     gnn_embedding_probe_size: 256
     log_system_metrics: false  # Slurm script collects separate resource logs.
     log_resolved_config: true
