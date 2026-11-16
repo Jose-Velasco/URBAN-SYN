@@ -12,7 +12,7 @@ features:
   numeric: [log_length, speed_kph, lanes, width]  # log_length derives from OSM length
   categorical: [highway, surface, access, junction]
   boolean: [oneway, bridge, tunnel]
-  geometry: [mid_lon, mid_lat, bearing_sin, bearing_cos, straightness]
+  geometry: [start_lon, start_lat, mid_lon, mid_lat, end_lon, end_lat, bearing_sin, bearing_cos, straightness]
   # Alternative location inputs: relative_x_km, relative_y_km
 
 graph:
@@ -84,7 +84,7 @@ graph:
 # Otherwise, select_node_features() will raise an error because the requested attribute doesn't exist.
 model:
   node_features:
-    - x                         # OSM + geographic features
+    - x                         # OSM + geographic features. contains all the attributes selected under features.
     - degree_features           # Directed in/out degree
     - local_degree_profile      # Neighbor degree statistics
     - random_walk_pe            # Random-walk positional encoding

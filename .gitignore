@@ -266,6 +266,7 @@ baselines/gan/lstm_trajgan/hpc
 *.tar.gz
 *.gpkg
 *.tar
+*.zip
 
 
 ### Datasets ###
