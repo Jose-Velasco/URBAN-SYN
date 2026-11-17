@@ -122,10 +122,6 @@ export APPTAINERENV_SLURM_JOB_ID="$SLURM_JOB_ID"
 export APPTAINERENV_OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 export APPTAINERENV_PYTHONPATH="/workspace/src"
 
-# Log the GPU assignment for debugging.
-echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
-echo "SLURM_JOB_GPUS=${SLURM_JOB_GPUS:-unset}"
-
 # Preserve Slurm's assigned GPU visibility inside Apptainer.
 if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
     echo "ERROR: CUDA_VISIBLE_DEVICES is unset; cannot verify GPU assignment." >&2
@@ -146,18 +142,54 @@ APPTAINER_ARGS=(
     "$SIF"
 )
 
-# Quick environment check before doing a possibly long training run.
+# Show Slurm's GPU assignment and physical GPU information.
+echo "SLURM_JOB_GPUS=${SLURM_JOB_GPUS:-unset}"
+echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
+
+nvidia-smi --query-gpu=index,uuid,memory.used,memory.total \
+    --format=csv
+
+# Verify CUDA visibility and identify the physical GPU used.
 apptainer "${APPTAINER_ARGS[@]}" /opt/venv/bin/python -c '
 import os
 import torch
-job_id = os.getenv("SLURM_JOB_ID")
-print(f"torch={torch.__version__}; cuda={torch.cuda.is_available()}; slurm_job_id={job_id}")
-if not job_id:
-    raise SystemExit("ERROR: SLURM_JOB_ID was not propagated into Apptainer.")
-if not torch.cuda.is_available():
-    raise SystemExit("ERROR: CUDA is unavailable inside the allocated Apptainer job.")
+import pynvml
+
+print("SLURM_JOB_ID:", os.getenv("SLURM_JOB_ID"))
+print("CUDA_VISIBLE_DEVICES:", os.getenv("CUDA_VISIBLE_DEVICES"))
+print("Visible GPU count:", torch.cuda.device_count())
+
+if not os.getenv("SLURM_JOB_ID"):
+    raise SystemExit("ERROR: Slurm job ID not propagated.")
+
+if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
+    raise SystemExit("ERROR: Expected exactly one usable CUDA GPU.")
+
+print("Selected GPU:", torch.cuda.get_device_name(0))
+
+# Initialize CUDA so the active process appears in NVML.
+torch.ones(1, device="cuda:0")
+torch.cuda.synchronize()
+
+pynvml.nvmlInit()
+try:
+    found = False
+    for index in range(pynvml.nvmlDeviceGetCount()):
+        handle = pynvml.nvmlDeviceGetHandleByIndex(index)
+        processes = pynvml.nvmlDeviceGetComputeRunningProcesses(handle)
+
+        if any(process.pid == os.getpid() for process in processes):
+            print("Physical GPU index:", index)
+            print("Physical GPU UUID:", pynvml.nvmlDeviceGetUUID(handle))
+            found = True
+
+    if not found:
+        print("WARNING: Could not identify the process GPU through NVML.")
+finally:
+    pynvml.nvmlShutdown()
 '
 
+# Initialize the GPU monitoring CSV exactly once.
 printf '%s\n' \
     'timestamp,index,name,gpu_util_percent,memory_used_MiB,memory_total_MiB,temperature_C,power_draw_W' \
     > "$GPU_LOG"
