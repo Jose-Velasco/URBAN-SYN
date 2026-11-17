@@ -12,7 +12,7 @@ features:
   numeric: [log_length, speed_kph, lanes, width]  # log_length derives from OSM length
   categorical: [highway, surface, access, junction]
   boolean: [oneway, bridge, tunnel]
-  geometry: [mid_lon, mid_lat, bearing_sin, bearing_cos, straightness]
+  geometry: [start_lon, start_lat, mid_lon, mid_lat, end_lon, end_lat, bearing_sin, bearing_cos, straightness]
   # Alternative location inputs: relative_x_km, relative_y_km
 
 graph:
@@ -84,7 +84,7 @@ graph:
 # Otherwise, select_node_features() will raise an error because the requested attribute doesn't exist.
 model:
   node_features:
-    - x                         # OSM + geographic features
+    - x                         # OSM + geographic features. contains all the attributes selected under features.
     - degree_features           # Directed in/out degree
     - local_degree_profile      # Neighbor degree statistics
     - random_walk_pe            # Random-walk positional encoding
@@ -114,11 +114,11 @@ model:
     # - laplacian_edge_features
 
   gnn:
-    architecture: gine  # gatv2 | gine
+    architecture: gatv2  # gatv2 | gine
 
-    hidden_dim: 128
+    hidden_dim: 256
     output_dim: 128
-    num_layers: 2
+    num_layers: 3
     dropout: 0.1
     activation: relu
     normalization: layer  # layer | batch | none
@@ -135,12 +135,15 @@ model:
       train_eps: true
       eps: 0.0
       mlp:
-        hidden_dim: 128
-        num_layers: 2
+        hidden_dim: 256
+        num_layers: 3
         activation: relu
         dropout: 0.1
         normalization: layer_norm
         plain_last: true
+
+
+  # below is OLD!!! use the training pipeline in /experiment to handle training config
 
   diffusion:
     hidden_dim: 128

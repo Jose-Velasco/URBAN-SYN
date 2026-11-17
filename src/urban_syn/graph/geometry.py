@@ -14,8 +14,8 @@ def extract_geometry_features(roads: gpd.GeoDataFrame) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame
-        Midpoints (lon/lat), relative metric positions, bearing sine/cosine,
-        and straightness, with the same index as the input roads.
+        Midpoint and endpoint coordinates (lon/lat), relative metric positions,
+        bearing sine/cosine, and straightness, aligned with the input roads.
 
     Raises
     ------
@@ -59,6 +59,8 @@ def extract_geometry_features(roads: gpd.GeoDataFrame) -> pd.DataFrame:
 
     # Store GPS coordinates independently from optional model-input coordinates.
     geographic_midpoint = midpoint.to_crs("EPSG:4326")
+    geographic_start = start.to_crs("EPSG:4326")
+    geographic_end = end.to_crs("EPSG:4326")
     min_x, min_y, max_x, max_y = projected.total_bounds
     center_x = (min_x + max_x) / 2
     center_y = (min_y + max_y) / 2
@@ -67,12 +69,22 @@ def extract_geometry_features(roads: gpd.GeoDataFrame) -> pd.DataFrame:
         {
             # Geographic coordinates of each road segment's midpoint (on the road).
             # Coordinates are converted back to EPSG:4326 (degrees) for GPS compatibility.
+            # This finds the point 50% along the road's actual LineString length, not the arithmetic average of its start and end coordinates
+            # For curved roads, the midpoint therefore follows the road's geometry
             "mid_lon": geographic_midpoint.x.to_numpy(),
             "mid_lat": geographic_midpoint.y.to_numpy(),
-            
+            # Ordered endpoints preserve each directed road segment's orientation.
+            "start_lon": geographic_start.x.to_numpy(),
+            "start_lat": geographic_start.y.to_numpy(),
+            "end_lon": geographic_end.x.to_numpy(),
+            "end_lat": geographic_end.y.to_numpy(),
+
             # Road midpoint's position relative to the network's center, in kilometers.
             # Subtracting the center makes coordinates city-relative instead of absolute.
             # Dividing by 1000 converts projected CRS units (meters) to kilometers.
+            # Bearing uses the straight-line direction from the road's start to end, not the direction of every bend along a curved road
+            # They encode the direction of travel along a road segment, based on its start-to-end displacement
+            # For example, a northeast-directed road has approximately (0.707, 0.707)
             "relative_x_km": (midpoint.x.to_numpy() - center_x) / 1000.0,
             "relative_y_km": (midpoint.y.to_numpy() - center_y) / 1000.0,
 

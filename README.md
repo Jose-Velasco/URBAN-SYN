@@ -35,6 +35,48 @@ uv run python your_script.py
 - Always use uv run instead of activating manually
 - Keep dependencies reproducible via uv
 
+## URBAN-SYN Model: Joint GNN + Diff-RNTraj
+
+Our current trajectory-generation model combines a **road-network GNN** with **Diff-RNTraj**. The GNN learns road-segment embeddings, while the diffusion model learns to generate sequences of roads and positions along them.
+
+The pipeline handles graph preparation, joint training, checkpointing, and DDPM trajectory generation.
+
+**Before running:** Prepare the map-matched training and test sequences using our FMM workflow. The pipeline can automatically build the PyG road graph if its cache is missing, but it does not perform FMM map matching or create the train/test split.
+
+### Quick start
+
+From the repository root, using the project's Python environment:
+
+```bash
+# Check the required inputs.
+uv run python -m urban_syn.experiment all \
+  --config configs/experiments/nyc_joint.yaml \
+  --validate-only
+
+# Run training and generation (when enabled).
+uv run python -m urban_syn.experiment all \
+  --config configs/experiments/nyc_joint.yaml
+```
+
+For generation without retraining, use the `generate` stage with an existing checkpoint specified in the experiment YAML.
+
+On SJSU HPC, submit the pipeline through Slurm:
+
+```bash
+bash hpc/urban_syn/submit.sh all \
+  configs/experiments/nyc_joint.yaml
+```
+
+### Configuration and documentation
+
+- [Experiment YAML guide](configs/experiments/README.md): diffusion, training, losses, validation, checkpoints, generation, and MLflow settings.
+- [Graph/GNN YAML guide](configs/graph/README.md): road features, graph transforms, GNN architectures, and supported values.
+- [Pipeline README](src/urban_syn/experiment/README.md): preprocessing, pipeline stages, model behavior, and outputs.
+- [HPC container guide](hpc/urban_syn/README.md) and [Slurm guide](hpc/urban_syn/README_SLURM.md): Docker, Apptainer, and HPC execution.
+- [MLflow guide](hpc/urban_syn/README_MLFLOW.md): experiment tracking, metrics, and viewing HPC runs locally.
+
+Each training run creates its own output directory under `outputs/experiments/`. Metrics, checkpoints, and generated trajectories are saved even when MLflow tracking is disabled.
+
 ## Baselines
 
 This project includes baseline implementations adapted from existing research repositories.

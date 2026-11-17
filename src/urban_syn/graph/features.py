@@ -24,7 +24,8 @@ NUMERIC_FEATURES = frozenset({"log_length", "speed_kph", "lanes", "width"})
 CATEGORICAL_FEATURES = frozenset({"highway", "surface", "access", "junction"})
 BOOLEAN_FEATURES = frozenset({"oneway", "bridge", "tunnel"})
 GEOMETRY_FEATURES = frozenset({
-    "mid_lon", "mid_lat", "relative_x_km", "relative_y_km",
+    "mid_lon", "mid_lat", "start_lon", "start_lat",
+    "end_lon", "end_lat", "relative_x_km", "relative_y_km",
     "bearing_sin", "bearing_cos", "straightness",
 })
 
