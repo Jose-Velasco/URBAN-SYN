@@ -121,6 +121,18 @@ nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
 export APPTAINERENV_SLURM_JOB_ID="$SLURM_JOB_ID"
 export APPTAINERENV_OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 export APPTAINERENV_PYTHONPATH="/workspace/src"
+
+# Log the GPU assignment for debugging.
+echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
+echo "SLURM_JOB_GPUS=${SLURM_JOB_GPUS:-unset}"
+
+# Preserve Slurm's assigned GPU visibility inside Apptainer.
+if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+    echo "ERROR: CUDA_VISIBLE_DEVICES is unset; cannot verify GPU assignment." >&2
+    exit 1
+fi
+export APPTAINERENV_CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES"
+
 if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     export APPTAINERENV_SLURM_ARRAY_TASK_ID="$SLURM_ARRAY_TASK_ID"
 fi
