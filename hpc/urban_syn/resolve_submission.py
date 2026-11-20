@@ -7,6 +7,7 @@ Both the login-node submitter and the container can use the same decisions.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,8 @@ class Submission:
     study_name: str = ""
     experiment_key: str = ""
     exclude_nodes: str = ""
+    encoder_checkpoint: str = ""
+    source_run: str = ""
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -89,6 +92,10 @@ def resolve_submission(
 
     defaults: dict[str, Any] = {}
     study_name = ""
+    encoder_checkpoint = ""
+    source_run = ""
+    pretrained_from = None
+    experiments: dict[str, Any] = {}
     if study is not None:
         if not experiment_key:
             raise ValueError("--experiment is required with --study.")
@@ -99,10 +106,19 @@ def resolve_submission(
         if not isinstance(study_info, dict):
             raise ValueError("Study YAML requires a 'study' mapping.")
         study_name = str(study_info.get("name", ""))
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", study_name):
+            raise ValueError("study.name must be a nonempty directory-safe name.")
         experiments = study_info.get("experiments")
         if not isinstance(experiments, dict) or experiment_key not in experiments:
             raise ValueError(f"Experiment '{experiment_key}' is not listed in {study}.")
         entry = experiments[experiment_key]
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", experiment_key):
+            raise ValueError("Study experiment keys must be directory-safe names.")
+        if isinstance(entry, dict):
+            unknown = set(entry) - {"config", "pretrained_from"}
+            if unknown:
+                raise ValueError(f"Unknown settings for experiment '{experiment_key}': {sorted(unknown)}")
+            pretrained_from = entry.get("pretrained_from")
         # Either a path string or an explicit {config: path} is supported.
         config = entry.get("config") if isinstance(entry, dict) else entry
         if not isinstance(config, str) or not config.strip():
@@ -122,6 +138,64 @@ def resolve_submission(
     path = _inside_project(config, root)
     data = _read_yaml(path)
     pipeline = _pipeline(data, path)
+
+    if pretrained_from is not None:
+        if pipeline != "joint":
+            raise ValueError("pretrained_from is only supported for joint diffusion experiments.")
+        if not isinstance(pretrained_from, str) or pretrained_from not in experiments:
+            raise ValueError(f"pretrained_from must name an experiment in {study}.")
+        source_entry = experiments[pretrained_from]
+        source_config = source_entry.get("config") if isinstance(source_entry, dict) else source_entry
+        if not isinstance(source_config, str):
+            raise ValueError(f"Source experiment '{pretrained_from}' needs a config path.")
+        source_path = _inside_project(source_config, root)
+        source_data = _read_yaml(source_path)
+        if _pipeline(source_data, source_path) != "link_pretrain":
+            raise ValueError(f"pretrained_from '{pretrained_from}' must reference link pretraining.")
+        source_graph = (source_data.get("paths") or {}).get("graph_config")
+        study_graph = study_info.get("graph_config")
+        if (not isinstance(source_graph, str) or not isinstance(study_graph, str) or
+                _inside_project(source_graph, root) != _inside_project(study_graph, root)):
+            raise ValueError(
+                f"Pretraining source '{pretrained_from}' must use the study's graph YAML."
+            )
+        encoder_options = (data.get("model") or {}).get("road_encoder") or {}
+        if encoder_options.get("initialization") != "pretrained":
+            raise ValueError("Study pretrained_from requires model.road_encoder.initialization=pretrained.")
+        if encoder_options.get("checkpoint") is not None:
+            raise ValueError(
+                "Set model.road_encoder.checkpoint: null when using study pretrained_from "
+                "to avoid two competing checkpoint selections."
+            )
+        reference_path = (
+            root / "outputs/experiments/studies" / study_name /
+            pretrained_from / "selected_encoder.json"
+        )
+        if not reference_path.is_file():
+            raise FileNotFoundError(
+                f"No completed encoder has been published for '{pretrained_from}' in "
+                f"study '{study_name}'. Submit that pretraining experiment first, "
+                f"then retry. Expected: {reference_path}"
+            )
+        reference = json.loads(reference_path.read_text(encoding="utf-8"))
+        if (not isinstance(reference, dict) or reference.get("format_version") != 1 or
+                reference.get("study_name") != study_name or
+                reference.get("experiment_key") != pretrained_from):
+            raise ValueError(f"Invalid or mismatched pretraining reference: {reference_path}")
+        source_run = str(reference.get("run_id", ""))
+        run_dir = reference.get("run_dir")
+        encoded = reference.get("encoder_checkpoint")
+        if not source_run or not isinstance(run_dir, str) or not isinstance(encoded, str):
+            raise ValueError(f"Incomplete pretraining reference: {reference_path}")
+        run_path = _inside_project(run_dir, root)
+        selected_path = _inside_project(encoded, root)
+        if selected_path != run_path / "checkpoints/encoder.pt":
+            raise ValueError(f"Pretraining reference has an unexpected encoder path: {reference_path}")
+        if run_path.name != source_run or not selected_path.is_file():
+            raise FileNotFoundError(
+                f"Selected pretrained encoder is missing or does not match its run: {selected_path}"
+            )
+        encoder_checkpoint = str(selected_path)
 
     # A study's shared graph is a consistency check, not a second copy of the
     # graph feature settings. The individual YAML remains standalone-valid.
@@ -160,7 +234,8 @@ def resolve_submission(
         time=setting("time"), memory=setting("memory"),
         cpus=setting("cpus_per_task"), mail_user=setting("mail_user"),
         mail_type=setting("mail_type"), study_name=study_name,
-        experiment_key=experiment_key or "", exclude_nodes=",".join(excluded)
+        experiment_key=experiment_key or "", exclude_nodes=",".join(excluded),
+        encoder_checkpoint=encoder_checkpoint, source_run=source_run
     )
 
 
@@ -191,7 +266,7 @@ def main() -> int:
             selected.config, selected.pipeline, selected.partition, selected.gres,
             selected.time, selected.memory, selected.cpus, selected.mail_user,
             selected.mail_type, selected.study_name, selected.experiment_key,
-            selected.exclude_nodes
+            selected.exclude_nodes, selected.encoder_checkpoint, selected.source_run
         ):
             print(value)
     return 0

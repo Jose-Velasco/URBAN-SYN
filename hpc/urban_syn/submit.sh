@@ -6,8 +6,8 @@ set -euo pipefail
 usage() {
     cat <<'USAGE'
 Usage:
-  bash hpc/urban_syn/submit.sh [stage] [config.yaml] [--dry-run|--validate-only] [--run-dir DIR] [--checkpoint FILE]
-  bash hpc/urban_syn/submit.sh --study STUDY.yaml --experiment NAME [--stage STAGE] [--dry-run|--validate-only] [--run-dir DIR] [--checkpoint FILE]
+  bash hpc/urban_syn/submit.sh [stage] [config.yaml] [--dry-run|--validate-only] [--run-dir DIR] [--checkpoint FILE] [--encoder-checkpoint FILE]
+  bash hpc/urban_syn/submit.sh --study STUDY.yaml --experiment NAME [--stage STAGE] [--dry-run|--validate-only] [--run-dir DIR] [--checkpoint FILE] [--encoder-checkpoint FILE]
 
 The study YAML provides default Slurm resources. Environment overrides take priority:
   SBATCH_PARTITION, SBATCH_GRES, SBATCH_TIMELIMIT, SBATCH_MEM_PER_NODE, SBATCH_CPUS_PER_TASK,
@@ -16,6 +16,8 @@ The study YAML provides default Slurm resources. Environment overrides take prio
 
 --run-dir and --checkpoint are supported for standalone link-pretraining stages.
 For joint generation, select generation.checkpoint in the joint experiment YAML.
+Study experiments using pretrained_from select their encoder.pt automatically from a
+previous successful pretraining job; --encoder-checkpoint is a manual alternative.
 USAGE
 }
 
@@ -31,6 +33,7 @@ EXPERIMENT=""
 MODE=""
 RUN_DIR=""
 CHECKPOINT=""
+ENCODER_CHECKPOINT=""
 
 # Preserve old positional commands, including their optional third mode argument.
 if [[ $# -gt 0 && "${1:0:1}" != "-" ]]; then
@@ -42,7 +45,7 @@ fi
 
 while (($#)); do
     case "$1" in
-        --study|--experiment|--stage|--config|--run-dir|--checkpoint)
+        --study|--experiment|--stage|--config|--run-dir|--checkpoint|--encoder-checkpoint)
             if (($# < 2)); then echo "ERROR: $1 requires a value." >&2; exit 2; fi
             case "$1" in
                 --study) STUDY="$2" ;;
@@ -51,6 +54,7 @@ while (($#)); do
                 --config) CONFIG="$2" ;;
                 --run-dir) RUN_DIR="$2" ;;
                 --checkpoint) CHECKPOINT="$2" ;;
+                --encoder-checkpoint) ENCODER_CHECKPOINT="$2" ;;
             esac
             shift 2 ;;
         --dry-run|--validate-only)
@@ -100,7 +104,7 @@ else
     # The container returns /workspace paths. Use host paths for Slurm's input check.
 fi
 mapfile -t PLAN < "$PLAN_FILE"
-if ((${#PLAN[@]} != 12)); then echo "ERROR: Invalid submission settings." >&2; exit 2; fi
+if ((${#PLAN[@]} != 14)); then echo "ERROR: Invalid submission settings." >&2; exit 2; fi
 CONFIG_HOST="${PLAN[0]}"
 PIPELINE="${PLAN[1]}"
 if [[ "$CONFIG_HOST" == /workspace/* ]]; then
@@ -118,6 +122,12 @@ MAIL_TYPE="${URBAN_SYN_MAIL_TYPE:-${PLAN[8]:-NONE}}"
 STUDY_NAME="${PLAN[9]}"
 EXPERIMENT_KEY="${PLAN[10]}"
 EXCLUDE="${SBATCH_EXCLUDE:-${PLAN[11]}}"
+# A study source is resolved once during submission, never looked up again by
+# the running job. This pins every joint run to one producing pretraining run.
+if [[ -z "$ENCODER_CHECKPOINT" ]]; then
+    ENCODER_CHECKPOINT="${PLAN[12]}"
+fi
+SOURCE_RUN="${PLAN[13]}"
 
 # A requested exclusion is passed as one quoted Slurm host-list argument.
 # No --exclude option is sent when neither YAML nor the environment specifies it.
@@ -146,6 +156,27 @@ fi
 if [[ "$CHECKPOINT" == "$PROJECT_ROOT/"* ]]; then
     CHECKPOINT="/workspace/${CHECKPOINT#"$PROJECT_ROOT/"}"
 fi
+if [[ -n "$ENCODER_CHECKPOINT" ]]; then
+    if [[ "$PIPELINE" != joint ]]; then
+        echo "ERROR: --encoder-checkpoint is for joint diffusion training only." >&2
+        exit 2
+    fi
+    if [[ "$ENCODER_CHECKPOINT" == "$PROJECT_ROOT/"* ]]; then
+        ENCODER_CHECKPOINT="/workspace/${ENCODER_CHECKPOINT#"$PROJECT_ROOT/"}"
+    elif [[ "$ENCODER_CHECKPOINT" != /workspace/* ]]; then
+        # Paths supplied by the user may be repository-relative.
+        if [[ "$ENCODER_CHECKPOINT" == /* ]]; then
+            echo "ERROR: Encoder checkpoint must be inside the repository bind mount." >&2
+            exit 2
+        fi
+        ENCODER_CHECKPOINT="/workspace/${ENCODER_CHECKPOINT#./}"
+    fi
+    CHECKPOINT_HOST="$PROJECT_ROOT/${ENCODER_CHECKPOINT#/workspace/}"
+    if [[ ! -f "$CHECKPOINT_HOST" ]]; then
+        echo "ERROR: Pretrained encoder checkpoint does not exist: $CHECKPOINT_HOST" >&2
+        exit 2
+    fi
+fi
 
 # The sbatch script receives the resolved experiment YAML; it doesn't parse
 # study files or change model settings after Slurm has allocated resources.
@@ -153,8 +184,12 @@ JOB_ARGS=("$STAGE" "$CONFIG_HOST")
 if [[ -n "$MODE" ]]; then JOB_ARGS+=("$MODE"); fi
 if [[ -n "$RUN_DIR" ]]; then JOB_ARGS+=(--run-dir "$RUN_DIR"); fi
 if [[ -n "$CHECKPOINT" ]]; then JOB_ARGS+=(--checkpoint "$CHECKPOINT"); fi
+if [[ -n "$ENCODER_CHECKPOINT" ]]; then JOB_ARGS+=(--encoder-checkpoint "$ENCODER_CHECKPOINT"); fi
 
 printf 'Submitting %s: stage=%s, config=%s\n' "$PIPELINE" "$STAGE" "$CONFIG_HOST"
+if [[ -n "$ENCODER_CHECKPOINT" ]]; then
+    printf 'Pretrained encoder: %s (source run: %s)\n' "$ENCODER_CHECKPOINT" "${SOURCE_RUN:-manual}"
+fi
 printf 'Slurm: partition=%s, gres=%s, cpus=%s, mem=%s, time=%s, exclude=%s, mail=%s\n' \
     "$PARTITION" "$GRES" "$CPUS" "$MEMORY" "$TIMELIMIT" "${EXCLUDE:-none}" "$MAIL_TYPE"
 

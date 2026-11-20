@@ -470,6 +470,8 @@ def build_config_tags(config: ResolvedExperimentConfig) -> dict[str, str]:
     return {
         "gnn.architecture": str(config.joint_settings.gnn.architecture),
         "road_encoder.mode": experiment.model.road_encoder.mode,
+        "road_encoder.initialization": experiment.model.road_encoder.initialization,
+        "road_encoder.trainable": str(experiment.model.road_encoder.trainable).lower(),
         "losses.in_total": ",".join(included),
         "losses.diagnostic_only": ",".join(diagnostic),
         "optimizer": experiment.training.optimizer.name,

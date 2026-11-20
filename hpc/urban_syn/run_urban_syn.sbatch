@@ -12,7 +12,7 @@
 
 # Run the existing URBAN-SYN experiment pipeline inside Apptainer.
 # The companion submit.sh places Slurm stdout/stderr in hpc/urban_syn/logs/.
-# Usage: sbatch hpc/urban_syn/run_urban_syn.sbatch [stage] [config] [mode] [--run-dir DIR] [--checkpoint FILE]
+# Usage: sbatch hpc/urban_syn/run_urban_syn.sbatch [stage] [config] [mode] [--run-dir DIR] [--checkpoint FILE] [--encoder-checkpoint FILE]
 
 set -euo pipefail
 
@@ -21,6 +21,7 @@ CONFIG_ARG="${2:-configs/experiments/nyc_joint.yaml}"
 MODE=""
 RUN_DIR=""
 CHECKPOINT=""
+ENCODER_CHECKPOINT=""
 shift "$(( $# >= 2 ? 2 : $# ))"
 # Keep the historical optional third positional mode, with optional paths.
 while (($#)); do
@@ -28,9 +29,13 @@ while (($#)); do
         --dry-run|--validate-only)
             if [[ -n "$MODE" ]]; then echo "ERROR: Choose only one mode." >&2; exit 2; fi
             MODE="$1"; shift ;;
-        --run-dir|--checkpoint)
+        --run-dir|--checkpoint|--encoder-checkpoint)
             if (($# < 2)); then echo "ERROR: $1 needs a path." >&2; exit 2; fi
-            if [[ "$1" == --run-dir ]]; then RUN_DIR="$2"; else CHECKPOINT="$2"; fi
+            case "$1" in
+                --run-dir) RUN_DIR="$2" ;;
+                --checkpoint) CHECKPOINT="$2" ;;
+                --encoder-checkpoint) ENCODER_CHECKPOINT="$2" ;;
+            esac
             shift 2 ;;
         *) echo "ERROR: Unrecognized option '$1'." >&2; exit 2 ;;
     esac
@@ -39,7 +44,7 @@ done
 usage() {
     cat <<'USAGE'
 Usage:
-  sbatch hpc/urban_syn/run_urban_syn.sbatch [stage] [config] [mode] [--run-dir DIR] [--checkpoint FILE]
+  sbatch hpc/urban_syn/run_urban_syn.sbatch [stage] [config] [mode] [--run-dir DIR] [--checkpoint FILE] [--encoder-checkpoint FILE]
 
 Joint stages: all | validate | prepare-graph | train | generate | export-eval
 Pretraining stages: all | validate | prepare | train | test
@@ -118,6 +123,7 @@ METADATA_LOG="$LOG_DIR/job-${SLURM_JOB_ID}.txt"
     echo "slurm_time_limit=${SLURM_TIMELIMIT:-unknown}"
     echo "run_dir=${RUN_DIR:-none}"
     echo "checkpoint_override=${CHECKPOINT:-none}"
+    echo "encoder_checkpoint=${ENCODER_CHECKPOINT:-none}"
     echo "config_host=$CONFIG_HOST"
     echo "config_container=$CONFIG_CONTAINER"
     echo "mode=${MODE:-execute}"
@@ -168,12 +174,26 @@ fi
 case "$PIPELINE" in
     joint)
         PYTHON_MODULE=urban_syn.experiment
+        if [[ -n "$ENCODER_CHECKPOINT" ]]; then
+            # The repository is mounted at /workspace inside Apptainer.
+            if [[ "$ENCODER_CHECKPOINT" == "$PROJECT_ROOT/"* ]]; then
+                ENCODER_CHECKPOINT="/workspace/${ENCODER_CHECKPOINT#"$PROJECT_ROOT/"}"
+            fi
+            if [[ "$ENCODER_CHECKPOINT" != /workspace/* ]]; then
+                echo "ERROR: --encoder-checkpoint must be inside the project checkout." >&2
+                exit 2
+            fi
+        fi
         case "$STAGE" in all|validate|prepare-graph|train|generate|export-eval) ;; *) echo "ERROR: Invalid joint stage: $STAGE" >&2; exit 2;; esac
         if [[ -n "$RUN_DIR" || -n "$CHECKPOINT" ]]; then
             echo "ERROR: Joint generation/checkpoint paths are configured in the experiment YAML." >&2
             exit 2
         fi ;;
     link_pretrain)
+        if [[ -n "$ENCODER_CHECKPOINT" ]]; then
+            echo "ERROR: --encoder-checkpoint is only valid for joint diffusion." >&2
+            exit 2
+        fi
         PYTHON_MODULE=urban_syn.link_pretrain
         case "$STAGE" in all|validate|prepare|train|test) ;; *) echo "ERROR: Invalid pretraining stage: $STAGE" >&2; exit 2;; esac ;;
     *) echo "ERROR: Unknown experiment pipeline: $PIPELINE" >&2; exit 2 ;;
@@ -284,12 +304,33 @@ COMMAND=(
 if [[ -n "$MODE" ]]; then COMMAND+=("$MODE"); fi
 if [[ -n "$RUN_DIR" ]]; then COMMAND+=(--run-dir "$RUN_DIR"); fi
 if [[ -n "$CHECKPOINT" ]]; then COMMAND+=(--checkpoint "$CHECKPOINT"); fi
+if [[ -n "$ENCODER_CHECKPOINT" ]]; then COMMAND+=(--encoder-checkpoint "$ENCODER_CHECKPOINT"); fi
+
+# The pretraining runner reports its exact run folder only after success.
+# We publish this source for later study experiments, without guessing dates.
+RESULT_FILE_HOST=""
+if [[ "$PIPELINE" == link_pretrain && -n "${URBAN_SYN_STUDY_NAME:-}" && \
+      -n "${URBAN_SYN_EXPERIMENT_KEY:-}" && -z "$MODE" && \
+      ( "$STAGE" == all || "$STAGE" == train ) ]]; then
+    RESULT_FILE_HOST="$LOG_DIR/pretrain-result-${SLURM_JOB_ID}.json"
+    rm -f -- "$RESULT_FILE_HOST"
+    COMMAND+=(--result-file "/workspace/hpc/urban_syn/logs/pretrain-result-${SLURM_JOB_ID}.json")
+fi
 
 printf '\nStarting experiment: pipeline=%s, stage=%s, config=%s\n' "$PIPELINE" "$STAGE" "$CONFIG_CONTAINER"
 apptainer "${APPTAINER_ARGS[@]}" "${COMMAND[@]}" &
 PIPELINE_PID=$!
 
 if wait "$PIPELINE_PID"; then
+    # The study reference changes only after a successful train or all job.
+    if [[ -n "$RESULT_FILE_HOST" ]]; then
+        python3 "$SCRIPT_DIR/study_checkpoints.py" \
+            --project-root "$PROJECT_ROOT" \
+            --study-name "$URBAN_SYN_STUDY_NAME" \
+            --experiment-key "$URBAN_SYN_EXPERIMENT_KEY" \
+            --result-file "$RESULT_FILE_HOST" \
+            --job-id "$SLURM_JOB_ID"
+    fi
     echo "Pipeline completed successfully."
 else
     exit_code=$?

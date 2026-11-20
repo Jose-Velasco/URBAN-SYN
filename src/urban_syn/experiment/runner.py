@@ -5,8 +5,9 @@ import sys
 from collections.abc import Sequence
 
 from .config import ResolvedExperimentConfig, load_experiment_config
-from .stages import TARGETS, stages_for_target
 from urban_syn.pipeline.runner import PipelineRunner
+from .stages import TARGETS, stages_for_target
+
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -21,6 +22,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("target", choices=TARGETS)
     parser.add_argument("--config", required=True, help="Experiment YAML path")
     parser.add_argument("--project-root", default=None, help="Repository root (default: cwd)")
+    parser.add_argument(
+        "--encoder-checkpoint", default=None,
+        help="Pretrained encoder.pt selected by the study or explicitly for this run"
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Show stage plan without checking files")
     mode.add_argument("--validate-only", action="store_true", help="Check source files without executing")
@@ -42,7 +47,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     args = build_parser().parse_args(argv)
     try:
-        config = load_experiment_config(args.config, project_root=args.project_root)
+        config = load_experiment_config(
+            args.config, project_root=args.project_root,
+            encoder_checkpoint=args.encoder_checkpoint
+        )
         stages = stages_for_target(config, args.target)
         # Keep stage outputs within this invocation, not in module-global state.
         training_run_dir = None

@@ -53,7 +53,7 @@ training:
 tracking:
   enabled: true
   metrics_every_steps: 100  # Training progress logging interval.
-  experiment_name: pretrain_gnn_urban_syn_hpc_smoke_test
+  experiment_name: urban_syn_hpc_smoke_test
   logging:
     gnn_diagnostics_every_steps: 100   # 0 disables per-step encoder gradient norms.
     gnn_embedding_enabled: true

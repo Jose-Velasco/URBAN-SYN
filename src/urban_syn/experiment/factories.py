@@ -110,16 +110,28 @@ def load_experiment_graph(config: ResolvedExperimentConfig, device: torch.device
 
 
 def build_model(config: ResolvedExperimentConfig, graph: Data) -> nn.Module:
-    """Construct the trainable joint GNN + diffusion model.
+    """Create a joint diffusion model with the configured GNN initialization.
 
-    Uses the GNN settings from the graph YAML and diffusion settings from the
-    experiment YAML. No smoke-test configuration is reloaded here.
+    Random starts preserve the existing joint-training behavior. Pretrained
+    starts load *only* encoder weights, never the pretraining link decoder.
     """
     from urban_syn.diffusion.training import build_joint_model
 
+    from .pretrained_encoder import load_pretrained_encoder
+
     model = build_joint_model(graph, config.joint_settings)
-    if not any(parameter.requires_grad for parameter in model.road_encoder.parameters()):
-        raise ValueError("Joint training requires trainable road-encoder parameters.")
+    settings = config.settings.model.road_encoder
+    if settings.initialization == "pretrained" and config.settings.training.checkpoint.resume_from is None:
+        # On a new run, transfer only GNN weights from encoder.pt. A resumed
+        # joint checkpoint restores the *entire* model; its original encoder.pt
+        # does not need to remain available for recovery.
+        load_pretrained_encoder(model, graph, config)
+
+    if not settings.trainable:
+        # Must happen before optimizer creation, otherwise frozen parameters
+        # would be included in optimizer groups and consume unnecessary state.
+        model.road_encoder.requires_grad_(False)
+        model.road_encoder.eval()
     return model
 
 

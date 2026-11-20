@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import shutil
 import uuid
 from collections.abc import Sequence
@@ -39,6 +40,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--checkpoint", default=None,
         help="Checkpoint to resume training or evaluate; paths relative to the project root"
+    )
+    parser.add_argument(
+        "--result-file", default=None,
+        help="Optional JSON result path for recording a successfully completed training run"
     )
     options = parser.add_mutually_exclusive_group()
     options.add_argument(
@@ -197,6 +202,30 @@ def _existing_run_folder(checkpoint: Path) -> Path:
     return checkpoint.parent.parent
 
 
+def _write_training_result(run_dir: Path, best_checkpoint: Path, destination: Path) -> None:
+    """Write the exact completed pretraining run for an external job launcher.
+
+    This file is produced only after all requested stages succeed. It allows
+    Slurm to publish a checkpoint reference without guessing output timestamps.
+    """
+    encoder = run_dir / "checkpoints" / "encoder.pt"
+    if not encoder.is_file() or not best_checkpoint.is_file():
+        raise FileNotFoundError("Cannot publish pretraining result: best.pt or encoder.pt is missing.")
+    payload = {
+        "format_version": 1,
+        "run_dir": str(run_dir),
+        "best_checkpoint": str(best_checkpoint),
+        "encoder_checkpoint": str(encoder),
+    }
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _execution_paths(
     config: ResolvedLinkPretrainConfig, args: argparse.Namespace
 ) -> tuple[Path | None, Path | None]:
@@ -342,6 +371,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             PipelineRunner(config, handlers=handlers, emit=logger.info).run(
                 stages, dry_run=args.dry_run, validate_only=args.validate_only
             )
+            # Only announce a producing run after every requested stage has
+            # completed; a failed held-out test must not publish its checkpoint.
+            if trained is not None and args.result_file is not None:
+                result_file = _project_path(args.result_file, config.project_root)
+                _write_training_result(run_dir, trained.best_checkpoint, result_file)
             if args.dry_run:
                 logger.info("Dry run finished. No graph was loaded or files written.")
             elif args.validate_only or args.target == "validate":
