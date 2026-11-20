@@ -2,115 +2,11 @@
 
 import argparse
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Sequence
 
 from .config import ResolvedExperimentConfig, load_experiment_config
-from .stage import Stage
 from .stages import TARGETS, stages_for_target
-
-
-StageHandler = Callable[[ResolvedExperimentConfig], None]
-
-
-class PipelineRunner:
-    """Check prerequisites and dispatch stages through injected handlers.
-
-    The validation stage works immediately. Stage-specific execution handlers are injected by the entry point.
-    They are never routed through the old smoke-test CLI.
-    """
-
-    def __init__(self, config: ResolvedExperimentConfig, handlers: Mapping[str, StageHandler] | None = None):
-        """Register stage handlers without constructing runtime dependencies.
-
-        Parameters
-        ----------
-        config : ResolvedExperimentConfig
-            Validated experiment configuration.
-        handlers : Mapping[str, StageHandler] | None, default=None
-            Stage-specific execution functions supplied by the caller.
-        """
-        self.config = config
-        self.handlers = dict(handlers or {})
-
-    def run(self, stages: Sequence[Stage], dry_run: bool = False, validate_only: bool = False) -> None:
-        """Plan, preflight, or execute an ordered sequence of stages.
-
-        Parameters
-        ----------
-        stages : Sequence[Stage]
-            Ordered stages to inspect or execute.
-        dry_run : bool, default=False
-            Print a plan without file or execution checks.
-        validate_only : bool, default=False
-            Verify existing inputs without executing handlers.
-
-        Returns
-        -------
-        None
-            Prints status or raises when a prerequisite fails.
-        """
-        if dry_run and validate_only:
-            raise ValueError("Choose either dry_run or validate_only, not both.")
-
-        mode = "DRY RUN" if dry_run else "VALIDATE ONLY" if validate_only else "EXECUTE"
-        print(f"Experiment: {self.config.settings.experiment.name} | Mode: {mode}")
-        print(f"Config: {self.config.config_path}")
-        print(f"Project root: {self.config.project_root}")
-        print(f"Output root: {self.config.settings.paths.output_root}")
-
-        for index, stage in enumerate(stages, start=1):
-            print(f"\n[{index}/{len(stages)}] {stage.name}: {stage.description}")
-            if stage.depends_on:
-                print(f"  Prior stage(s): {', '.join(stage.depends_on)}")
-            if stage.required_files:
-                print("  Existing inputs:")
-                for path in stage.required_files:
-                    print(f"    {path}")
-            if stage.missing_settings:
-                print(f"  Settings needed: {', '.join(stage.missing_settings)}")
-
-            if dry_run:
-                print("  Status: ready to inspect (file checks skipped)")
-                continue
-
-            self._validate_inputs(stage)
-            print("  Input checks passed")
-            if validate_only or stage.name == "validate":
-                continue
-
-            handler = self.handlers.get(stage.name)
-            if handler is None:
-                raise NotImplementedError(
-                    f"Stage '{stage.name}' is planned but has no execution handler yet. "
-                    "Use --dry-run or --validate-only until integration is implemented."
-                )
-            handler(self.config)
-            print(f"  Stage completed: {stage.name}")
-
-        print(f"\n{mode} finished for {len(stages)} stage(s).")
-
-    @staticmethod
-    def _validate_inputs(stage: Stage) -> None:
-        """Verify pre-existing files and settings required by a stage.
-
-        Parameters
-        ----------
-        stage : Stage
-            Stage whose prerequisites are checked.
-
-        Returns
-        -------
-        None
-            Raises if any input or required setting is unavailable.
-        """
-        problems = [f"Required setting is missing: {name}" for name in stage.missing_settings]
-        problems.extend(
-            f"Required file does not exist: {path}"
-            for path in stage.required_files if not path.is_file()
-        )
-        if problems:
-            details = "\n  - ".join(problems)
-            raise FileNotFoundError(f"Cannot run stage '{stage.name}':\n  - {details}")
+from urban_syn.pipeline.runner import PipelineRunner
 
 
 def build_parser() -> argparse.ArgumentParser:

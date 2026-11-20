@@ -12,6 +12,7 @@ import subprocess
 from collections.abc import Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
+from dataclasses import dataclass, field
 from typing import Any, Protocol, TypedDict
 
 from .config import ResolvedExperimentConfig
@@ -478,72 +479,217 @@ def build_config_tags(config: ResolvedExperimentConfig) -> dict[str, str]:
     }
 
 
-class MLflowTracker:
-    """Manage MLflow runs; handle backend matching and resume internally.
+def execution_hardware_tags() -> dict[str, str]:
+    """Read the GPU assigned by Slurm and optional study information.
 
-    A missing tracking URI uses local SQLite storage. Slurm jobs default to
-    isolated SQLite databases, avoiding concurrent writes to one shared file.
-    Set ``tracking.storage_scope: shared`` in the experiment YAML to use
-    one database and artifact directory across jobs. Explicit tracking URIs
-    always take precedence.
+    The Slurm wrapper writes its detected GPU to a JSON file before launching
+    Python. This avoids guessing that CUDA index 0 is physical GPU index 0.
+    Missing metadata is normal for local training and CPU-only tests.
+
+    Returns:
+        String tags safe to attach to any experiment-tracking run.
+    """
+    tags: dict[str, str] = {}
+    for environment, key in (
+        ("SLURM_JOB_ID", "slurm.job_id"),
+        ("SLURMD_NODENAME", "slurm.node"),
+        ("URBAN_SYN_STUDY_NAME", "study.name"),
+        ("URBAN_SYN_EXPERIMENT_KEY", "study.experiment")
+    ):
+        value = os.environ.get(environment)
+        if value:
+            tags[key] = value
+
+    metadata_path = os.environ.get("URBAN_SYN_GPU_METADATA")
+    if not metadata_path:
+        return tags
+    try:
+        metadata = json.loads(Path(metadata_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return tags
+    if not isinstance(metadata, dict):
+        return tags
+
+    fields = (
+        "gpu.name", "gpu.physical_index", "gpu.uuid", "gpu.cuda_device",
+        "slurm.job_id", "slurm.node", "slurm.cuda_visible_devices"
+    )
+    for key in fields:
+        value = metadata.get(key)
+        if value is not None and str(value):
+            tags[key] = str(value)
+    return tags
+
+
+@dataclass(frozen=True)
+class MLflowRunOptions:
+    """Backend-neutral values required to create an MLflow experiment run.
+
+    Args:
+        experiment_name: MLflow experiment under which the run is recorded.
+        output_root: Directory containing the local ``mlflow`` data store.
+        run_name: Human-readable run label.
+        tracking_uri: Explicit backend URI, or None for environment/default.
+        storage_scope: ``shared`` storage or separate storage for Slurm jobs.
+        tags: Searchable metadata supplied by the calling training pipeline.
+        parameters: Flat experiment parameters logged once for a new run.
+        artifacts: Existing files with optional destination directories.
+        documents: Mappings saved through MLflow as JSON artifacts.
+        log_system_metrics: Whether MLflow should record system telemetry.
     """
 
-    def __init__(self, config: ResolvedExperimentConfig):
-        """Initialize backend location and experiment settings.
+    experiment_name: str
+    output_root: Path
+    run_name: str
+    tracking_uri: str | None = None
+    storage_scope: str = "shared"
+    tags: Mapping[str, str] = field(default_factory=dict)
+    parameters: Mapping[str, Any] = field(default_factory=dict)
+    artifacts: tuple[tuple[Path, str | None], ...] = ()
+    documents: tuple[tuple[str, Mapping[str, Any]], ...] = ()
+    log_system_metrics: bool = False
 
-        Parameters
-        ----------
-        config : ResolvedExperimentConfig
-            Validated tracking and experiment settings.
+
+class ConfiguredMLflowTracker:
+    """MLflow adapter reused by independent training pipelines.
+
+    Pipeline-specific configuration parsing happens before constructing this
+    adapter. Trainers depend only on ``ExperimentTracker`` and ``TrackingRun``.
+    """
+
+    def __init__(self, options: MLflowRunOptions):
+        """Resolve backend storage without importing MLflow or creating files.
+
+        Args:
+            options: Validated run location, parameters, tags, and artifacts.
         """
-        self.config = config
-        settings = config.settings.tracking
-        self.experiment_name = settings.experiment_name
-
-        store_root = config.settings.paths.output_root / "mlflow"
-        suffix = _slurm_store_suffix(settings.storage_scope)
+        self.options = options
+        root = options.output_root / "mlflow"
+        suffix = _slurm_store_suffix(options.storage_scope)
         if suffix is not None:
-            store_root = store_root / "jobs" / suffix
-        self.store_root = store_root
-        self.artifacts_root = store_root / "artifacts"
+            root = root / "jobs" / suffix
+        self.store_root = root
+        self.artifacts_root = root / "artifacts"
         self.tracking_uri = (
-            settings.tracking_uri
+            options.tracking_uri
             or os.environ.get("MLFLOW_TRACKING_URI")
-            or f"sqlite:///{(store_root / 'tracking.db').as_posix()}"
+            or f"sqlite:///{(root / 'tracking.db').as_posix()}"
         )
 
     def _configure(self, mlflow: Any) -> None:
-        """Select the tracking backend and ensure the experiment exists.
-
-        Parameters
-        ----------
-        mlflow : Any
-            Imported MLflow module to configure.
-
-        Returns
-        -------
-        None
-            Initializes the tracking URI and experiment as needed.
-        """
+        """Select a tracking URI and initialize local artifact storage as needed."""
         mlflow.set_tracking_uri(self.tracking_uri)
         if self.tracking_uri.startswith("sqlite:///"):
             self.artifacts_root.mkdir(parents=True, exist_ok=True)
-            if mlflow.get_experiment_by_name(self.experiment_name) is None:
+            if mlflow.get_experiment_by_name(self.options.experiment_name) is None:
                 mlflow.create_experiment(
-                    self.experiment_name,
+                    self.options.experiment_name,
                     artifact_location=self.artifacts_root.resolve().as_uri()
                 )
-        mlflow.set_experiment(self.experiment_name)
+        mlflow.set_experiment(self.options.experiment_name)
+
+    @contextmanager
+    def start_run(self, previous: TrackingReference | None = None) -> Iterator[TrackingRun]:
+        """Open or resume a run, preserving the backend-independent run reference.
+
+        Args:
+            previous: Optional reference stored in an earlier checkpoint.
+
+        Yields:
+            Active ``TrackingRun`` adapter. Parameters and configuration files
+            are only recorded for a newly created run.
+
+        Raises:
+            RuntimeError: If MLflow is enabled but not installed.
+        """
+        try:
+            import mlflow
+        except ImportError as exc:
+            raise RuntimeError("MLflow tracking is enabled; install mlflow in the container.") from exc
+
+        self._configure(mlflow)
+        resume_id = None
+        if previous is not None:
+            if previous.get("provider") == "mlflow" and previous.get("uri") == self.tracking_uri:
+                resume_id = previous.get("run_id")
+
+        if resume_id is None:
+            context = mlflow.start_run(
+                run_name=self.options.run_name,
+                tags=dict(self.options.tags),
+                log_system_metrics=self.options.log_system_metrics
+            )
+        else:
+            context = mlflow.start_run(
+                run_id=resume_id,
+                log_system_metrics=self.options.log_system_metrics
+            )
+
+        with context as active:
+            run = MLflowRun(mlflow, active.info.run_id, self.tracking_uri)
+            # Attach the actual GPU allocation for *every* invocation, including
+            # standalone generation and resumed training on a different node.
+            hardware = execution_hardware_tags()
+            if hardware:
+                run.set_tags(hardware)
+            metadata_file = os.environ.get("URBAN_SYN_GPU_METADATA")
+            if metadata_file and Path(metadata_file).is_file():
+                run.log_artifact(metadata_file, "hardware")
+            if resume_id is None:
+                run.log_params(self.options.parameters)
+                if previous is not None and previous.get("run_id"):
+                    run.set_tags({
+                        "resumed_from_provider": previous.get("provider") or "unknown",
+                        "resumed_from_run_id": previous["run_id"]
+                    })
+                for path, destination in self.options.artifacts:
+                    if path.is_file():
+                        run.log_artifact(path, destination)
+                for destination, content in self.options.documents:
+                    mlflow.log_dict(dict(content), destination)
+            yield run
+
+
+class MLflowTracker:
+    """Configure the shared MLflow adapter for joint diffusion training.
+
+    Existing callers still provide ``ResolvedExperimentConfig``. New training
+    pipelines may use ``ConfiguredMLflowTracker`` directly.
+    """
+
+    def __init__(self, config: ResolvedExperimentConfig):
+        """Retain the joint experiment's storage, tags, and configuration rules."""
+        self.config = config
+        settings = config.settings.tracking
+        self.experiment_name = settings.experiment_name
+        self._backend = ConfiguredMLflowTracker(MLflowRunOptions(
+            experiment_name=settings.experiment_name,
+            output_root=config.settings.paths.output_root,
+            run_name=settings.run_name or (
+                f"{config.settings.experiment.name}_{config.joint_settings.gnn.architecture}"
+            ),
+            tracking_uri=settings.tracking_uri,
+            storage_scope=settings.storage_scope,
+            tags=self._run_tags(),
+            parameters=_experiment_parameters(config),
+            documents=(("configuration/resolved_experiment.json", {
+                "experiment": config.settings.model_dump(mode="json"),
+                "model_settings": config.joint_settings.model_dump(mode="json"),
+                "project_root": str(config.project_root),
+                "source_yaml": str(config.config_path)
+            }),) if settings.logging.log_resolved_config else (),
+            log_system_metrics=settings.logging.log_system_metrics
+        ))
+        self.store_root = self._backend.store_root
+        self.artifacts_root = self._backend.artifacts_root
+        self.tracking_uri = self._backend.tracking_uri
+
+    def _configure(self, mlflow: Any) -> None:
+        """Configure the backend using the same shared implementation."""
+        self._backend._configure(mlflow)
 
     def _run_tags(self) -> dict[str, str]:
-        """Combine experiment-defined tags with Git and Slurm metadata.
-
-        Returns
-        -------
-        dict[str, str]
-            Run tags populated from configuration and available runtime data.
-        """
-        # Derived configuration tags take precedence over manually supplied labels.
+        """Combine experiment tags with Git and Slurm metadata."""
         tags = dict(self.config.settings.tracking.tags)
         tags.update(build_config_tags(self.config))
         tags["experiment_config"] = self.config.settings.experiment.name
@@ -561,67 +707,8 @@ class MLflowTracker:
 
     @contextmanager
     def start_run(self, previous: TrackingReference | None = None) -> Iterator[TrackingRun]:
-        """Start or resume MLflow, linking history if the backend has changed.
-
-        Parameters
-        ----------
-        previous : TrackingReference | None, default=None
-            Run reference stored in a previous training checkpoint.
-
-        Yields
-        ------
-        TrackingRun
-            Adapter for the active or resumed MLflow run.
-        """
-        try:
-            import mlflow
-        except ImportError as exc:
-            raise RuntimeError("MLflow tracking is enabled; install mlflow in the container.") from exc
-
-        self._configure(mlflow)
-        settings = self.config.settings.tracking
-        resume_id = None
-        if previous is not None:
-            if previous.get("provider") == "mlflow" and previous.get("uri") == self.tracking_uri:
-                resume_id = previous.get("run_id")
-
-        run_name = settings.run_name or (
-            f"{self.config.settings.experiment.name}_{self.config.joint_settings.gnn.architecture}"
-        )
-        if resume_id is None:
-            context = mlflow.start_run(
-                run_name=run_name,
-                tags=self._run_tags(),
-                log_system_metrics=settings.logging.log_system_metrics
-            )
-        else:
-            context = mlflow.start_run(
-                run_id=resume_id,
-                log_system_metrics=settings.logging.log_system_metrics
-            )
-
-        with context as active_run:
-            run = MLflowRun(mlflow, active_run.info.run_id, self.tracking_uri)
-            if resume_id is None:
-                # MLflow stores parameters separately from metrics/artifacts.
-                # Log them once at run creation; a continued run may legitimately
-                # have a different training horizon, and MLflow params are immutable.
-                run.log_params(_experiment_parameters(self.config))
-                if previous is not None and previous.get("run_id"):
-                    run.set_tags({
-                        "resumed_from_provider": previous.get("provider") or "unknown",
-                        "resumed_from_run_id": previous["run_id"]
-                    })
-                if settings.logging.log_resolved_config:
-                    mlflow.log_dict(
-                        {
-                            "experiment": self.config.settings.model_dump(mode="json"),
-                            "model_settings": self.config.joint_settings.model_dump(mode="json"),
-                            "project_root": str(self.config.project_root),
-                            "source_yaml": str(self.config.config_path)
-                        },
-                        "configuration/resolved_experiment.json"
-                    )
+        """Start or continue a joint-training run through the shared adapter."""
+        with self._backend.start_run(previous=previous) as run:
             yield run
 
 

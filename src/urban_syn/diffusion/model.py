@@ -108,30 +108,48 @@ class Diff_RNTraj(nn.Module):
             "alpha_bar": self.alpha_bar,
         }
 
-    def encode_roads(self, graph: Data) -> torch.Tensor:
-        """Generate embeddings for every road, including zero-padding.
+    def encode_road_nodes(self, graph: Data) -> torch.Tensor:
+        """Return unpadded road embeddings in the graph's PyG node order.
 
         Parameters
         ----------
         graph : Data
-            PyG road graph with selected node and edge features.
+            Road graph whose edge_id order must match the model's mapping.
 
         Returns
         -------
         Tensor
-            Road embedding table [N + 1, D].
+            One embedding per physical road, shaped [N, D].
+
+        Raises
+        ------
+        ValueError
+            If the graph road IDs differ from the model's road IDs or order.
         """
         if not torch.equal(graph.edge_id.to(self.edge_ids.device), self.edge_ids): # pyright: ignore[reportArgumentType]
             raise ValueError("Graph road ordering differs from the model mapping.")
 
-        embeddings = self.road_encoder(
+        return self.road_encoder(
             graph.x,
             graph.edge_index,
             getattr(graph, "edge_attr", None),
         )
 
-        padding = embeddings.new_zeros((1, embeddings.size(-1)))
+    def encode_roads(self, graph: Data) -> torch.Tensor:
+        """Return diffusion road embeddings, including padding ID 0.
 
+        Parameters
+        ----------
+        graph : Data
+            Road graph in the same order as the model's road mapping.
+
+        Returns
+        -------
+        Tensor
+            Road embedding table shaped [N + 1, D], with zero row 0.
+        """
+        embeddings = self.encode_road_nodes(graph)
+        padding = embeddings.new_zeros((1, embeddings.size(-1)))
         return torch.cat((padding, embeddings), dim=0)
         
     def compute_training_outputs(
