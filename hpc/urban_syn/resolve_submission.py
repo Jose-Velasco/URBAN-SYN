@@ -7,6 +7,7 @@ Both the login-node submitter and the container can use the same decisions.
 from __future__ import annotations
 
 import argparse
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ class Submission:
     mail_type: str = ""
     study_name: str = ""
     experiment_key: str = ""
+    exclude_nodes: str = ""
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -108,7 +110,10 @@ def resolve_submission(
         defaults = study_data.get("hpc") or {}
         if not isinstance(defaults, dict):
             raise ValueError("Study hpc settings must be a mapping.")
-        supported = {"partition", "gres", "time", "memory", "cpus_per_task", "mail_user", "mail_type"}
+        supported = {
+            "partition", "gres", "time", "memory", "cpus_per_task",
+            "mail_user", "mail_type", "exclude_nodes"
+        }
         if set(defaults) - supported:
             raise ValueError(f"Unknown HPC settings: {sorted(set(defaults) - supported)}")
 
@@ -140,13 +145,22 @@ def resolve_submission(
             raise ValueError(f"hpc.{name} cannot contain line breaks.")
         return result
 
+    # Slurm expects a comma-separated host list for --exclude. Let the study
+    # express it as a readable YAML list, and validate names before forwarding.
+    excluded = defaults.get("exclude_nodes", [])
+    if not isinstance(excluded, list):
+        raise ValueError("hpc.exclude_nodes must be a list of node names.")
+    for node in excluded:
+        if not isinstance(node, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", node):
+            raise ValueError("hpc.exclude_nodes contains an invalid node name.")
+
     return Submission(
         config=path, pipeline=pipeline,
         partition=setting("partition"), gres=setting("gres"),
         time=setting("time"), memory=setting("memory"),
         cpus=setting("cpus_per_task"), mail_user=setting("mail_user"),
         mail_type=setting("mail_type"), study_name=study_name,
-        experiment_key=experiment_key or ""
+        experiment_key=experiment_key or "", exclude_nodes=",".join(excluded)
     )
 
 
@@ -176,7 +190,8 @@ def main() -> int:
         for value in (
             selected.config, selected.pipeline, selected.partition, selected.gres,
             selected.time, selected.memory, selected.cpus, selected.mail_user,
-            selected.mail_type, selected.study_name, selected.experiment_key
+            selected.mail_type, selected.study_name, selected.experiment_key,
+            selected.exclude_nodes
         ):
             print(value)
     return 0

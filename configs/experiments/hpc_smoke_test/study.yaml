@@ -1,12 +1,11 @@
-# Stage 7A: group already-supported experiments without adding another training config format.
-# Paths are relative to the repository root, just like individual experiment YAMLs.
+# HPC smoke test: group existing pretraining and joint diffusion configurations.
+# Paths are relative to the repository root.
 study:
   name: hpc_smoke_test
   graph_config: configs/experiments/hpc_smoke_test/nyc_graph.yaml
   experiments:
     pretrain_bpr: configs/experiments/hpc_smoke_test/nyc_link_pretrain.yaml
     joint_scratch: configs/experiments/hpc_smoke_test/nyc_joint.yaml
-    # Add frozen and fine-tuned YAMLs here only after Stage 7B supports them.
 
 hpc:
   partition: gpuqs
@@ -14,6 +13,9 @@ hpc:
   cpus_per_task: 8
   memory: 64G
   time: "01:00:00"
-  # Notifications are opt-in; URBAN_SYN_MAIL_USER and URBAN_SYN_MAIL_TYPE
-  # always override these settings for one submission.
+  # Temporarily skip cs002, where CUDA failed during the A100 smoke test but not required
+  # exclude_nodes:
+  #   - cs002
+  # Opt in to notifications per submission with URBAN_SYN_MAIL_USER and
+  # URBAN_SYN_MAIL_TYPE=BEGIN,END,FAIL.
   mail_type: NONE

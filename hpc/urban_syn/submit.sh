@@ -10,7 +10,8 @@ Usage:
   bash hpc/urban_syn/submit.sh --study STUDY.yaml --experiment NAME [--stage STAGE] [--dry-run|--validate-only] [--run-dir DIR] [--checkpoint FILE]
 
 The study YAML provides default Slurm resources. Environment overrides take priority:
-  SBATCH_PARTITION, SBATCH_GRES, SBATCH_TIMELIMIT, SBATCH_MEM_PER_NODE, SBATCH_CPUS_PER_TASK
+  SBATCH_PARTITION, SBATCH_GRES, SBATCH_TIMELIMIT, SBATCH_MEM_PER_NODE, SBATCH_CPUS_PER_TASK,
+  SBATCH_EXCLUDE (e.g. cs002 or cs002,cs003)
   URBAN_SYN_MAIL_USER and URBAN_SYN_MAIL_TYPE (e.g. BEGIN,END,FAIL)
 
 --run-dir and --checkpoint are supported for standalone link-pretraining stages.
@@ -99,7 +100,7 @@ else
     # The container returns /workspace paths. Use host paths for Slurm's input check.
 fi
 mapfile -t PLAN < "$PLAN_FILE"
-if ((${#PLAN[@]} != 11)); then echo "ERROR: Invalid submission settings." >&2; exit 2; fi
+if ((${#PLAN[@]} != 12)); then echo "ERROR: Invalid submission settings." >&2; exit 2; fi
 CONFIG_HOST="${PLAN[0]}"
 PIPELINE="${PLAN[1]}"
 if [[ "$CONFIG_HOST" == /workspace/* ]]; then
@@ -116,6 +117,14 @@ MAIL_USER="${URBAN_SYN_MAIL_USER:-${PLAN[7]}}"
 MAIL_TYPE="${URBAN_SYN_MAIL_TYPE:-${PLAN[8]:-NONE}}"
 STUDY_NAME="${PLAN[9]}"
 EXPERIMENT_KEY="${PLAN[10]}"
+EXCLUDE="${SBATCH_EXCLUDE:-${PLAN[11]}}"
+
+# A requested exclusion is passed as one quoted Slurm host-list argument.
+# No --exclude option is sent when neither YAML nor the environment specifies it.
+EXCLUDE_ARGS=()
+if [[ -n "$EXCLUDE" ]]; then
+    EXCLUDE_ARGS+=(--exclude="$EXCLUDE")
+fi
 
 if [[ -n "$MAIL_USER" && "$MAIL_TYPE" == NONE ]]; then
     echo "ERROR: Set URBAN_SYN_MAIL_TYPE (or study hpc.mail_type) when setting a mail user." >&2
@@ -146,15 +155,15 @@ if [[ -n "$RUN_DIR" ]]; then JOB_ARGS+=(--run-dir "$RUN_DIR"); fi
 if [[ -n "$CHECKPOINT" ]]; then JOB_ARGS+=(--checkpoint "$CHECKPOINT"); fi
 
 printf 'Submitting %s: stage=%s, config=%s\n' "$PIPELINE" "$STAGE" "$CONFIG_HOST"
-printf 'Slurm: partition=%s, gres=%s, cpus=%s, mem=%s, time=%s, mail=%s\n' \
-    "$PARTITION" "$GRES" "$CPUS" "$MEMORY" "$TIMELIMIT" "$MAIL_TYPE"
+printf 'Slurm: partition=%s, gres=%s, cpus=%s, mem=%s, time=%s, exclude=%s, mail=%s\n' \
+    "$PARTITION" "$GRES" "$CPUS" "$MEMORY" "$TIMELIMIT" "${EXCLUDE:-none}" "$MAIL_TYPE"
 
 # Command-line options explicitly carry the resolved precedence. Keep all
 # original SBATCH_* overrides and the email settings without forcing YAML edits.
 sbatch \
     --partition="$PARTITION" --gres="$GRES" --cpus-per-task="$CPUS" \
     --mem="$MEMORY" --time="$TIMELIMIT" \
-    "${MAIL_ARGS[@]}" \
+    "${EXCLUDE_ARGS[@]}" "${MAIL_ARGS[@]}" \
     --chdir="$PROJECT_ROOT" \
     --output="$LOG_DIR/%x-%j.out" --error="$LOG_DIR/%x-%j.err" \
     --export="ALL,URBAN_SYN_PROJECT_ROOT=$PROJECT_ROOT,URBAN_SYN_PIPELINE=$PIPELINE,URBAN_SYN_STUDY_NAME=$STUDY_NAME,URBAN_SYN_EXPERIMENT_KEY=$EXPERIMENT_KEY" \
