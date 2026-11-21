@@ -38,7 +38,7 @@ model:
   road_encoder:
     initialization: pretrained   # random | pretrained
     trainable: false # false = freeze GNN; diffusion still trains
-    checkpoint: outputs/experiments/REPLACE_WITH_PRETRAIN_RUN/checkpoints/encoder.pt
+    checkpoint: null
   conditioning:
     enabled: false                      # Must remain false until Jessica's conditioning integration is implemented.
 
