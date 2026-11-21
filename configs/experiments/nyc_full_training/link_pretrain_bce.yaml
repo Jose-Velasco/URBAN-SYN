@@ -1,0 +1,88 @@
+# NYC standalone directed road-link GNN pretraining (BCE).
+# Learn road embeddings for initialization of joint_frozen / joint_finetune.
+# Same graph, train/validation/test link split, encoder, and settings as the other objective.
+# Do not use final road-sequence test data for graph-transition features.
+
+experiment:
+  name: nyc_full_pretrain_bce
+  seed: 101
+
+paths:
+  graph_config: configs/experiments/nyc_full_training/nyc_graph.yaml
+  output_root: outputs/experiments
+
+pretraining:
+  graph_split:
+    val_fraction: 0.10                              # Portion of real directed links for validation.
+    test_fraction: 0.10                             # Held-out real directed links; not used for model selection.
+    disjoint_train_ratio: 0.20                      # Training links withheld from message passing for supervision.
+  positives_per_seed: 1                            # Currently only 1 is supported.
+  negatives:
+    strategy: mixed                                # khop | mixed; controls directed negative sampling.
+    amount: 4                                     # Negative examples per real positive link.
+    k_hops: 4                                     # Hard negatives at directed distance 2..K.
+    hard_fraction: 0.75                           # Fraction of hard negatives for mixed strategy.
+    evaluation_chunk_size: 128                    # Positive links processed per eval sampling chunk.
+  objective: bce                                  # bpr (ranking) | bce (classification).
+  decoder:
+    hidden_dim: 128                                # Link scorer MLP hidden width.
+    num_layers: 3                                  # Includes final single-logit layer.
+    activation: relu
+    dropout: 0.3
+    normalization: layer_norm                      # layer_norm | batch_norm | null
+
+training:
+  epochs: 500                                     # Full epochs from original pretrain template.
+  batch_size: 256                                 # Seed roads per batch (not trajectory count).
+  max_batches: null                               # No smoke-test batch cap.
+  grad_clip_norm: 1.0
+  optimizer:
+    name: adamw                                    # adam | adamw
+    learning_rate: 0.001
+    weight_decay: 0.01
+  scheduler:
+    name: reduce_on_plateau                        # none | cosine | reduce_on_plateau
+    min_lr: 0.000001                               # Scalar for pretraining scheduler.
+    factor: 0.5
+    patience: 5
+    mode: min                                      # Pretrain scheduler accepts min only.
+    threshold: 0.0001
+    threshold_mode: rel                            # rel | abs
+    cooldown: 0
+    eps: 1.0e-8
+  early_stopping:
+    enabled: true
+    patience: 15                                   # Stop when validation loss fails to improve.
+    min_delta: 0.0                                 # Minimum improvement needed.
+  checkpoint:
+    save_best: true                                # Required for validation-selected encoder.pt.
+    save_last: true                                # Useful for restoring interrupted training.
+    every_epochs: 20                              # Also keep numbered epoch checkpoints.
+    resume_from: null
+
+tracking:
+  enabled: true
+  provider: mlflow
+  experiment_name: urban_syn_nyc_full_training     # Compare pretraining and joint runs in one UI.
+  tracking_uri: null
+  storage_scope: shared                            # shared | job
+  run_name: null
+  tags:
+    dataset: nyc_15s_enriched_moves
+    pipeline: road_link_pretraining
+    objective: bce
+    graph: nyc_full_training
+  metrics_every_steps: 100
+  logging:
+    gnn_diagnostics_every_steps: 100               # 0 disables step-level gradient diagnostics.
+    gnn_embedding_enabled: true
+    gnn_embedding_every_epochs: 1
+    gnn_embedding_sample_size: 256
+
+runtime:
+  device: cuda                                     # auto | cpu | cuda
+  precision: fp32                                  # Only implemented precision.
+  num_workers: 4
+  prefetch_factor: 2                               # Applies with num_workers > 0.
+  persistent_workers: true                         # Effective when workers > 0.
+  pin_memory: true

@@ -1,0 +1,128 @@
+# NYC full-training template: Initialize encoder from BPR/BCE pretraining and update it jointly with diffusion.
+# Keep paths, graph, diffusion hyperparameters, losses, and splits comparable across variants.
+# From repository root:
+#   bash hpc/urban_syn/submit.sh --study configs/experiments/nyc_full_training/study.yaml --experiment joint_finetune --stage all
+# For pretrained variants, use the STUDY launcher so pretrained_from injects the exact encoder.pt.
+# When using this YAML standalone, provide --encoder-checkpoint PATH via submit.sh (or set
+# model.road_encoder.checkpoint below to a compatible pretraining encoder.pt).
+
+experiment:
+  name: nyc_full_joint_finetune                      # Independent output root/run ID for each experiment.
+  seed: 101                                        # Same seed across strategies for a fair comparison.
+
+paths:
+  graph_config: configs/experiments/nyc_full_training/nyc_graph.yaml
+  train_sequences: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_train_prepared_road_sequences.parquet
+  test_sequences: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_test_prepared_road_sequences.parquet
+  trip_id_map: fmm_scripts/data/nyc_15s_fmm_trip_id_map.csv
+  road_network: fmm_scripts/data/road_network/nyc.gpkg
+  length_distribution: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_train_length_distribution.npy
+  test_reference_gps: null                         # Optional evaluation handoff; no reference loaded by default.
+  output_root: outputs/experiments                 # Model/checkpoints/MLflow storage.
+
+model:
+  diffusion:
+    hidden_dim: 512                                # Preserved from supplied full-training joint YAML.
+    residual_layers: 10
+    diffusion_steps: 1000
+    beta_start: 0.0001
+    beta_end: 0.02
+    similarity_chunk_size: 2048                    # Lower if the road-similarity scorer exceeds GPU memory.
+  road_encoder:
+    mode: joint                                    # Compatibility flag; training strategy is below.
+    initialization: pretrained                 # random | pretrained
+    trainable: true                           # false freezes the GNN, not the diffusion network.
+    checkpoint: null                               # Study injects pretrained encoder.pt; random requires null.
+  conditioning:
+    enabled: false                                 # Metadata conditioning not implemented in this runner.
+
+training:
+  epochs: 1000                                     # Full-training budget from supplied joint YAML; tune after profiling.
+  batch_size: 256                                  # Trajectories per batch; lower if GPU OOM.
+  max_batches: null                                # null = entire dataset, unlike smoke-test batch caps.
+  grad_clip_norm: 1.0
+  optimizer:
+    name: adamw                                    # adam | adamw
+    learning_rate: 0.001
+    weight_decay: 0.01
+  scheduler:
+    name: reduce_on_plateau                        # none | cosine | reduce_on_plateau
+    mode: min                                      # Minimize validation/training objective.
+    factor: 0.5                                    # Multiply learning rate when objective plateaus.
+    patience: 20                                   # Tolerated unimproved epochs.
+    threshold: 0.0001
+    threshold_mode: rel                            # rel | abs
+    cooldown: 0
+    min_lr: 0.000001                               # For cosine, must be a scalar below initial LR.
+    eps: 1.0e-8
+  losses:
+    noise_mse:
+      enabled: true                                # Differentiable diffusion noise prediction.
+      weight: 1.0
+      include_in_total: true
+      every_steps: 1                               # Required every step when optimized.
+    reconstruction_mse:
+      enabled: true                                # Differentiable clean-embedding reconstruction.
+      weight: 1.0
+      include_in_total: true
+      every_steps: 1
+    hard_connectivity:
+      enabled: true                                # Non-differentiable invalid-transition diagnostic.
+      weight: 1.0
+      include_in_total: false                      # Preserves supplied no-spatial-loss objective.
+      every_steps: 1                               # Diagnostic frequency; does not change gradients.
+  validation:
+    enabled: true                                  # Internal group-safe split from TRAIN only.
+    fraction: 0.1
+    split_group_columns: [uid, tid]                # Never split pieces of the same original trip.
+  checkpoint:
+    monitor: auto                                  # auto -> val objective when validation enabled.
+    save_last: true                                # Recovery checkpoint for a long HPC run.
+    save_best: true                                # Selected checkpoint for generation.
+    every_epochs: 100                              # Additional numbered checkpoints every 100 epochs.
+    resume_from: null                              # Set to compatible last.pt to resume.
+
+tracking:
+  enabled: true
+  provider: mlflow                                 # Only implemented provider.
+  tracking_uri: null                               # Use automatic shared SQLite unless overridden by env.
+  storage_scope: shared                            # shared | job; SQLite may lock under concurrent writes.
+  experiment_name: urban_syn_nyc_full_training    # Same MLflow experiment for cross-run comparison.
+  run_name: null                                   # Auto-generated run name.
+  tags:
+    dataset: nyc_15s_enriched_moves
+    pipeline: joint_diffusion
+    strategy: finetune
+    encoder_init: pretrained
+    conditioning: none
+    gradient_losses: noise_mse_reconstruction_mse
+  logging:
+    metrics_every_steps: 150
+    gnn_diagnostics_every_steps: 1000              # 0 disables gradient diagnostics.
+    gnn_embedding_enabled: true
+    gnn_embedding_every_epochs: 10
+    gnn_embedding_sample_size: 256                # Renamed from older gnn_embedding_probe_size.
+    log_system_metrics: true
+    log_resolved_config: true
+    log_git_info: true
+  artifacts:
+    log_best_checkpoint: true
+    log_last_checkpoint: true                      # Extra storage for resumable last.pt in MLflow.
+    log_generated_trajectories: true
+    log_training_logs: true
+
+generation:
+  enabled: true                                    # "all" generates after training; can take significant time.
+  checkpoint: null                                 # Use best/last from current training run.
+  checkpoint_choice: best                          # best | last
+  road_layer: roads
+  output_name: nyc_full_joint_finetune_generated_gps.parquet
+  num_trajectories: null                           # null = full counts from training length distribution.
+  batch_size: 16                                   # Lower if generation OOM.
+  sampler:
+    name: ddpm                                     # Only implemented sampler.
+
+runtime:
+  device: cuda                                     # auto | cpu | cuda
+  precision: fp32                                  # Only implemented precision.
+  num_workers: 4
