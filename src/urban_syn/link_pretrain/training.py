@@ -438,8 +438,12 @@ def _train_epochs(
         # Record the random-initialization baseline for new runs. When resuming,
         # this observation is only the reference for later drift measurements.
         initial = diagnostics.observe(resources.model, resources.message_graph)
+        sample_path = diagnostics.write_sample_manifest(
+            run_dir / "road_embedding_sample.json", resources.message_graph
+        )
+        run.log_artifact(sample_path, "metrics")
         if progress.start_epoch == 1:
-            run.log_metrics(initial, progress.global_step)
+            run.log_metrics({**initial, "epoch": 0.0}, progress.global_step)
             append_metric_history(history_path, 0, progress.global_step, initial)
 
     for epoch in range(progress.start_epoch, settings.training.epochs + 1):

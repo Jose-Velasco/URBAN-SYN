@@ -72,14 +72,14 @@ training:
       include_in_total: false                      # Preserves supplied no-spatial-loss objective.
       every_steps: 1                               # Diagnostic frequency; does not change gradients.
   validation:
-    enabled: true                                  # Internal group-safe split from TRAIN only.
+    enabled: false                                  # Internal group-safe split from TRAIN only.
     fraction: 0.1
     split_group_columns: [uid, tid]                # Never split pieces of the same original trip.
   checkpoint:
     monitor: auto                                  # auto -> val objective when validation enabled.
-    save_last: true                                # Recovery checkpoint for a long HPC run.
+    save_last: false                                # Recovery checkpoint for a long HPC run.
     save_best: true                                # Selected checkpoint for generation.
-    every_epochs: 100                              # Additional numbered checkpoints every 100 epochs.
+    every_epochs: 200                              # Additional numbered checkpoints every 100 epochs.
     resume_from: null                              # Set to compatible last.pt to resume.
 
 tracking:
@@ -97,11 +97,11 @@ tracking:
     conditioning: none
     gradient_losses: noise_mse_reconstruction_mse
   logging:
-    metrics_every_steps: 150
-    gnn_diagnostics_every_steps: 1000              # 0 disables gradient diagnostics.
+    metrics_every_steps: 100
+    gnn_diagnostics_every_steps: 500              # 0 disables gradient diagnostics.
     gnn_embedding_enabled: true
     gnn_embedding_every_epochs: 10
-    gnn_embedding_sample_size: 256                # Renamed from older gnn_embedding_probe_size.
+    gnn_embedding_sample_size: 512                # Renamed from older gnn_embedding_probe_size.
     log_system_metrics: true
     log_resolved_config: true
     log_git_info: true

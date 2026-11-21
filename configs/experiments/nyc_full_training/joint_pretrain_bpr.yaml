@@ -73,12 +73,12 @@ tracking:
     pipeline: road_link_pretraining
     objective: bpr
     graph: nyc_full_training
-  metrics_every_steps: 100
+  metrics_every_steps: 1000
   logging:
-    gnn_diagnostics_every_steps: 100               # 0 disables step-level gradient diagnostics.
+    gnn_diagnostics_every_steps: 2000               # 0 disables step-level gradient diagnostics.
     gnn_embedding_enabled: true
-    gnn_embedding_every_epochs: 1
-    gnn_embedding_sample_size: 256
+    gnn_embedding_every_epochs: 5
+    gnn_embedding_sample_size: 512
 
 runtime:
   device: cuda                                     # auto | cpu | cuda

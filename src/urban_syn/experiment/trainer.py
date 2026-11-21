@@ -443,8 +443,15 @@ def _train_epochs(
         if diagnostic_logging.gnn_embedding_enabled else None
     )
     if embedding_diagnostics is not None:
-        # The initial/restored snapshot is only a reference, not a logged epoch.
-        embedding_diagnostics.observe(components.model, components.graph)
+        # Record the initial GNN before the first optimizer step. On resume,
+        # observe restored weights only as the next drift reference.
+        initial = embedding_diagnostics.observe(components.model, components.graph)
+        embedding_diagnostics.write_sample_manifest(
+            run_dir / "metrics" / "road_embedding_sample.json", components.graph
+        )
+        if restored is None:
+            _record_epoch_metrics(run_dir / "metrics" / "history.jsonl", 0, 0, initial)
+            run.log_metrics({**initial, "epoch": 0.0}, step=0)
 
     for epoch in range(start_epoch, training.epochs + 1):
         train_batches = build_epoch_loader(
@@ -554,7 +561,8 @@ def _train_epochs(
     for destination, path in (
         ("configuration", run_dir / "resolved_config.json"),
         ("configuration", run_dir / "data_split.json"),
-        ("metrics", run_dir / "metrics" / "history.jsonl")
+        ("metrics", run_dir / "metrics" / "history.jsonl"),
+        ("metrics", run_dir / "metrics" / "road_embedding_sample.json")
     ):
         if path.is_file():
             run.log_artifact(path, artifact_path=destination)

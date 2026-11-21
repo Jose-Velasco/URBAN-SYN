@@ -6,8 +6,10 @@ sources provide unpadded embeddings through model-specific interfaces.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
-from typing import Protocol
+from pathlib import Path
+from typing import Any, Protocol
 
 import torch
 import torch.nn.functional as F
@@ -16,6 +18,8 @@ from torch_geometric.data import Data
 
 
 _METRIC_PREFIX = "train/gnn_embedding_"
+_VICREG_VARIANCE_EPSILON = 1e-4
+_VICREG_STD_THRESHOLD = 1.0
 
 
 def gradient_norm(module: nn.Module) -> float:
@@ -136,6 +140,65 @@ class FeatureVariance:
         return {"train/gnn_embedding_feature_variance_mean": float(variance.mean().item())}
 
 
+def _check_embedding_matrix(embeddings: Tensor) -> None:
+    """Reject malformed inputs instead of emitting invalid MLflow metrics."""
+    if embeddings.ndim != 2 or min(embeddings.shape) < 1:
+        raise ValueError("Expected a nonempty embedding matrix [roads, dimensions].")
+    if not bool(torch.isfinite(embeddings).all()):
+        raise ValueError("Embedding diagnostics require finite values.")
+
+
+class EffectiveRank:
+    """Uncentered RankMe effective rank from singular-value entropy.
+
+    Reference: Garrido et al., ICML 2023, https://proceedings.mlr.press/v202/garrido23a.html.
+    Uses the raw embedding matrix, *without* covariance centering. The paper's
+    normalized singular-value entropy is evaluated with an exact zero guard
+    instead of adding a perturbation to nonzero probabilities. An all-zero
+    matrix has no singular-value distribution and is reported as rank zero.
+    """
+
+    def compute(self, current: Tensor, previous: Tensor | None) -> dict[str, float]:
+        """Return exp(entropy(singular_values / sum(singular_values)))."""
+        _check_embedding_matrix(current)
+        # SVD of only the sampled roads; float64 avoids precision loss for tiny spectra.
+        singular_values = torch.linalg.svdvals(current.to(dtype=torch.float64))
+        total = singular_values.sum()
+        if total == 0:
+            rank = 0.0
+        else:
+            probabilities = singular_values / total
+            positive = probabilities[probabilities > 0]
+            rank = float(torch.exp(-(positive * positive.log()).sum()).item())
+        return {f"{_METRIC_PREFIX}rankme_effective_rank": rank}
+
+
+class VICRegVariance:
+    """Read-only per-coordinate standard deviations from VICReg.
+
+    Reference: Bardes et al., ICLR 2022, official facebookresearch/vicreg
+    main_vicreg.py VICReg.forward(): sqrt(z.var(dim=0) + 1e-4).
+    The default torch.var uses *sample* (N-1) variance. This reports the
+    std statistics and VICReg's fraction below one, NOT its training penalty.
+    """
+
+    def compute(self, current: Tensor, previous: Tensor | None) -> dict[str, float]:
+        """Summarize VICReg standard deviations, with no gradient or loss."""
+        _check_embedding_matrix(current)
+        if current.shape[0] < 2:
+            # Sample variance is undefined for a single road; do not log NaNs.
+            return {}
+        std = torch.sqrt(
+            current.to(dtype=torch.float64).var(dim=0, correction=1)
+            + _VICREG_VARIANCE_EPSILON
+        )
+        return {
+            f"{_METRIC_PREFIX}vicreg_std_mean": float(std.mean().item()),
+            f"{_METRIC_PREFIX}vicreg_std_min": float(std.min().item()),
+            f"{_METRIC_PREFIX}vicreg_low_variance_fraction": float((std < _VICREG_STD_THRESHOLD).double().mean().item()),
+        }
+
+
 class RoadEmbeddingSource(Protocol):
     """Adapt different models to an ordered, padding-free road embedding table.
 
@@ -166,7 +229,10 @@ class JointRoadEmbeddingSource:
 
 def default_embedding_metrics() -> tuple[EmbeddingMetric, ...]:
     """Provide a default suite while allowing different strategies to be injected."""
-    return (NormStatistics(), CosineDrift(), L2Drift(), PairwiseSimilarity(), FeatureVariance())
+    return (
+        NormStatistics(), CosineDrift(), L2Drift(), PairwiseSimilarity(),
+        FeatureVariance(), EffectiveRank(), VICRegVariance()
+    )
 
 
 class EmbeddingDiagnostics:
@@ -191,7 +257,7 @@ class EmbeddingDiagnostics:
             sample_size: Maximum number of physical roads to compare.
             seed: Seed used for choosing fixed zero-based road indices.
             metrics: Optional metric strategies; defaults to norm, drift,
-                similarity, and feature-variance measurements.
+                similarity, feature variance, and collapse measurements.
             source: Model adapter producing padding-free ``[N, D]`` embeddings.
                 Defaults to the joint model's encode_road_nodes interface.
         """
@@ -204,6 +270,7 @@ class EmbeddingDiagnostics:
         self._indices: Tensor | None = None
         self._previous: Tensor | None = None
         self._num_roads: int | None = None
+        self._sampled_road_ids: Tensor | None = None
 
     def _select_roads(self, embeddings: Tensor) -> Tensor:
         """Select physical road rows once from an unpadded ``[N, D]`` tensor."""
@@ -219,6 +286,45 @@ class EmbeddingDiagnostics:
 
         selected = embeddings.index_select(0, self._indices.to(embeddings.device))
         return selected.detach().float().cpu().clone()
+
+    def _verify_road_ids(self, graph: Data) -> None:
+        """Ensure repeated observations still refer to the same physical roads."""
+        road_ids = getattr(graph, "edge_id", None)
+        if road_ids is None:
+            return  # Older synthetic test graphs may not contain physical IDs.
+        if self._indices is None or self._num_roads is None:
+            raise RuntimeError("Observe embeddings before verifying sampled roads.")
+        if road_ids.ndim != 1 or road_ids.numel() != self._num_roads:
+            raise ValueError("Graph edge_id must align with the physical road rows.")
+        selected = road_ids.index_select(0, self._indices.to(road_ids.device)).long().cpu()
+        if self._sampled_road_ids is None:
+            self._sampled_road_ids = selected
+        elif not torch.equal(selected, self._sampled_road_ids):
+            raise ValueError("Physical road IDs changed between embedding observations.")
+
+    def write_sample_manifest(self, path: Path, graph: Data) -> Path:
+        """Persist fixed road indices and IDs so independent runs can be compared.
+
+        Must be called after the first observation. A missing physical ID column
+        is an error rather than silently claiming the samples are comparable.
+        """
+        if self._indices is None:
+            raise RuntimeError("Observe embeddings before exporting the sample.")
+        self._verify_road_ids(graph)
+        if self._sampled_road_ids is None:
+            raise ValueError("Road graph has no physical edge_id for sample verification.")
+        manifest: dict[str, Any] = {
+            "seed": self.seed,
+            "requested_sample_size": self.sample_size,
+            "num_roads": self._num_roads,
+            "node_indices": self._indices.tolist(),
+            "road_edge_ids": self._sampled_road_ids.tolist(),
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(manifest, handle, indent=2)
+            handle.write("\n")
+        return path
 
     @torch.no_grad()
     def observe(self, model: nn.Module, graph: Data) -> dict[str, float]:
@@ -238,6 +344,7 @@ class EmbeddingDiagnostics:
         try:
             # Message passing needs the entire graph before subset extraction.
             current = self._select_roads(self.source.encode(model, graph))
+            self._verify_road_ids(graph)
             result: dict[str, float] = {}
             for metric in self.metrics:
                 values = metric.compute(current, self._previous)

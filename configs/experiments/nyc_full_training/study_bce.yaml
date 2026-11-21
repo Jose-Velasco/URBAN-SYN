@@ -20,11 +20,11 @@ study:
       pretrained_from: pretrain_bce
 
 hpc:
-  partition: gpuqm                                # Medium GPU queue; check current cluster limits.
+  partition: gpuqs                                # Medium GPU queue; check current cluster limits.
   gres: gpu:a100:1                                 # One A100 (single-device model).
   cpus_per_task: 8
   memory: 64G
-  time: "3-00:00:00"                              # Initial full-run request; adapt to measured wall time.
-  exclude_nodes: []                               # Add problematic nodes if required, e.g. [cs002].
-  mail_user: ""                                    # Optional; set URBAN_SYN_MAIL_USER in environment instead.
-  mail_type: NONE                                 # Optional notifications: BEGIN,END,FAIL.
+  time: "20:00:00"                              # Initial full-run request; adapt to measured wall time.
+  # exclude_nodes: []                               # Add problematic nodes if required, e.g. [cs002].
+  # mail_user: ""                                    # Optional; set URBAN_SYN_MAIL_USER in environment instead.
+  # mail_type: NONE                                 # Optional notifications: BEGIN,END,FAIL.
