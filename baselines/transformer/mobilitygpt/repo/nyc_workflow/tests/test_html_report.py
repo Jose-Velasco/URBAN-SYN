@@ -90,6 +90,17 @@ class HTMLReportTests(unittest.TestCase):
         text = path.read_text()
         return text, Document(text)
 
+    def test_raw_reference_has_twelve_metrics_and_explicit_reference_notice(self):
+        for row in self.canonical['results']:
+            row['off_network_rate'] = .04
+            row['unavailable_reasons'] = {}
+        self.canonical['network'] = dict(reference='raw_geo_derived')
+        self.save_all()
+        text, _ = self.document()
+        self.assertIn('Training completed; 12 of 12 metrics available', text)
+        self.assertIn('Off-network rate uses the original raw .geo road polylines', text)
+        self.assertIn('independent canonical assessment remains incomplete', text)
+
     def test_full_status_selected_checkpoint_and_fixed_reporting_choices(self):
         text, parsed = self.document()
         self.assertIn('Training completed; 11 of 12 metrics available', text)

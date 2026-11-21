@@ -1,0 +1,24 @@
+*
+!Dockerfile
+!docker-compose.yml
+!.dockerignore
+!LICENSE
+!README.md
+!pyproject.toml
+!repo/
+!repo/**/*.py
+!repo/nyc_workflow/requirements.txt
+!repo/nyc_workflow/notebook_provenance.json
+!repo/LICENSE
+!repo/pyproject.toml
+!repo/mobilitygpt.png
+
+# Inputs, generated runs, environments, caches and repository metadata stay outside the image.
+repo/NYC/
+repo/nyc_workflow/output/
+.venv/
+repo/.venv/
+repo/**/*.egg-info/
+.git/
+**/__pycache__/
+*.pyc

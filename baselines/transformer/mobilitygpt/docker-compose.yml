@@ -1,0 +1,16 @@
+name: mobilitygpt
+services:
+  mobilitygpt:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mobilitygpt:latest
+    working_dir: /workspace/mobilitygpt/repo
+    volumes:
+      - .:/workspace/mobilitygpt
+      - ./repo/NYC:/workspace/mobilitygpt/repo/NYC:ro
+    gpus: all
+    shm_size: "8g"
+    tty: true
+    stdin_open: true
+    command: bash

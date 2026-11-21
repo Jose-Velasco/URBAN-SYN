@@ -1,0 +1,16 @@
+{
+  "original_path": "trajectory_evaluation_ts_lstm_all_metrics_parallel.ipynb",
+  "sha256": "791977d10ec570810f8cdc832fa5fba18e9cf85fca7b3f1ca6c047dfab8c6209",
+  "bytes": 1373332,
+  "archived_replacement": "historical_bundle_20261021_source_only/archives/nyc_handoff_20261021/precleanup_snapshot.tar.gz::trajectory_evaluation_ts_lstm_all_metrics_parallel.ipynb",
+  "runtime_notebook_required": false,
+  "parity_reference": "nyc_workflow/tests/notebook_metrics_reference.py",
+  "reference_cells": [
+    4,
+    7,
+    11,
+    13,
+    16,
+    18
+  ]
+}

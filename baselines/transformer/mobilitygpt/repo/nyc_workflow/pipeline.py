@@ -93,7 +93,7 @@ def dependencies():
 
 def configuration(input_dir, smoke=False, canonical_network=None, network_layer='roads',
                   network_mode_column=None, metric_jobs=6):
-    return {'schema_version': 3, 'input_dir': str(Path(input_dir).resolve()), 'dataset': 'NYCAll',
+    return {'schema_version': 4, 'input_dir': str(Path(input_dir).resolve()), 'dataset': 'NYCAll',
         'assessment': 'Integration diagnostics only' if smoke else 'Locked NYCAll reproduction assessment',
         'smoke': smoke, 'seed': 160,
         'preprocessing': {'candidate_road_limit': 50000,
@@ -112,7 +112,7 @@ def configuration(input_dir, smoke=False, canonical_network=None, network_layer=
             'max_total_tokens': 81, 'generation': 'Existing paired per-case SHA256 seed protocol'},
         'metrics': {'canonical_network': str(Path(canonical_network).resolve()) if canonical_network is not None else None,
             'network_layer': network_layer, 'network_mode_column': network_mode_column, 'jobs': metric_jobs,
-            'missing_network_policy': 'Complete 11 metrics; off-network unavailable; canonical assessment incomplete',
+            'missing_network_policy': 'Calculate off-network against original raw .geo; canonical assessment incomplete',
             'definitions': 'Raw-reference notebook-compatible count mixing; FastDTW radius 1'},
         'accepted_limitations': CAVEATS}
 
@@ -246,9 +246,12 @@ def check_stage(run, stage, config):
                 'Incomplete canonical metric groups or changed inputs')
         require(result['complete'] == network and result['status'] == ('complete' if network else 'incomplete'),
                 'Canonical assessment status does not match network availability')
+        if not network and config.get('schema_version', 3) >= 4:
+            require(result.get('network', {}).get('reference') == 'raw_geo_derived',
+                    'Missing raw .geo off-network reference provenance')
         for row in result['results']:
             for metric in METRICS:
-                if metric == 'off_network_rate' and not network:
+                if metric == 'off_network_rate' and not network and config.get('schema_version', 3) < 4:
                     require(row[metric] is None and row['unavailable_reasons'].get(metric), 'Fabricated off-network score')
                 else:
                     require(isinstance(row[metric], (int, float)) and math.isfinite(row[metric]), f'Unavailable/nonfinite metric: {metric}')
@@ -293,6 +296,7 @@ def worker(stage, run):
 def run_pipeline(args):
     require(not args.resume or args.output_dir is not None, '--resume requires the original explicit --output-dir')
     network = getattr(args, 'canonical_network', None)
+    from .input_names import input_paths
     run = require_output(args.output_dir if args.output_dir is not None else default_output(),
                          [args.input_dir] + ([network] if network is not None else []))
     config = configuration(args.input_dir, args.smoke, network,
@@ -301,11 +305,10 @@ def run_pipeline(args):
     validate_configuration(config)
     print(json.dumps({'output': str(run), 'smoke': args.smoke}), flush=True)
     print(MISSING_NETWORK if network is None else f'Canonical network will be validated before training: {network}', flush=True)
-    input_paths = [Path(config['input_dir'])/name for name in
-                   ('nyc.geo', 'nyc.rel', 'nyc_mm_train.csv', 'nyc_mm_test.csv')]
+    input_files = list(input_paths(config['input_dir']).values())
     if network is not None:
-        input_paths.append(Path(config['metrics']['canonical_network']))
-    inputs = inventory(input_paths)
+        input_files.append(Path(config['metrics']['canonical_network']))
+    inputs = inventory(input_files)
     if args.resume:
         require(run.is_dir(), 'Resume directory does not exist')
     else:

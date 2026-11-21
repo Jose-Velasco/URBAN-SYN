@@ -101,7 +101,9 @@ class Trip:
 
 
 def load_network(source):
-    geo = source / "nyc.geo"
+    from .input_names import input_paths
+    paths = input_paths(source)
+    geo = paths['nyc.geo']
     roads = set()
     for row in read_csv(geo, {"geo_id"}):
         rid = road_id(row["geo_id"], str(geo))
@@ -110,7 +112,7 @@ def load_network(source):
     require(roads, f"{geo}: empty geography")
     outgoing, incoming = defaultdict(set), defaultdict(set)
     relations = 0
-    for row in read_csv(source / "nyc.rel", {"origin_id", "destination_id"}):
+    for row in read_csv(paths['nyc.rel'], {"origin_id", "destination_id"}):
         a = road_id(row["origin_id"], "relation origin")
         b = road_id(row["destination_id"], "relation destination")
         require(a in roads and b in roads, f"nyc.rel: unknown endpoint {a} -> {b}")

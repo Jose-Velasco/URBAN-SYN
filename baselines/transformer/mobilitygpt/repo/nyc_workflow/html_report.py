@@ -32,7 +32,7 @@ CANONICAL = (
     ('jaccard', 'Visited-grid overlap (Jaccard)', 'unitless', 'Higher: greater overlap'),
     ('mia_auc', 'Geometric membership-attack AUC', 'unitless', 'Near 0.5: weak measured attack only'),
     ('uniqueness', 'Sampled training-route separation', '% of sampled generated routes', 'Higher: more separation under this test only'),
-    ('off_network_rate', 'Off-network rate', '% of representative points', 'Lower: closer to canonical roads'),
+    ('off_network_rate', 'Off-network rate', '% of representative points', 'Lower: closer to reference roads'),
     ('rsc', 'Directed road-transition validity', '% of transitions', 'Higher: more graph-valid; not trip fidelity'),
 )
 PERCENT = {'repeated_road_route_rate', 'immediate_stop_rate', 'length_cap_rate',
@@ -253,7 +253,7 @@ raw-parent references also change the populations and weighting.</p>
 <li>Pairwise references: explicitly joined complete raw parents; up to 5,000 sorted pairs, seed 42. Multiple generated sections may share one parent.</li>
 <li>Privacy/proximity: up to 2,000 sampled trajectories, seeds 43/44/45, 32 interpolated points; geometric membership AUC uses negative nearest-generated distances.
 All generated sections of the queried test parent are excluded from its candidate pool. Separation is strictly &gt;50 m from sampled training trajectories.</li>
-<li>Off-network: representative points strictly &gt;30 m from the projected canonical road network. Missing network means unavailable, never zero.</li>
+<li>Off-network: representative points strictly &gt;30 m from the projected reference road network. When no canonical network is supplied, new runs use original raw .geo polylines; this measures source-map consistency. Older saved runs may have unavailable values.</li>
 <li>Road-transition validity: original directed relations, accepting consecutive identical IDs; singleton routes contribute no transitions.</li>
 <li>Representative coordinates average road geometry endpoints; Earth radius is 6,371 km. Prompts, repeated visits, immediate stops and caps are retained.</li>
 </ul>"""
@@ -275,6 +275,9 @@ def render(data):
             data['canonical'].get('network', {}).get('unavailable_reason', 'Reason not recorded.')))
             for row in canonical_rows if not numeric(row.get('off_network_rate'))})
         missing += '<p>'+escape('Off-network reason: '+'; '.join(reasons))+'. Prepared geometry is not a substitute for the canonical network.</p>'
+    if data['canonical'].get('network', {}).get('reference') == 'raw_geo_derived':
+        missing += '<p class="notice">Off-network rate uses the original raw .geo road polylines. '
+        missing += 'This measures source-map consistency; independent canonical assessment remains incomplete.</p>'
     completed = [(name,record) for name,record in data['stages'].items() if record.get('status') == 'complete']
     stages = '<ul class="stages">'+''.join('<li>'+escape(STAGE_NAMES.get(name,name))+' — completed</li>' for name,_ in completed)+'</ul>'
     if not data['stages']:

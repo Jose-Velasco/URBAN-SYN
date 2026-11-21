@@ -345,9 +345,13 @@ def compute_rsc_from_geo_rel(lookup, adjacency):
 
 def load_road_spatial_index(path, layer='roads', mode_column=None):
     import geopandas as gpd
+    roads = gpd.read_file(path, **({'layer': layer} if layer else {}))
+    return _road_spatial_index(roads, mode_column)
+
+
+def _road_spatial_index(roads, mode_column=None):
     from shapely import STRtree
     from pyproj import Transformer
-    roads = gpd.read_file(path, **({'layer': layer} if layer else {}))
     require(roads.crs is not None, 'Canonical road network has no CRS')
     source_count = len(roads)
     roads = roads.loc[roads.geometry.notna() & ~roads.geometry.is_empty].copy()
@@ -372,6 +376,35 @@ def load_road_spatial_index(path, layer='roads', mode_column=None):
     return STRtree(projected.geometry.to_numpy()), Transformer.from_crs('EPSG:4326', metric_crs, always_xy=True), dict(
         source_road_count=source_count, road_count=len(projected), source_crs=str(roads.crs),
         metric_crs=str(metric_crs), mode_column=mode_column, geographic_bounds=roads.to_crs(4326).total_bounds.tolist())
+
+
+def load_raw_road_spatial_index(path):
+    """Index original .geo polylines, before any training-network filtering.
+
+    The workflow defines .geo coordinates as WGS84 longitude/latitude.
+    This reference measures source-map consistency, not independent validation.
+    """
+    import geopandas as gpd
+    from shapely.geometry import LineString
+    ids, lines = set(), []
+    for row in read_csv(path):
+        rid = strict_int(row['geo_id'])
+        require(rid not in ids, f'Duplicate geometry road ID {rid}')
+        ids.add(rid)
+        require(row.get('type', 'LineString') == 'LineString', f'Expected LineString for road {rid}')
+        coords = np.asarray(ast.literal_eval(row['coordinates']), dtype=float)
+        require(coords.ndim == 2 and coords.shape[1] == 2 and len(coords) >= 2
+                and np.isfinite(coords).all(), f'Malformed/nonfinite coordinates for road {rid}')
+        require((np.abs(coords[:, 0]) <= 180).all() and (np.abs(coords[:, 1]) <= 90).all(),
+                f'Out-of-range coordinates for road {rid}')
+        lines.append(LineString(coords))
+    require(bool(lines), 'Empty raw geometry')
+    roads = gpd.GeoDataFrame(geometry=lines, crs='EPSG:4326')
+    tree, transformer, record = _road_spatial_index(roads)
+    record.update(reference='raw_geo_derived', source_file=fingerprint(path),
+                  limitation='Source-map consistency; not independent canonical validation. '
+                  'Representative points average road endpoints and can fall away from curved roads.')
+    return tree, transformer, record
 
 
 def compute_off_network_rate(generated, tree, transformer):
@@ -570,13 +603,15 @@ def dependencies(network):
 
 
 def load_inputs(args):
+    from .input_names import input_paths
     run, raw = args.run_dir.resolve(), args.raw_data_dir.resolve()
+    raw_inputs = input_paths(raw)
     prepared = run/'prepared/NYCAll-Taxi'
     paths = dict(generated=run/'evaluation/generated_trajectories.jsonl', config=run/'pipeline_config.json',
                  mapping=prepared/'id_mapping.csv', test=prepared/'NYCAll_Taxi_trajectory_test.csv',
                  provenance=prepared/'test_provenance.jsonl', metadata=prepared/'processing_metadata.json',
-                 prepared_geo=prepared/'roadmap.geo', geo=raw/'nyc.geo', rel=raw/'nyc.rel',
-                 raw_train=raw/'nyc_mm_train.csv', raw_test=raw/'nyc_mm_test.csv')
+                 prepared_geo=prepared/'roadmap.geo', geo=raw_inputs['nyc.geo'], rel=raw_inputs['nyc.rel'],
+                 raw_train=raw_inputs['nyc_mm_train.csv'], raw_test=raw_inputs['nyc_mm_test.csv'])
     for p in paths.values():
         require(p.is_file(), f'Missing input file {p}')
     # The original notebook is archived. Its recorded identity suffices for
@@ -714,7 +749,7 @@ DEFINITIONS = '''| Metric | Definition and units | Direction |
 | Grid Jaccard | Unique in-bounds cell intersection / union; empty union undefined | Higher |
 | MIA AUC | Average-rank AUC of negative nearest-generated mean matched-point distances | Near 0.5 suggests weak attack; not a guarantee |
 | Uniqueness | Fraction >50 m from nearest sampled training trajectory | Higher novelty under this distance only |
-| Off-network rate | Representative points strictly >30 m from projected canonical roads | Lower |
+| Off-network rate | Representative points strictly >30 m from projected reference roads | Lower |
 | RSC | Valid original directed .rel transitions, including identical consecutive IDs | Higher |
 
 Earth radius is 6371 km. Grid origin is (lon -74.2963164, lat 40.4983251),
@@ -747,8 +782,10 @@ are unavailable; no test query is silently dropped.
 
 Canonical road coverage, road-mode filtering, representative-point approximation,
 and missing or distant network geometry limit off-network interpretation. A
-missing canonical network explicitly makes this evaluation incomplete. Prepared
-geometry never substitutes for it. These JSD and distance values are not
+missing canonical network uses original raw .geo polylines as a source-map
+reference, recorded in network.reference. This does not provide independent
+canonical validation, so canonical completeness remains false even when all
+12 metrics are available. Prepared training geometry is never used as fallback. These JSD and distance values are not
 interchangeable with historical MobilityGPT reports, which use other reference
 populations, point weighting, pairing, and definitions.
 '''
@@ -763,7 +800,8 @@ def main(argv=None):
     parser.add_argument('--network-mode-column')
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 1)//2))
-    parser.add_argument('--allow-missing-network', action='store_true')
+    parser.add_argument('--allow-missing-network', action='store_true',
+                        help='Compatibility flag; raw .geo fallback is now automatic')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--validate-only', action='store_true')
     mode.add_argument('--benchmark-only', action='store_true', help='Validate, time three full raw-parent pairs, and stop without primary scores')
@@ -783,14 +821,18 @@ def main(argv=None):
     network_present = args.canonical_network is not None
     if network_present:
         require(args.canonical_network.is_file(), f'Supplied canonical network is not a file: {args.canonical_network}')
-    require(network_present or args.allow_missing_network, 'Canonical network required; supply --canonical-network or explicitly --allow-missing-network')
-    versions = dependencies(network_present)
+    versions = dependencies(True)
     print('Validating and hashing all inputs...', flush=True)
     train, test, groups, adjacency, coverage, before, config = load_inputs(args)
     tree = transformer = None
     network = dict(unavailable_reason='Canonical network not supplied or file missing')
     if network_present:
         tree, transformer, network = load_road_spatial_index(args.canonical_network, args.network_layer, args.network_mode_column)
+        network['reference'] = 'supplied_canonical'
+    else:
+        from .input_names import input_paths
+        require(args.network_mode_column is None, '--network-mode-column requires --canonical-network')
+        tree, transformer, network = load_raw_road_spatial_index(input_paths(raw)['nyc.geo'])
     validation_seconds = time.perf_counter()-started
     out.mkdir(parents=True, exist_ok=False)
     manifest = dict(status='validated' if args.validate_only else 'running', complete=False,
@@ -866,8 +908,10 @@ def main(argv=None):
         write_json(out/'progress.json', dict(completed_groups=len(rows), rows=rows, diagnostics=diagnostics))
     after = hashes([Path(p) for p in before])
     require(before == after, 'Input hashes changed during evaluation')
-    manifest.update(status='complete' if tree is not None else 'incomplete',
-                    complete=tree is not None, input_hashes_after=after, input_hashes_preserved=True)
+    manifest.update(status='complete' if network_present else 'incomplete',
+                    complete=network_present, metrics_complete=all(
+                        isinstance(row[name], (int, float)) and math.isfinite(row[name])
+                        for row in rows for name in METRICS), input_hashes_after=after, input_hashes_preserved=True)
     manifest['timings']['total_seconds'] = time.perf_counter()-started
     write_json(out/'manifest.json', manifest)
     write_json(out/'results.json', dict(**manifest, results=rows, diagnostics=diagnostics))
@@ -882,6 +926,7 @@ def main(argv=None):
             writer.writerow({**{k:v for k,v in row.items() if k != 'unavailable_reasons'},
                              **{m+'_reason': row['unavailable_reasons'].get(m, '') for m in METRICS}})
     report = f'# MobilityGPT notebook-compatible evaluation\n\nStatus: {manifest["status"]}.\n\n'+table(rows)+'\n\n'+DEFINITIONS
+    report += '\nRoad reference: '+network['reference']+'. '+network.get('limitation', '')+'\n'
     report += '\nCoverage and dependence diagnostics:\n\n```json\n'+json.dumps(coverage, indent=2)+'\n```\n'
     report += '\nFull per-group exclusions, denominator counts, timings, network coverage, hashes, and dependency versions are in results.json; sampled identities are in sample_identities.json.\n'
     (out/'report.md').write_text(report)

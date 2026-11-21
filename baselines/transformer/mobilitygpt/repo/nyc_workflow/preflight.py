@@ -3,9 +3,9 @@ import importlib
 import math
 from pathlib import Path
 
-MISSING_NETWORK = ('Canonical assessment INCOMPLETE: no canonical network supplied; '
-    'the run will compute 11 network-independent metrics and report off-network rate as unavailable. '
-    'Prepared geometry is not a substitute for the canonical network.')
+MISSING_NETWORK = ('No canonical network supplied: off-network rate will use the original raw .geo '
+    'polylines as a source-map reference. All 12 metrics are calculated; independent canonical '
+    'assessment remains incomplete.')
 
 
 def require(condition, message):
@@ -43,13 +43,17 @@ def validate_network(settings):
 
 def validate_raw(input_dir):
     from . import preprocessing, metrics
+    from .input_names import input_paths
     raw = Path(input_dir)
+    paths = input_paths(raw)
     roads, outgoing, incoming, relation_count = preprocessing.load_network(raw)
-    geometry = metrics.load_geo_id_to_latlon(raw/'nyc.geo')
+    geometry = metrics.load_geo_id_to_latlon(paths['nyc.geo'])
     require(set(geometry) == roads, 'Raw geometry/road identity mismatch')
-    metrics.load_rel_adjacency(raw/'nyc.rel', geometry)
-    train, parents = preprocessing.load_trips(raw/'nyc_mm_train.csv', roads, outgoing, incoming)
-    test, test_parents = preprocessing.load_trips(raw/'nyc_mm_test.csv', roads, outgoing, incoming, parents)
+    metrics.load_rel_adjacency(paths['nyc.rel'], geometry)
+    train, parents = preprocessing.load_trips(paths['nyc_mm_train.csv'], roads, outgoing, incoming)
+    test, test_parents = preprocessing.load_trips(paths['nyc_mm_test.csv'], roads, outgoing, incoming, parents)
+    # Validate fallback geometry/dependencies before any training.
+    metrics.load_raw_road_spatial_index(paths['nyc.geo'])
     return dict(roads=len(roads), relations=relation_count, training_parents=len(train),
                 test_parents=len(test), parent_overlap=len(parents & test_parents))
 
@@ -67,7 +71,10 @@ def validate_cuda():
 def validate(config):
     validate_configuration(config)
     from . import metrics
-    versions = metrics.dependencies(config['metrics']['canonical_network'] is not None)
+    versions = metrics.dependencies(True)
+    require(config['metrics']['canonical_network'] is not None
+            or config['metrics']['network_mode_column'] is None,
+            '--network-mode-column requires --canonical-network')
     for name in ('torch', 'pandas', 'geopandas', 'shapely', 'geopy', 'opacus', 'transformers',
                  'nyc_workflow.pretraining', 'nyc_workflow.dpo', 'preprocessing.gravity_based_sampling'):
         importlib.import_module(name)

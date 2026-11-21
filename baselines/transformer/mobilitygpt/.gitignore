@@ -15,7 +15,8 @@ runs/
 archives/
 visualizations/
 evaluation_outputs/
-NYC/
+logs/
+repo/NYC/
 !requirements-nyc.txt
-!nyc_workflow/requirements.txt
-nyc_workflow/output/
+!repo/nyc_workflow/requirements.txt
+repo/nyc_workflow/output/

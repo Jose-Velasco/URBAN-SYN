@@ -379,8 +379,9 @@ class ArtifactAndNetworkTests(unittest.TestCase):
         self.assertEqual(len(strict['results']),12)
         self.assertFalse(strict['complete'])
         self.assertEqual(strict['status'],'incomplete')
-        self.assertIsNone(strict['results'][0]['off_network_rate'])
-        self.assertIn('off_network_rate',strict['results'][0]['unavailable_reasons'])
+        self.assertIsInstance(strict['results'][0]['off_network_rate'], float)
+        self.assertNotIn('off_network_rate',strict['results'][0]['unavailable_reasons'])
+        self.assertEqual(strict['network']['reference'], 'raw_geo_derived')
         self.assertTrue(strict['input_hashes_preserved'])
         with (self.root/'full/metrics.csv').open() as f:
             self.assertEqual(len(list(csv.DictReader(f))),12)
@@ -388,11 +389,8 @@ class ArtifactAndNetworkTests(unittest.TestCase):
     def test_cli_network_required_and_benchmark_only(self):
         output=self.root/'output'
         args=['--run-dir',str(self.run),'--raw-data-dir',str(self.raw),'--output-dir',str(output)]
-        with self.assertRaisesRegex(ValueError,'Canonical network required'):
-            m.main(args)
-        self.assertFalse(output.exists())
         with patch('sys.stdout',new=io.StringIO()):
-            m.main(args+['--allow-missing-network','--benchmark-only'])
+            m.main(args+['--benchmark-only'])
         result=json.loads((output/'manifest.json').read_text())
         self.assertEqual(result['status'],'benchmark_only')
         self.assertFalse((output/'metrics.csv').exists())
@@ -410,7 +408,8 @@ class ArtifactAndNetworkTests(unittest.TestCase):
         result = json.loads((output/'results.json').read_text())
         self.assertEqual(result['status'], 'incomplete')
         self.assertEqual(len(result['results']), 12)
-        self.assertTrue(all(row['off_network_rate'] is None for row in result['results']))
+        self.assertTrue(all(isinstance(row['off_network_rate'], float) for row in result['results']))
+        self.assertEqual(result['network']['reference'], 'raw_geo_derived')
         with self.assertRaisesRegex(ValueError, 'separate'):
             m.main(['--run-dir', str(self.run), '--raw-data-dir', str(self.raw),
                     '--output-dir', str(self.run/'prepared/overwrite'), '--allow-missing-network'])
@@ -436,6 +435,54 @@ class ArtifactAndNetworkTests(unittest.TestCase):
         self.assertEqual(len(results['results']),12)
         self.assertTrue(all(r['off_network_rate'] is not None for r in results['results']))
         self.assertEqual(results['input_hashes_before'][str(network)],m.fingerprint(network))
+
+
+class RawNetworkFallbackTests(unittest.TestCase):
+    def write_geo(self, path, coordinates, duplicate=False):
+        with path.open('w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=['geo_id', 'type', 'coordinates'])
+            writer.writeheader()
+            row = dict(geo_id=0, type='LineString', coordinates=json.dumps(coordinates))
+            writer.writerow(row)
+            if duplicate:
+                writer.writerow(row)
+
+    def test_raw_polyline_matches_explicit_network_and_keeps_curvature(self):
+        import geopandas as gpd
+        from shapely.geometry import LineString
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); geo = root/'nyc.geo'
+            coordinates = [[-74., 40.], [-74.001, 40.002], [-73.998, 40.]]
+            self.write_geo(geo, coordinates)
+            network = root/'roads.gpkg'
+            gpd.GeoDataFrame(geometry=[LineString(coordinates)], crs=4326).to_file(
+                network, layer='roads', driver='GPKG')
+            tree, transform, metadata = m.load_raw_road_spatial_index(geo)
+            reference, reference_transform, _ = m.load_road_spatial_index(network)
+            # Endpoint average lies away from this curved line, although its
+            # road ID is valid; preserve the established representative metric.
+            points = {'t': np.array([[40., -73.999], [40.002, -74.001]])}
+            rate, diag = m.compute_off_network_rate(points, tree, transform)
+            expected, expected_diag = m.compute_off_network_rate(points, reference, reference_transform)
+            self.assertEqual(rate, expected)
+            self.assertEqual(diag, expected_diag)
+            self.assertEqual(diag['off_network_point_count'], 1)
+            self.assertEqual(metadata['reference'], 'raw_geo_derived')
+            self.assertEqual(metadata['source_file'], m.fingerprint(geo))
+            self.assertEqual(metadata['source_road_count'], 1)
+
+    def test_raw_network_rejects_bad_coordinates_and_duplicate_ids(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            geo = Path(temporary)/'nyc.geo'
+            for coordinates in ([[181., 40.], [-74., 40.]], [[-74., 40.]],
+                                [[-74., 40.], [-74., 40.]]):
+                with self.subTest(coordinates=coordinates):
+                    self.write_geo(geo, coordinates)
+                    with self.assertRaises(ValueError):
+                        m.load_raw_road_spatial_index(geo)
+            self.write_geo(geo, [[-74., 40.], [-74.001, 40.001]], duplicate=True)
+            with self.assertRaisesRegex(ValueError, 'Duplicate geometry'):
+                m.load_raw_road_spatial_index(geo)
 
 
 if __name__=='__main__':

@@ -150,7 +150,7 @@ class UnattendedWorkflowTests(unittest.TestCase):
             result = preflight.validate(config)
         self.assertTrue(result['passed'])
         self.assertFalse(result['canonical_network']['complete'])
-        self.assertIn('11 network-independent metrics', result['canonical_network']['unavailable_reason'])
+        self.assertIn('original raw .geo', result['canonical_network']['unavailable_reason'])
         self.assertIn('pretrain', pipeline.commands(Path('/tmp/new'), config))
 
     def test_invalid_supplied_network_fails_before_raw_processing_or_cuda(self):
@@ -171,6 +171,7 @@ class UnattendedWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             run = Path(temporary); (run/'canonical_metrics').mkdir()
             config = pipeline.configuration(run/'raw')
+            config['schema_version'] = 3
             row = {name: None if name == 'off_network_rate' else .1 for name in METRICS}
             row['unavailable_reasons'] = {'off_network_rate': 'Canonical network unavailable'}
             result = dict(status='incomplete', complete=False, input_hashes_preserved=True,
@@ -180,6 +181,28 @@ class UnattendedWorkflowTests(unittest.TestCase):
             result['results'][0]['off_network_rate'] = 0
             path.write_text(json.dumps(result))
             with self.assertRaisesRegex(ValueError, 'Fabricated off-network'):
+                pipeline.check_stage(run, 'canonical_metrics', config)
+
+    def test_raw_reference_completion_requires_finite_score_and_provenance(self):
+        from nyc_workflow.metrics import METRICS
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Path(temporary); (run/'canonical_metrics').mkdir()
+            config = pipeline.configuration(run/'raw')
+            rows = [{**{name: .1 for name in METRICS}, 'unavailable_reasons': {}}
+                    for _ in range(12)]
+            result = dict(status='incomplete', complete=False, input_hashes_preserved=True,
+                          network={'reference': 'raw_geo_derived'}, results=rows)
+            path = run/'canonical_metrics/results.json'
+            path.write_text(json.dumps(result))
+            pipeline.check_stage(run, 'canonical_metrics', config)
+            rows[0]['off_network_rate'] = None
+            path.write_text(json.dumps(result))
+            with self.assertRaisesRegex(ValueError, 'Unavailable/nonfinite'):
+                pipeline.check_stage(run, 'canonical_metrics', config)
+            rows[0]['off_network_rate'] = .1
+            result['network'] = {}
+            path.write_text(json.dumps(result))
+            with self.assertRaisesRegex(ValueError, 'reference provenance'):
                 pipeline.check_stage(run, 'canonical_metrics', config)
 
 
