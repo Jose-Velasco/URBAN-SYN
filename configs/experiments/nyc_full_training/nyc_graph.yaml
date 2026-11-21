@@ -89,7 +89,7 @@ model:
     hidden_dim: 256
     output_dim: 128
     num_layers: 3
-    dropout: 0.1
+    dropout: 0.45
     activation: relu        # Also supports e.g. gelu, elu, leaky_relu via PyG resolver.
     normalization: layer    # layer | layer_norm | batch | batch_norm | none | null
     residual: true
@@ -98,7 +98,7 @@ model:
       heads: 4
       concat: true
       final_concat: true
-      attention_dropout: 0.1
+      attention_dropout: 0.5
       add_self_loops: false  # Different from graph.allow_self_loops (physical topology).
     
     gine:                   # Not used while architecture=gatv2; provided for easy switching.
@@ -108,6 +108,6 @@ model:
         hidden_dim: 128
         num_layers: 3
         activation: relu
-        dropout: 0.1
+        dropout: 0.45
         normalization: layer_norm
         plain_last: true

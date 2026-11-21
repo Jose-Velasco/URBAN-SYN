@@ -19,7 +19,7 @@ pretraining:
   positives_per_seed: 1                            # Currently only 1 is supported.
   negatives:
     strategy: mixed                                # khop | mixed; controls directed negative sampling.
-    amount: 4                                     # Negative examples per real positive link.
+    amount: 25                                     # Negative examples per real positive link.
     k_hops: 4                                     # Hard negatives at directed distance 2..K.
     hard_fraction: 0.75                           # Fraction of hard negatives for mixed strategy.
     evaluation_chunk_size: 128                    # Positive links processed per eval sampling chunk.
@@ -28,7 +28,7 @@ pretraining:
     hidden_dim: 128                                # Link scorer MLP hidden width.
     num_layers: 3                                  # Includes final single-logit layer.
     activation: relu
-    dropout: 0.3
+    dropout: 0.45
     normalization: layer_norm                      # layer_norm | batch_norm | null
 
 training:
@@ -52,8 +52,8 @@ training:
     eps: 1.0e-8
   early_stopping:
     enabled: true
-    patience: 15                                   # Stop when validation loss fails to improve.
-    min_delta: 0.0                                 # Minimum improvement needed.
+    patience: 10                                   # Stop when validation loss fails to improve.
+    min_delta: 0.0001                                 # Minimum improvement needed.
   
   checkpoint:
     save_best: true                                # Required for validation-selected encoder.pt.
