@@ -58,7 +58,7 @@ training:
   checkpoint:
     save_best: true                                # Required for validation-selected encoder.pt.
     save_last: false                                # Useful for restoring interrupted training.
-    every_epochs: 200                              # Also keep numbered epoch checkpoints.
+    every_epochs: 250                              # Also keep numbered epoch checkpoints.
     resume_from: null
 
 tracking:
