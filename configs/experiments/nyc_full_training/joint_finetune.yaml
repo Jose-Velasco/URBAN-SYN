@@ -79,7 +79,7 @@ training:
     monitor: auto                                  # auto -> val objective when validation enabled.
     save_last: false                                # Recovery checkpoint for a long HPC run.
     save_best: true                                # Selected checkpoint for generation.
-    every_epochs: 200                              # Additional numbered checkpoints every 100 epochs.
+    every_epochs: 250                              # Additional numbered checkpoints every 100 epochs.
     resume_from: null                              # Set to compatible last.pt to resume.
 
 tracking:
