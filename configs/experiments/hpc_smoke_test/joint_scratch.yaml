@@ -104,7 +104,8 @@ generation:
   checkpoint_choice: best      # Supported: best | last.
   road_layer: roads            # GeoPackage layer containing road geometries.
   output_name: nyc_generated_gps.parquet  # Filename inside the run's generated/ directory.
-  num_trajectories: null         # Positive integer; null uses counts from the training length distribution.
+  # num_trajectories: null         # Positive integer; null uses counts from the training length distribution.
+  num_trajectories: 8         # Positive integer; null uses counts from the training length distribution.
   batch_size: 16                # Number of trajectories sampled per generation batch.
   sampler:
     name: ddpm                 # Only supported sampler currently: ddpm.
