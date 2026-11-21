@@ -72,12 +72,21 @@ if [[ -z "${SLURM_JOB_ID:-}" ]]; then
     exit 2
 fi
 
-# By default, infer the project root from this script's location.
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-PROJECT_ROOT="${URBAN_SYN_PROJECT_ROOT:-$(cd -- "$SCRIPT_DIR/../.." && pwd -P)}"
+# Slurm copies submitted batch scripts into its spool directory before running
+# them. Do not use BASH_SOURCE to locate other project files: it points to the
+# spool copy (for example /var/spool/slurmd/job12345), not this checkout.
+# submit.sh supplies the project root explicitly. For direct sbatch use,
+# fall back to the directory from which the job was submitted (not the spool).
+PROJECT_ROOT="${URBAN_SYN_PROJECT_ROOT:-${SLURM_SUBMIT_DIR:-}}"
+if [[ -z "$PROJECT_ROOT" || ! -f "$PROJECT_ROOT/hpc/urban_syn/study_checkpoints.py" ]]; then
+    echo "ERROR: Cannot find the URBAN-SYN checkout. Set URBAN_SYN_PROJECT_ROOT or submit from the repository root." >&2
+    exit 2
+fi
 PROJECT_ROOT="$(cd -- "$PROJECT_ROOT" && pwd -P)"
 SIF="${URBAN_SYN_SIF:-$HOME/containers/urban-syn.sif}"
 LOG_DIR="$PROJECT_ROOT/hpc/urban_syn/logs"
+# Look up helpers from the mounted repository, never from Slurm's spool copy.
+STUDY_CHECKPOINTS="$PROJECT_ROOT/hpc/urban_syn/study_checkpoints.py"
 
 # A dependent joint Slurm job only starts after the producing pretraining job
 # succeeds. Resolve its immutable job-specific reference, not the study's
@@ -93,7 +102,7 @@ if [[ -n "$ENCODER_FROM_JOB" || -n "$ENCODER_SOURCE_EXPERIMENT" ]]; then
         echo "ERROR: --encoder-from-job must be a numeric Slurm job ID." >&2
         exit 2
     fi
-    ENCODER_CHECKPOINT="$(python3 "$SCRIPT_DIR/study_checkpoints.py" \
+    ENCODER_CHECKPOINT="$(python3 "$STUDY_CHECKPOINTS" \
         --project-root "$PROJECT_ROOT" \
         --study-name "$URBAN_SYN_STUDY_NAME" \
         --experiment-key "$ENCODER_SOURCE_EXPERIMENT" \
@@ -356,7 +365,7 @@ PIPELINE_PID=$!
 if wait "$PIPELINE_PID"; then
     # The study reference changes only after a successful train or all job.
     if [[ -n "$RESULT_FILE_HOST" ]]; then
-        python3 "$SCRIPT_DIR/study_checkpoints.py" \
+        python3 "$STUDY_CHECKPOINTS" \
             --project-root "$PROJECT_ROOT" \
             --study-name "$URBAN_SYN_STUDY_NAME" \
             --experiment-key "$URBAN_SYN_EXPERIMENT_KEY" \
