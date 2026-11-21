@@ -1,192 +1,194 @@
-# URBAN-SYN on SJSU HPC: Slurm + Apptainer
+# Run URBAN-SYN on HPC (Slurm + Apptainer)
 
-This guide explains how to run the existing URBAN-SYN experiment pipeline on SJSU's GPU cluster. Slurm allocates the hardware, Apptainer supplies the software environment, and the Python pipeline handles graph preparation, training, and generation.
+**Slurm** allocates CPU/GPU resources. **Apptainer** runs the container's Python environment. Submit from the **repository root on an HPC login node**; the training itself runs on a compute node.
 
-There is **no separate HPC training implementation**. The same experiment YAML and `urban_syn.experiment` stages work locally and on HPC.
+See [Container setup](README.md) if `~/containers/urban-syn.sif` has not been built yet. See [Experiment YAMLs](../../configs/experiments/README.md) to change training settings and [Graph YAMLs](../../configs/graph/README.md) to change road features.
 
-For building and transferring the container, see [README.md](README.md). For model configuration and NYC data preparation, see the [experiment README](../../src/urban_syn/experiment/README.md). For downloading runs and viewing them in a browser, see [README_MLFLOW.md](README_MLFLOW.md).
+## 1. Files needed on HPC
 
-## 1. What you need on HPC
+Keep the same relative paths used by the YAMLs. A typical NYC layout looks like this:
 
-- An Apptainer image at `$HOME/containers/urban-syn.sif`, or a custom absolute path via `URBAN_SYN_SIF`.
-- A checkout of the URBAN-SYN repository with its experiment and graph YAML files.
-- The prepared **training** road-sequence Parquet and the shared road-network GeoPackage.
-- The training trajectory-length distribution when running generation.
-- The training FMM matches CSV **if** the graph's transition-count feature is enabled and the graph cache must be built.
-- A valid GPU allocation, using the partition and GPU type allowed by the cluster.
+```text
+~/.../URBAN-SYN/                         # Repository root (location is up to you)
+├── configs/
+│   └── experiments/
+│       └── hpc_smoke_test/
+│           ├── study.yaml              # Which experiment to run; HPC defaults
+│           ├── nyc_graph.yaml          # Road features, transforms, GNN settings
+│           ├── nyc_link_pretrain.yaml  # BCE pretraining configuration
+│           ├── nyc_link_pretrain_bpr.yaml
+│           ├── joint_scratch.yaml
+│           ├── joint_frozen.yaml
+│           └── joint_finetune.yaml
+├── fmm_scripts/
+│   ├── data/
+│   │   ├── nyc_15s_fmm_trip_id_map.csv
+│   │   └── road_network/
+│   │       └── nyc.gpkg
+│   └── outputs/
+│       ├── urban_syn_ready/
+│       │   ├── nyc_15s_enriched_moves_train_prepared_road_sequences.parquet
+│       │   ├── nyc_15s_enriched_moves_test_prepared_road_sequences.parquet
+│       │   └── nyc_15s_enriched_moves_train_length_distribution.npy
+│       └── nyc_15s_enriched_moves/
+│           └── nyc_15s_train_fmm_matches.csv
+├── hpc/urban_syn/
+│   ├── submit.sh
+│   ├── run_urban_syn.sbatch
+│   └── ...
+├── src/urban_syn/                      # Model and graph code
+└── outputs/                            # Created by runs
+    ├── pyg/nyc_gnn/processed/          # Graph cache (created if absent)
+    └── experiments/                    # Checkpoints, generated GPS, MLflow
 
-**You do not need to transfer `road_graph.pt` or `preprocessor.joblib` for a new checkout.** The `prepare-graph` stage generates them from the source GeoPackage and graph YAML if either is missing. The pipeline does not perform sampling, FMM map matching, or the train/test split. Prepare those inputs before submitting a model job.
-
-The scripts mount the repository at `/workspace` and execute `/opt/venv/bin/python` inside the SIF. Package installation is not repeated during jobs. Both input and output paths are resolved to absolute locations during execution, while the experiment YAML can keep its convenient repository-relative paths.
-
-## 2. Choose and submit a pipeline stage
-
-Run these commands from the HPC URBAN-SYN repository root:
-
-```bash
-# Full workflow: validate, prepare graph, train, then generate if enabled.
-bash hpc/urban_syn/submit.sh all \
-  configs/experiments/nyc_joint.yaml
-
-# Train only; prepares the graph when necessary.
-bash hpc/urban_syn/submit.sh train \
-  configs/experiments/nyc_joint.yaml
-
-# Generate from a specified checkpoint, without retraining.
-bash hpc/urban_syn/submit.sh generate \
-  configs/experiments/nyc_joint.yaml
-
-# Prepare or reuse the graph cache only.
-bash hpc/urban_syn/submit.sh prepare-graph \
-  configs/experiments/nyc_joint.yaml
+~/containers/urban-syn.sif             # Apptainer image; stored outside repo
 ```
 
-Two useful planning modes are available:
+The names and locations in `configs/experiments/hpc_smoke_test/` above are one **example**. If your `study.yaml` points to experiment YAMLs in another directory (such as `nyc_gnn_comparison/`), keep those files **at the referenced paths**, rather than moving them to match this picture.
+
+| Input | Used for |
+|---|---|
+| Prepared **train** road-sequence Parquet | Joint training; required |
+| Road GeoPackage (`nyc.gpkg`) | Building graph, reconstructing GPS during generation; required |
+| Training length-distribution `.npy` | Sampling generated trajectory lengths; needed for generation |
+| Training FMM matches CSV (`cpath` column) | Only when the graph uses `edge_transition_count` |
+| Trip-ID mapping CSV | Grouped validation; may be required by the experiment YAML |
+| Prepared **test** sequence Parquet | Held-out data when configured; not a substitute for training data |
+| Graph cache (`road_graph.pt`, `preprocessor.joblib`) | Output; generated automatically if missing |
+
+These are *prepared* inputs from the existing FMM/data workflow. This pipeline does not download road networks, map-match raw GPS, or prepare the train/test split.
+
+To upload a missing file, copy it from your workstation to the **same path relative to the HPC repository root**. For example, after replacing the remote login and repository location:
 
 ```bash
-# Display the selected stages without checking files.
-bash hpc/urban_syn/submit.sh all \
-  configs/experiments/nyc_joint.yaml --dry-run
-
-# Check source inputs and settings without building the graph or training.
-bash hpc/urban_syn/submit.sh all \
-  configs/experiments/nyc_joint.yaml --validate-only
+scp fmm_scripts/data/road_network/nyc.gpkg \
+  USER@coe-hpc1.sjsu.edu:~/PATH/TO/URBAN-SYN/fmm_scripts/data/road_network/
 ```
 
-`all` runs `validate`, `prepare-graph`, and `train`. It adds `generate` when `generation.enabled: true`, and adds `export-eval` when a held-out GPS reference is configured. The optional handoff writes a manifest for the shared evaluator; it does not run evaluation metrics.
+Use the same pattern for the train/test Parquet files, trip map, length distribution, and optional training FMM CSV. Create destination folders first if necessary. Before submitting, compare `paths.*` and the graph `dataset.network_path` / `graph.transforms.edge_transition_count.match_csv` against what you uploaded.
 
-### Standalone generation
+## 2. What each experiment runs
 
-For a generation-only job, set `generation.checkpoint` to an existing, compatible training checkpoint in the YAML:
+A study YAML lists experiments. `--experiment` selects **one**; `--stage all` runs that experiment's stages, **not the entire study**.
+
+| Study key | Workflow |
+|---|---|
+| `joint_scratch` | Initialize GNN randomly → joint diffusion training → generation if enabled |
+| `joint_frozen` | Pretrain GNN → select encoder → freeze GNN → diffusion training → generation |
+| `joint_finetune` | Pretrain GNN → select encoder → train GNN and diffusion together → generation |
+| `pretrain_bpr` / `pretrain_bce` | Train/test the directed road-link GNN; save `encoder.pt` |
+
+For pretrained joint runs, the launcher submits **two jobs**. The second waits for the first to succeed (`afterok`) and loads the encoder from that **specific** pretraining job; you don't need to edit checkpoint paths or manually wait. For generation, the joint YAML must have:
 
 ```yaml
 generation:
   enabled: true
-  checkpoint: outputs/experiments/nyc_joint_example/<run_id>/checkpoints/best.pt
+  checkpoint: null       # Use best checkpoint from this joint training run
   checkpoint_choice: best
-  num_trajectories: 100
-  sampler:
-    name: ddpm
+  num_trajectories: 8   # Small amount for a quick run; choose a larger count later
 ```
 
-Replace `<run_id>` with the actual run directory. Configure `paths.road_network` and `paths.length_distribution` as well. The `generate` target loads that checkpoint and prepares the graph if required, but **does not train**. For `all`, leave `generation.checkpoint: null` to use the selected checkpoint from the current training run.
+## 3. Copy-paste HPC examples
 
-Generation writes into the checkpoint's run directory. Choose a different `generation.output_name` if you want multiple exports from the same checkpoint without replacing the earlier generated file.
+These commands use an A100 allocation and exclude `cs002`, matching the tested HPC setup. They do **not** require exported shell variables or editing paths if the study YAML and inputs use the layout above. Run them **one at a time** to keep the outputs easy to follow.
 
-## 3. Slurm resources
-
-The runner's normal resource request is:
-
-| Resource | Default request |
-|---|---|
-| Partition | `gpuqm` |
-| GPU | 1 A100 |
-| CPU | 8 cores |
-| Memory | 64 GB |
-| Wall time | 1 day |
-
-You can override these **for a single submission** without editing the `.sbatch` file. For example:
+### From scratch (train + generate)
 
 ```bash
+SBATCH_EXCLUDE=cs002 \
 SBATCH_PARTITION=gpuqs \
-SBATCH_TIMELIMIT=00:30:00 \
 SBATCH_GRES=gpu:a100:1 \
-SBATCH_CPUS_PER_TASK=4 \
-SBATCH_MEM_PER_NODE=32G \
-bash hpc/urban_syn/submit.sh all \
-  configs/experiments/nyc_joint.yaml
+SBATCH_TIMELIMIT=01:00:00 \
+SBATCH_MEM_PER_NODE=64G \
+SBATCH_CPUS_PER_TASK=8 \
+bash hpc/urban_syn/submit.sh \
+  --study configs/experiments/hpc_smoke_test/study.yaml \
+  --experiment joint_scratch \
+  --stage all
 ```
 
-These `SBATCH_*` variables request Slurm resources without changing model hyperparameters. **Use the YAML for epochs, batches, optimizer, checkpoints, generation, and MLflow.** Partition, GPU, CPU, RAM, and wall time are scheduling choices. Confirm site-supported settings with `sinfo` or `scontrol`, and verify the actual allocation with `scontrol show job JOB_ID`, because the applied resources can differ from the requested overrides.
-
-The `submit.sh` helper also sets absolute job working-directory and stdout/stderr paths. Use it for normal submissions rather than calling the batch script with `bash`.
-
-If the SIF or project checkout is in a different place, set:
+### Pretrained, frozen GNN (pretrain + joint + generate)
 
 ```bash
-export URBAN_SYN_PROJECT_ROOT=/absolute/path/to/URBAN-SYN
-export URBAN_SYN_SIF=/absolute/path/to/urban-syn.sif
+SBATCH_EXCLUDE=cs002 \
+SBATCH_PARTITION=gpuqs \
+SBATCH_GRES=gpu:a100:1 \
+SBATCH_TIMELIMIT=01:00:00 \
+SBATCH_MEM_PER_NODE=64G \
+SBATCH_CPUS_PER_TASK=8 \
+bash hpc/urban_syn/submit.sh \
+  --study configs/experiments/hpc_smoke_test/study.yaml \
+  --experiment joint_frozen \
+  --stage all
 ```
 
-The selected YAML must be inside the project checkout so its path can be mapped into `/workspace`.
+### Pretrained, fine-tuned GNN (pretrain + joint + generate)
 
-## 4. MLflow tracking
-
-MLflow records separate runs, with their parameters, metrics, tags, and selected artifacts. **You do not need a running MLflow server to log**. Tracking storage is controlled centrally by the experiment YAML:
-
-```yaml
-tracking:
-  enabled: true
-  provider: mlflow
-  experiment_name: gnn_diff_rntraj_nyc
-  tracking_uri: null
-  storage_scope: shared  # shared or job
+```bash
+SBATCH_EXCLUDE=cs002 \
+SBATCH_PARTITION=gpuqs \
+SBATCH_GRES=gpu:a100:1 \
+SBATCH_TIMELIMIT=01:00:00 \
+SBATCH_MEM_PER_NODE=64G \
+SBATCH_CPUS_PER_TASK=8 \
+bash hpc/urban_syn/submit.sh \
+  --study configs/experiments/hpc_smoke_test/study.yaml \
+  --experiment joint_finetune \
+  --stage all
 ```
 
-| Scope | Backend location under `outputs/experiments/` | When to use it |
-|---|---|---|
-| `shared` | `mlflow/tracking.db` | Sequential runs that should appear together in one MLflow UI |
-| `job` | `mlflow/jobs/<job_id>/tracking.db` | Concurrent jobs where SQLite writers should be isolated |
+**Email notifications (optional):** Add `URBAN_SYN_MAIL_USER=your.email@example.edu` and `URBAN_SYN_MAIL_TYPE=BEGIN,END,FAIL` before `bash` in any command. Replace the example address. The `SBATCH_*` settings override the study YAML `hpc:` defaults. Increase `SBATCH_TIMELIMIT` for long runs; GPU time limits are not controlled by `training.epochs`.
 
-Choose the scope **explicitly** in the YAML. A new run has its own MLflow ID in either mode; reusing the same YAML does not overwrite previous runs. With per-job databases, runs are preserved but cannot automatically be compared in one MLflow UI without consolidation. A shared SQLite backend is convenient for sequential experiments, but concurrent access on network storage can lead to locking problems.
+To run a pretraining-only experiment, change `--experiment` to `pretrain_bpr` or `pretrain_bce`. The standalone syntax is still supported: `bash hpc/urban_syn/submit.sh all configs/experiments/nyc_joint.yaml`.
 
-If `tracking.tracking_uri` is set explicitly, it takes precedence over the automatic layout. The runner passes the Slurm job ID into Apptainer so it can be recorded with the run and used when `storage_scope: job`. For local snapshot viewing, including Windows 11 Git Bash path conversion, follow [README_MLFLOW.md](README_MLFLOW.md).
+## 4. Reuse a checkpoint or generate without retraining
 
-## 5. Where files and logs go
+```bash
+# Reuse a previously registered successful encoder; no pretraining job.
+bash hpc/urban_syn/submit.sh \
+  --study configs/experiments/hpc_smoke_test/study.yaml \
+  --experiment joint_frozen --stage train
+```
 
-Model outputs are written to the **mounted repository**, not to the SIF:
+For an **exact** encoder, add `--encoder-checkpoint path/to/encoder.pt` to a joint submission; this skips automatic pretraining. When using `study.pretrained_from`, keep `model.road_encoder.checkpoint: null` in the joint YAML to avoid competing checkpoint selections.
+
+To generate only, set `generation.checkpoint` in the joint YAML to a compatible **joint** `best.pt`, then use `--stage generate`. Pretraining `encoder.pt` cannot generate trajectories on its own.
+
+## 5. Watch jobs and inspect outputs
+
+```bash
+squeue -u "$USER"                               # Pending/running jobs
+sacct -j JOB_ID --format=JobID,State,ExitCode,Elapsed  # Including finished jobs
+```
 
 ```text
-outputs/experiments/
-├── <experiment_name>/<run_id>/
-│   ├── resolved_config.json
-│   ├── checkpoints/
-│   ├── metrics/history.jsonl
-│   ├── logs/train.log
-│   └── generated/
-└── mlflow/
-    └── ...
+hpc/urban_syn/logs/
+  urban-syn-JOB_ID.out/.err          # Standalone job
+  urban-syn-pretrain-JOB_ID.out/.err # Automatic pretraining
+  urban-syn-joint-JOB_ID.out/.err    # Dependent joint training
+  job-JOB_ID.txt                    # Summary and exit code
+  gpu-JOB_ID.csv                    # GPU resource monitoring
+  resources-JOB_ID.log              # CPU/memory monitoring
 ```
 
-Slurm logs are kept in `hpc/urban_syn/logs/`:
+```bash
+tail -n 40 hpc/urban_syn/logs/urban-syn-joint-JOB_ID.out
+tail -n 40 hpc/urban_syn/logs/urban-syn-joint-JOB_ID.err
+find outputs/experiments -path '*/generated/*.parquet' -type f
+```
 
-| File | What it contains |
+Each run saves files under `outputs/experiments/<experiment.name>/<run_id>/`, including checkpoints, metrics, and generated GPS if enabled. MLflow is stored under `outputs/experiments/mlflow/`; see [MLflow README](README_MLFLOW.md) to view it locally.
+
+## 6. If something fails
+
+| Symptom | Check |
 |---|---|
-| `urban-syn-<job_id>.out` | Pipeline messages and progress |
-| `urban-syn-<job_id>.err` | Errors and warnings |
-| `gpu-<job_id>.csv` | GPU activity, memory, temperature, and power samples |
-| `resources-<job_id>.log` | CPU and memory samples from Slurm |
-| `job-<job_id>.txt` | Job details, resolved paths, Git revision, and exit code |
+| Joint job is pending with `(Dependency)` | Normal until pretraining succeeds. Check pretraining job status. |
+| Joint job never starts | `afterok` requires pretraining to exit successfully; inspect pretraining `.err` and `job-JOB_ID.txt`. |
+| Missing file / invalid YAML path | Check paths against the tree above, including the training-only FMM CSV if enabled. |
+| GNN pretrained checkpoint doesn't load | Graph feature order and GNN architecture must match the pretrained encoder. |
+| CUDA error | Check assigned GPU and node in `job-JOB_ID.txt`; request a working node. |
+| Run completed training but Slurm reports `FAILED` | Inspect `.err` and the last `exit_code`: post-training checkpoint bookkeeping can also fail. |
+| Need to resume | Set `training.checkpoint.resume_from` to a compatible `last.pt` that was saved by an earlier run. |
 
-To check a submitted job:
-
-```bash
-squeue -u "$USER"
-```
-
-` squeue ` shows waiting and running jobs, not completed jobs. For a finished job, use:
-
-```bash
-sacct -j JOB_ID --format=JobID,JobName,State,ExitCode,Elapsed,MaxRSS
-```
-
-Then inspect its messages:
-
-```bash
-tail -n 80 hpc/urban_syn/logs/urban-syn-JOB_ID.err
-tail -n 80 hpc/urban_syn/logs/urban-syn-JOB_ID.out
-```
-
-Replace `JOB_ID` with the Slurm job number. You can also follow a running job with:
-
-```bash
-tail -f hpc/urban_syn/logs/urban-syn-JOB_ID.out
-```
-
-Common first checks are the configured input files, the SIF path, the CUDA allocation, and whether the graph YAML refers to a training FMM CSV available on HPC. A missing PyG cache alone is not an error if source files exist and graph preparation is enabled.
-
-## 6. Resuming and limitations
-
-To continue interrupted training, set `training.checkpoint.resume_from` to a compatible `last.pt` path in the YAML and submit `train` or `all` again. Checkpoints are saved according to the configured epoch cadence. Receiving a Slurm timeout or termination signal does **not** force the runner to write an extra emergency checkpoint.
-
-The current scripts execute one pipeline target per Slurm job on one GPU. They do not provide automatic requeueing, distributed multi-GPU training, or dependent train/generate job submission. These can be added without changing the existing model runner if later experiments require them.
+Use `--validate-only` for file/config checks and `--dry-run` to preview planned stages before allocating a GPU. These checks don't establish that the model's generated trips are realistic; that is handled separately by the shared evaluation workflow.
