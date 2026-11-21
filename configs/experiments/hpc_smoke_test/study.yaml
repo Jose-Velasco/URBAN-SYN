@@ -8,12 +8,12 @@ study:
     pretrain_bce: configs/experiments/hpc_smoke_test/nyc_link_pretrain.yaml
     # joint_scratch: configs/experiments/hpc_smoke_test/nyc_joint.yaml
     # pretrain_bpr: configs/experiments/pretrain/nyc_link_pretrain.yaml
-    joint_scratch: configs/experiments/nyc_gnn_comparison/joint_scratch.yaml
+    joint_scratch: configs/experiments/hpc_smoke_test/joint_scratch.yaml
     joint_frozen:
-      config: configs/experiments/nyc_gnn_comparison/joint_frozen.yaml
+      config: configs/experiments/hpc_smoke_test/joint_frozen.yaml
       pretrained_from: pretrain_bpr
     joint_finetune:
-      config: configs/experiments/nyc_gnn_comparison/joint_finetune.yaml
+      config: configs/experiments/hpc_smoke_test/joint_finetune.yaml
       pretrained_from: pretrain_bpr
 
 hpc:
