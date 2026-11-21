@@ -98,7 +98,7 @@ training:
     resume_from: null           # null = new run; set a last.pt path to continue a previous run.
 
 generation:
-  enabled: false               # Enable after training when generation is desired.
+  enabled: true               # Enable after training when generation is desired.
   checkpoint: null             # null = use a checkpoint from this training run.
                               # For standalone 'generate', specify a compatible .pt path.
   checkpoint_choice: best      # Supported: best | last.
