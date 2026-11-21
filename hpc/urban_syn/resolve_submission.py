@@ -34,6 +34,8 @@ class Submission:
     exclude_nodes: str = ""
     encoder_checkpoint: str = ""
     source_run: str = ""
+    pretrained_from: str = ""
+    pretrain_config: str = ""
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -70,7 +72,8 @@ def _pipeline(experiment: dict[str, Any], config_path: Path) -> str:
 
 def resolve_submission(
     root: Path, *, config: str | None = None,
-    study: str | None = None, experiment_key: str | None = None
+    study: str | None = None, experiment_key: str | None = None,
+    pending_pretrain: bool = False
 ) -> Submission:
     """Resolve YAML selection and scheduling defaults without side effects.
 
@@ -79,6 +82,8 @@ def resolve_submission(
         config: Standalone experiment YAML path, relative to the root.
         study: Optional YAML grouping several experiments and Slurm defaults.
         experiment_key: Name of one experiment listed in the study.
+        pending_pretrain: Validate the pretraining dependency without requiring
+            an existing encoder. Used when Slurm will run pretraining first.
 
     Returns:
         Submission with an absolute config path, pipeline, and scheduling defaults.
@@ -95,6 +100,7 @@ def resolve_submission(
     encoder_checkpoint = ""
     source_run = ""
     pretrained_from = None
+    source_path: Path | None = None
     experiments: dict[str, Any] = {}
     if study is not None:
         if not experiment_key:
@@ -167,35 +173,36 @@ def resolve_submission(
                 "Set model.road_encoder.checkpoint: null when using study pretrained_from "
                 "to avoid two competing checkpoint selections."
             )
-        reference_path = (
-            root / "outputs/experiments/studies" / study_name /
-            pretrained_from / "selected_encoder.json"
-        )
-        if not reference_path.is_file():
-            raise FileNotFoundError(
-                f"No completed encoder has been published for '{pretrained_from}' in "
-                f"study '{study_name}'. Submit that pretraining experiment first, "
-                f"then retry. Expected: {reference_path}"
+        if not pending_pretrain:
+            reference_path = (
+                root / "outputs/experiments/studies" / study_name /
+                pretrained_from / "selected_encoder.json"
             )
-        reference = json.loads(reference_path.read_text(encoding="utf-8"))
-        if (not isinstance(reference, dict) or reference.get("format_version") != 1 or
-                reference.get("study_name") != study_name or
-                reference.get("experiment_key") != pretrained_from):
-            raise ValueError(f"Invalid or mismatched pretraining reference: {reference_path}")
-        source_run = str(reference.get("run_id", ""))
-        run_dir = reference.get("run_dir")
-        encoded = reference.get("encoder_checkpoint")
-        if not source_run or not isinstance(run_dir, str) or not isinstance(encoded, str):
-            raise ValueError(f"Incomplete pretraining reference: {reference_path}")
-        run_path = _inside_project(run_dir, root)
-        selected_path = _inside_project(encoded, root)
-        if selected_path != run_path / "checkpoints/encoder.pt":
-            raise ValueError(f"Pretraining reference has an unexpected encoder path: {reference_path}")
-        if run_path.name != source_run or not selected_path.is_file():
-            raise FileNotFoundError(
-                f"Selected pretrained encoder is missing or does not match its run: {selected_path}"
-            )
-        encoder_checkpoint = str(selected_path)
+            if not reference_path.is_file():
+                raise FileNotFoundError(
+                    f"No completed encoder has been published for '{pretrained_from}' in "
+                    f"study '{study_name}'. Submit that pretraining experiment first, "
+                    f"then retry. Expected: {reference_path}"
+                )
+            reference = json.loads(reference_path.read_text(encoding="utf-8"))
+            if (not isinstance(reference, dict) or reference.get("format_version") != 1 or
+                    reference.get("study_name") != study_name or
+                    reference.get("experiment_key") != pretrained_from):
+                raise ValueError(f"Invalid or mismatched pretraining reference: {reference_path}")
+            source_run = str(reference.get("run_id", ""))
+            run_dir = reference.get("run_dir")
+            encoded = reference.get("encoder_checkpoint")
+            if not source_run or not isinstance(run_dir, str) or not isinstance(encoded, str):
+                raise ValueError(f"Incomplete pretraining reference: {reference_path}")
+            run_path = _inside_project(run_dir, root)
+            selected_path = _inside_project(encoded, root)
+            if selected_path != run_path / "checkpoints/encoder.pt":
+                raise ValueError(f"Pretraining reference has an unexpected encoder path: {reference_path}")
+            if run_path.name != source_run or not selected_path.is_file():
+                raise FileNotFoundError(
+                    f"Selected pretrained encoder is missing or does not match its run: {selected_path}"
+                )
+            encoder_checkpoint = str(selected_path)
 
     # A study's shared graph is a consistency check, not a second copy of the
     # graph feature settings. The individual YAML remains standalone-valid.
@@ -235,7 +242,9 @@ def resolve_submission(
         cpus=setting("cpus_per_task"), mail_user=setting("mail_user"),
         mail_type=setting("mail_type"), study_name=study_name,
         experiment_key=experiment_key or "", exclude_nodes=",".join(excluded),
-        encoder_checkpoint=encoder_checkpoint, source_run=source_run
+        encoder_checkpoint=encoder_checkpoint, source_run=source_run,
+        pretrained_from=pretrained_from or "",
+        pretrain_config=str(source_path) if source_path is not None else ""
     )
 
 
@@ -248,11 +257,15 @@ def main() -> int:
     selection.add_argument("--study")
     parser.add_argument("--experiment")
     parser.add_argument("--field", choices=("pipeline", "config"))
+    parser.add_argument(
+        "--pending-pretrain", action="store_true",
+        help="Validate source YAML without requiring an existing pretraining checkpoint"
+    )
     args = parser.parse_args()
     try:
         selected = resolve_submission(
             args.project_root, config=args.config, study=args.study,
-            experiment_key=args.experiment
+            experiment_key=args.experiment, pending_pretrain=args.pending_pretrain
         )
     except (ValueError, FileNotFoundError, yaml.YAMLError) as error:
         parser.exit(2, f"ERROR: {error}\n")
@@ -266,7 +279,8 @@ def main() -> int:
             selected.config, selected.pipeline, selected.partition, selected.gres,
             selected.time, selected.memory, selected.cpus, selected.mail_user,
             selected.mail_type, selected.study_name, selected.experiment_key,
-            selected.exclude_nodes, selected.encoder_checkpoint, selected.source_run
+            selected.exclude_nodes, selected.encoder_checkpoint, selected.source_run,
+            selected.pretrained_from, selected.pretrain_config
         ):
             print(value)
     return 0

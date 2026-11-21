@@ -22,6 +22,8 @@ MODE=""
 RUN_DIR=""
 CHECKPOINT=""
 ENCODER_CHECKPOINT=""
+ENCODER_FROM_JOB=""
+ENCODER_SOURCE_EXPERIMENT=""
 shift "$(( $# >= 2 ? 2 : $# ))"
 # Keep the historical optional third positional mode, with optional paths.
 while (($#)); do
@@ -29,12 +31,14 @@ while (($#)); do
         --dry-run|--validate-only)
             if [[ -n "$MODE" ]]; then echo "ERROR: Choose only one mode." >&2; exit 2; fi
             MODE="$1"; shift ;;
-        --run-dir|--checkpoint|--encoder-checkpoint)
+        --run-dir|--checkpoint|--encoder-checkpoint|--encoder-from-job|--encoder-source-experiment)
             if (($# < 2)); then echo "ERROR: $1 needs a path." >&2; exit 2; fi
             case "$1" in
                 --run-dir) RUN_DIR="$2" ;;
                 --checkpoint) CHECKPOINT="$2" ;;
                 --encoder-checkpoint) ENCODER_CHECKPOINT="$2" ;;
+                --encoder-from-job) ENCODER_FROM_JOB="$2" ;;
+                --encoder-source-experiment) ENCODER_SOURCE_EXPERIMENT="$2" ;;
             esac
             shift 2 ;;
         *) echo "ERROR: Unrecognized option '$1'." >&2; exit 2 ;;
@@ -74,6 +78,32 @@ PROJECT_ROOT="${URBAN_SYN_PROJECT_ROOT:-$(cd -- "$SCRIPT_DIR/../.." && pwd -P)}"
 PROJECT_ROOT="$(cd -- "$PROJECT_ROOT" && pwd -P)"
 SIF="${URBAN_SYN_SIF:-$HOME/containers/urban-syn.sif}"
 LOG_DIR="$PROJECT_ROOT/hpc/urban_syn/logs"
+
+# A dependent joint Slurm job only starts after the producing pretraining job
+# succeeds. Resolve its immutable job-specific reference, not the study's
+# mutable selected_encoder.json. This keeps concurrent workflows independent.
+if [[ -n "$ENCODER_FROM_JOB" || -n "$ENCODER_SOURCE_EXPERIMENT" ]]; then
+    if [[ -n "$ENCODER_CHECKPOINT" || -z "$ENCODER_FROM_JOB" || \
+          -z "$ENCODER_SOURCE_EXPERIMENT" || -z "${URBAN_SYN_STUDY_NAME:-}" || \
+          "${URBAN_SYN_PIPELINE:-}" != joint ]]; then
+        echo "ERROR: A dependent joint job requires a study, a producing job ID and experiment key; do not also supply --encoder-checkpoint." >&2
+        exit 2
+    fi
+    if [[ ! "$ENCODER_FROM_JOB" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: --encoder-from-job must be a numeric Slurm job ID." >&2
+        exit 2
+    fi
+    ENCODER_CHECKPOINT="$(python3 "$SCRIPT_DIR/study_checkpoints.py" \
+        --project-root "$PROJECT_ROOT" \
+        --study-name "$URBAN_SYN_STUDY_NAME" \
+        --experiment-key "$ENCODER_SOURCE_EXPERIMENT" \
+        --job-id "$ENCODER_FROM_JOB" --resolve-job)"
+    if [[ "$ENCODER_CHECKPOINT" != "$PROJECT_ROOT/"* ]]; then
+        echo "ERROR: Resolved encoder path is outside the mounted repository." >&2
+        exit 2
+    fi
+    echo "Pretrained encoder from Slurm job $ENCODER_FROM_JOB: $ENCODER_CHECKPOINT"
+fi
 
 if [[ ! -f "$SIF" ]]; then
     echo "ERROR: Apptainer image not found: $SIF" >&2
@@ -124,6 +154,8 @@ METADATA_LOG="$LOG_DIR/job-${SLURM_JOB_ID}.txt"
     echo "run_dir=${RUN_DIR:-none}"
     echo "checkpoint_override=${CHECKPOINT:-none}"
     echo "encoder_checkpoint=${ENCODER_CHECKPOINT:-none}"
+    echo "encoder_source_job=${ENCODER_FROM_JOB:-none}"
+    echo "encoder_source_experiment=${ENCODER_SOURCE_EXPERIMENT:-none}"
     echo "config_host=$CONFIG_HOST"
     echo "config_container=$CONFIG_CONTAINER"
     echo "mode=${MODE:-execute}"

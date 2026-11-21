@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Submit one joint-diffusion or link-pretraining job using the shared Slurm runner.
+# Submit one experiment; pretrained joint "all" also submits its pretraining dependency.
 # Existing usage remains: submit.sh [stage] [experiment.yaml] [--dry-run|--validate-only]
 set -euo pipefail
 
@@ -16,8 +16,10 @@ The study YAML provides default Slurm resources. Environment overrides take prio
 
 --run-dir and --checkpoint are supported for standalone link-pretraining stages.
 For joint generation, select generation.checkpoint in the joint experiment YAML.
-Study experiments using pretrained_from select their encoder.pt automatically from a
-previous successful pretraining job; --encoder-checkpoint is a manual alternative.
+For a joint study experiment with pretrained_from, --stage all automatically submits
+pretraining followed by a dependent joint job (generation follows YAML settings).
+For --stage train, a previously published encoder is reused.
+--encoder-checkpoint explicitly selects an existing encoder and skips pretraining.
 USAGE
 }
 
@@ -78,6 +80,12 @@ if [[ -n "$STUDY" ]]; then
 else
     PLAN_ARGS+=(--config "$CONFIG")
 fi
+# A complete joint study experiment may produce its encoder in a future Slurm
+# job. Validate the source YAML now without demanding a checkpoint that does
+# not exist yet. Explicit manual checkpoints likewise need no study reference.
+if [[ -n "$STUDY" && ( ( "$STAGE" == all && -z "$MODE" ) || -n "$ENCODER_CHECKPOINT" || -n "$MODE" ) ]]; then
+    PLAN_ARGS+=(--pending-pretrain)
+fi
 
 # The submission host may not have PyYAML. In that case, use the existing
 # Apptainer image, which already contains PyYAML through the project lockfile.
@@ -104,7 +112,7 @@ else
     # The container returns /workspace paths. Use host paths for Slurm's input check.
 fi
 mapfile -t PLAN < "$PLAN_FILE"
-if ((${#PLAN[@]} != 14)); then echo "ERROR: Invalid submission settings." >&2; exit 2; fi
+if ((${#PLAN[@]} != 16)); then echo "ERROR: Invalid submission settings." >&2; exit 2; fi
 CONFIG_HOST="${PLAN[0]}"
 PIPELINE="${PLAN[1]}"
 if [[ "$CONFIG_HOST" == /workspace/* ]]; then
@@ -128,6 +136,11 @@ if [[ -z "$ENCODER_CHECKPOINT" ]]; then
     ENCODER_CHECKPOINT="${PLAN[12]}"
 fi
 SOURCE_RUN="${PLAN[13]}"
+SOURCE_KEY="${PLAN[14]}"
+SOURCE_CONFIG_HOST="${PLAN[15]}"
+if [[ "$SOURCE_CONFIG_HOST" == /workspace/* ]]; then
+    SOURCE_CONFIG_HOST="$PROJECT_ROOT/${SOURCE_CONFIG_HOST#/workspace/}"
+fi
 
 # A requested exclusion is passed as one quoted Slurm host-list argument.
 # No --exclude option is sent when neither YAML nor the environment specifies it.
@@ -178,13 +191,26 @@ if [[ -n "$ENCODER_CHECKPOINT" ]]; then
     fi
 fi
 
-# The sbatch script receives the resolved experiment YAML; it doesn't parse
-# study files or change model settings after Slurm has allocated resources.
+# The sbatch script receives the resolved experiment YAML. The selected joint
+# training configuration is never rewritten by this launcher.
 JOB_ARGS=("$STAGE" "$CONFIG_HOST")
 if [[ -n "$MODE" ]]; then JOB_ARGS+=("$MODE"); fi
 if [[ -n "$RUN_DIR" ]]; then JOB_ARGS+=(--run-dir "$RUN_DIR"); fi
 if [[ -n "$CHECKPOINT" ]]; then JOB_ARGS+=(--checkpoint "$CHECKPOINT"); fi
 if [[ -n "$ENCODER_CHECKPOINT" ]]; then JOB_ARGS+=(--encoder-checkpoint "$ENCODER_CHECKPOINT"); fi
+
+# Only joint 'all' automatically runs its pretraining source. Standalone
+# training/testing/generation and explicit encoder overrides retain their
+# previous behavior. 'all' does not submit every experiment in the study.
+CHAIN_PRETRAIN=false
+if [[ "$PIPELINE" == joint && "$STAGE" == all && -z "$MODE" && \
+      -n "$SOURCE_KEY" && -z "$ENCODER_CHECKPOINT" ]]; then
+    CHAIN_PRETRAIN=true
+fi
+if [[ "$CHAIN_PRETRAIN" == true && ( -n "$RUN_DIR" || -n "$CHECKPOINT" ) ]]; then
+    echo "ERROR: Joint --stage all does not accept pretraining --run-dir or --checkpoint." >&2
+    exit 2
+fi
 
 printf 'Submitting %s: stage=%s, config=%s\n' "$PIPELINE" "$STAGE" "$CONFIG_HOST"
 if [[ -n "$ENCODER_CHECKPOINT" ]]; then
@@ -193,13 +219,47 @@ fi
 printf 'Slurm: partition=%s, gres=%s, cpus=%s, mem=%s, time=%s, exclude=%s, mail=%s\n' \
     "$PARTITION" "$GRES" "$CPUS" "$MEMORY" "$TIMELIMIT" "${EXCLUDE:-none}" "$MAIL_TYPE"
 
-# Command-line options explicitly carry the resolved precedence. Keep all
-# original SBATCH_* overrides and the email settings without forcing YAML edits.
-sbatch \
-    --partition="$PARTITION" --gres="$GRES" --cpus-per-task="$CPUS" \
-    --mem="$MEMORY" --time="$TIMELIMIT" \
-    "${EXCLUDE_ARGS[@]}" "${MAIL_ARGS[@]}" \
-    --chdir="$PROJECT_ROOT" \
-    --output="$LOG_DIR/%x-%j.out" --error="$LOG_DIR/%x-%j.err" \
-    --export="ALL,URBAN_SYN_PROJECT_ROOT=$PROJECT_ROOT,URBAN_SYN_PIPELINE=$PIPELINE,URBAN_SYN_STUDY_NAME=$STUDY_NAME,URBAN_SYN_EXPERIMENT_KEY=$EXPERIMENT_KEY" \
-    "$SCRIPT_DIR/run_urban_syn.sbatch" "${JOB_ARGS[@]}"
+# Every submitted job receives the same effective resources and email options.
+# These are resolved as: environment overrides > study YAML > defaults.
+SLURM_ARGS=(
+    --partition="$PARTITION" --gres="$GRES" --cpus-per-task="$CPUS"
+    --mem="$MEMORY" --time="$TIMELIMIT"
+    "${EXCLUDE_ARGS[@]}" "${MAIL_ARGS[@]}"
+    --chdir="$PROJECT_ROOT"
+    --output="$LOG_DIR/%x-%j.out" --error="$LOG_DIR/%x-%j.err"
+)
+
+if [[ "$CHAIN_PRETRAIN" == true ]]; then
+    # --parsable returns the allocated Slurm job ID. We need that exact ID
+    # for both the dependency and the checkpoint produced by this job.
+    printf 'Workflow: %s pretraining -> %s joint diffusion\n' "$SOURCE_KEY" "$EXPERIMENT_KEY"
+    PRETRAIN_OUTPUT="$(sbatch --parsable \
+        "${SLURM_ARGS[@]}" --job-name=urban-syn-pretrain \
+        --export="ALL,URBAN_SYN_PROJECT_ROOT=$PROJECT_ROOT,URBAN_SYN_PIPELINE=link_pretrain,URBAN_SYN_STUDY_NAME=$STUDY_NAME,URBAN_SYN_EXPERIMENT_KEY=$SOURCE_KEY" \
+        "$SCRIPT_DIR/run_urban_syn.sbatch" all "$SOURCE_CONFIG_HOST")"
+    PRETRAIN_JOB_ID="${PRETRAIN_OUTPUT%%;*}"
+    if [[ ! "$PRETRAIN_JOB_ID" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: Could not read the pretraining Slurm job ID: $PRETRAIN_OUTPUT" >&2
+        exit 1
+    fi
+    printf 'Submitted pretraining job %s (%s).\n' "$PRETRAIN_JOB_ID" "$SOURCE_KEY"
+
+    # Slurm runs the joint job only if pretraining AND checkpoint publication
+    # succeed. Its --encoder-from-job identifies the producing job directly,
+    # not a mutable selected_encoder.json that another run could replace.
+    JOB_ARGS+=(--encoder-from-job "$PRETRAIN_JOB_ID" \
+               --encoder-source-experiment "$SOURCE_KEY")
+    printf 'Submitting dependent joint job (afterok:%s).\n' "$PRETRAIN_JOB_ID"
+    if ! sbatch "${SLURM_ARGS[@]}" --job-name=urban-syn-joint \
+        --dependency="afterok:$PRETRAIN_JOB_ID" \
+        --export="ALL,URBAN_SYN_PROJECT_ROOT=$PROJECT_ROOT,URBAN_SYN_PIPELINE=joint,URBAN_SYN_STUDY_NAME=$STUDY_NAME,URBAN_SYN_EXPERIMENT_KEY=$EXPERIMENT_KEY" \
+        "$SCRIPT_DIR/run_urban_syn.sbatch" "${JOB_ARGS[@]}"; then
+        echo "ERROR: Pretraining job $PRETRAIN_JOB_ID was submitted, but dependent joint submission failed." >&2
+        exit 1
+    fi
+else
+    # Backward-compatible standalone and separately submitted experiments.
+    sbatch "${SLURM_ARGS[@]}" \
+        --export="ALL,URBAN_SYN_PROJECT_ROOT=$PROJECT_ROOT,URBAN_SYN_PIPELINE=$PIPELINE,URBAN_SYN_STUDY_NAME=$STUDY_NAME,URBAN_SYN_EXPERIMENT_KEY=$EXPERIMENT_KEY" \
+        "$SCRIPT_DIR/run_urban_syn.sbatch" "${JOB_ARGS[@]}"
+fi
