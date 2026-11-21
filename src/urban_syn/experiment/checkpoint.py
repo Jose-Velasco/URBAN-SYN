@@ -57,6 +57,13 @@ def experiment_fingerprint(config: ResolvedExperimentConfig, graph: Data) -> str
         "train_sequences": str(settings.paths.train_sequences),
         "trip_id_map": str(settings.paths.trip_id_map)
     }
+    # Preserve fingerprints of older from-scratch runs (their configs did not
+    # include initialization/trainability). New modes must not resume into
+    # an experiment with different GNN initialization or freezing choices.
+    encoder_settings = settings.model.road_encoder
+    if encoder_settings.initialization != "random" or not encoder_settings.trainable:
+        relevant["road_encoder"] = encoder_settings.model_dump(mode="json")
+
     # Resuming under another output directory is fine; the model and data
     # selection must still match. Other runtime/tracking values may change.
     digest = hashlib.sha256(json.dumps(relevant, sort_keys=True).encode("utf-8"))

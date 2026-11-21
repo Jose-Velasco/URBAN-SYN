@@ -34,10 +34,9 @@ from .checkpoint import (
 from .config import ResolvedExperimentConfig
 from .datasets import DatasetSplit, build_epoch_loader, load_training_dataset
 from .diagnostics import (
-    EmbeddingProbe,
+    EmbeddingDiagnostics,
     gradient_norm,
     should_log_gradient_diagnostics,
-    should_probe_epoch,
 )
 from .factories import TrainingComponents, build_loss_composer, build_training_components, step_scheduler
 from .tracking import ExperimentTracker, TrackingRun
@@ -213,7 +212,7 @@ def _mean_metrics(metrics: list[dict[str, float]]) -> dict[str, float]:
 
 
 def _assert_joint_gradients(model: nn.Module) -> None:
-    """Verify that the first joint optimizer step updates both model branches.
+    """Verify that each trainable model branch receives valid gradients.
 
     Parameters
     ----------
@@ -228,6 +227,10 @@ def _assert_joint_gradients(model: nn.Module) -> None:
     for component in ("road_encoder", "diff_model"):
         branch = getattr(model, component, None)
         if branch is None:
+            continue
+        # The frozen pretrained encoder is intentionally absent from the
+        # optimizer and must not be required to produce gradients.
+        if not any(parameter.requires_grad for parameter in branch.parameters()):
             continue
         gradients = (
             parameter.grad for parameter in branch.parameters()
@@ -285,6 +288,10 @@ def run_epoch(
     """
     training = optimizer is not None
     model.train(training)
+    if training and not any(parameter.requires_grad for parameter in model.road_encoder.parameters()):
+        # model.train() enables dropout in every child, including a frozen GNN.
+        # Frozen features should be stable: keep its dropout/norm in eval mode.
+        model.road_encoder.eval()
     prefix = "train" if training else "val"
     recorded: list[dict[str, float]] = []
 
@@ -431,13 +438,20 @@ def _train_epochs(
     best_epoch = int(restored["best_epoch"]) if restored else 0
     run.set_tags({"checkpoint_monitor": monitor})
     diagnostic_logging = settings.tracking.logging
-    embedding_probe = (
-        EmbeddingProbe(diagnostic_logging.gnn_embedding_probe_size, settings.experiment.seed)
+    embedding_diagnostics = (
+        EmbeddingDiagnostics(diagnostic_logging.gnn_embedding_sample_size, settings.experiment.seed)
         if diagnostic_logging.gnn_embedding_enabled else None
     )
-    if embedding_probe is not None:
-        # The initial/restored snapshot is only a reference, not a logged epoch.
-        embedding_probe.observe(components.model, components.graph)
+    if embedding_diagnostics is not None:
+        # Record the initial GNN before the first optimizer step. On resume,
+        # observe restored weights only as the next drift reference.
+        initial = embedding_diagnostics.observe(components.model, components.graph)
+        embedding_diagnostics.write_sample_manifest(
+            run_dir / "metrics" / "road_embedding_sample.json", components.graph
+        )
+        if restored is None:
+            _record_epoch_metrics(run_dir / "metrics" / "history.jsonl", 0, 0, initial)
+            run.log_metrics({**initial, "epoch": 0.0}, step=0)
 
     for epoch in range(start_epoch, training.epochs + 1):
         train_batches = build_epoch_loader(
@@ -497,10 +511,11 @@ def _train_epochs(
             best_epoch = epoch
 
         # Embedding diagnostics are scheduled independently of all checkpoint files.
-        if embedding_probe is not None and should_probe_epoch(
-            epoch, enabled=True, every_epochs=diagnostic_logging.gnn_embedding_every_epochs
+        if (
+            embedding_diagnostics is not None
+            and epoch % diagnostic_logging.gnn_embedding_every_epochs == 0
         ):
-            metrics.update(embedding_probe.observe(components.model, components.graph))
+            metrics.update(embedding_diagnostics.observe(components.model, components.graph))
 
         _record_epoch_metrics(run_dir / "metrics" / "history.jsonl", epoch, global_step, metrics)
         run.log_metrics({**metrics, "epoch": float(epoch)}, step=global_step)
@@ -546,7 +561,8 @@ def _train_epochs(
     for destination, path in (
         ("configuration", run_dir / "resolved_config.json"),
         ("configuration", run_dir / "data_split.json"),
-        ("metrics", run_dir / "metrics" / "history.jsonl")
+        ("metrics", run_dir / "metrics" / "history.jsonl"),
+        ("metrics", run_dir / "metrics" / "road_embedding_sample.json")
     ):
         if path.is_file():
             run.log_artifact(path, artifact_path=destination)
@@ -591,6 +607,18 @@ def run_joint_training(config: ResolvedExperimentConfig, tracker: ExperimentTrac
         composer = build_loss_composer(training.losses)
         fingerprint = experiment_fingerprint(config, components.graph)
         monitor = _checkpoint_monitor(config)
+        road_settings = settings.model.road_encoder
+        logger.info(
+            "Road encoder: initialization=%s, trainable=%s, checkpoint=%s",
+            road_settings.initialization,
+            road_settings.trainable,
+            road_settings.checkpoint
+        )
+        logger.info(
+            "Trainable parameters: road GNN=%d, diffusion=%d",
+            sum(p.numel() for p in components.model.road_encoder.parameters() if p.requires_grad),
+            sum(p.numel() for p in components.model.diff_model.parameters() if p.requires_grad)
+        )
         logger.info(
             "Loaded %d sequences (%d train, %d validation); monitor=%s",
             len(dataset),

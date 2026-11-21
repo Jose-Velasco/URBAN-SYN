@@ -1,0 +1,30 @@
+# Full-training comparison driven by the existing study-aware HPC submitter.
+# "all" is a STAGE for the selected experiment; it does not submit all study entries.
+# On the joint pretrained entries, --stage all submits a required pretrain job first,
+# followed by dependent joint training/generation with the EXACT producing encoder.pt.
+# To skip pretraining when an encoder already exists, use --stage train (published
+# selected_encoder.json), or pass --encoder-checkpoint with an explicit encoder.pt path.
+
+study:
+  name: nyc_full_bce_comparison
+  graph_config: configs/experiments/nyc_full_training/nyc_graph.yaml                           # Must match each experiment's paths.graph_config.
+  experiments:
+    pretrain_bpr: configs/experiments/nyc_full_training/link_pretrain_bpr.yaml
+    pretrain_bce: configs/experiments/nyc_full_training/link_pretrain_bce.yaml
+    joint_scratch: configs/experiments/nyc_full_training/joint_scratch.yaml
+    joint_frozen:
+      config: configs/experiments/nyc_full_training/joint_frozen.yaml
+      pretrained_from: pretrain_bce        # Dependency resolved by submit.sh.
+    joint_finetune:
+      config: configs/experiments/nyc_full_training/joint_finetune.yaml
+      pretrained_from: pretrain_bce
+
+hpc:
+  partition: gpuqs                                # Medium GPU queue; check current cluster limits.
+  gres: gpu:a100:1                                 # One A100 (single-device model).
+  cpus_per_task: 8
+  memory: 64G
+  time: "20:00:00"                              # Initial full-run request; adapt to measured wall time.
+  # exclude_nodes: []                               # Add problematic nodes if required, e.g. [cs002].
+  # mail_user: ""                                    # Optional; set URBAN_SYN_MAIL_USER in environment instead.
+  # mail_type: NONE                                 # Optional notifications: BEGIN,END,FAIL.

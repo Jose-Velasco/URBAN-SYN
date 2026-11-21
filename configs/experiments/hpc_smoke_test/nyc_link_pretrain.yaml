@@ -1,0 +1,68 @@
+# Standalone road-GNN structural link pretraining (not diffusion training).
+# Run from the repository root; paths are relative to that root.
+# Train/validate on a seeded directed link split, then test the selected checkpoint.
+
+experiment:
+  name: nyc_link_pretrain_smoke_test
+  seed: 101
+
+paths:
+  graph_config: configs/experiments/hpc_smoke_test/nyc_graph.yaml
+  output_root: outputs/experiments
+
+pretraining:
+  graph_split:
+    val_fraction: 0.10
+    test_fraction: 0.10
+    disjoint_train_ratio: 0.20  # Fraction of training links reserved for supervision.
+  negatives:
+    strategy: mixed           # khop | mixed
+    k_hops: 2                 # Hard negatives at directed distances 2..K.
+    amount: 2                 # Negatives per positive.
+    hard_fraction: 0.75       # Target across a batch when using mixed sampling.
+    evaluation_chunk_size: 128  # Held-out positive links processed per sampling chunk. controls how positives are grouped for sampling
+  objective: bce              # bpr | bce
+  decoder:
+    hidden_dim: 128           # Width of each hidden layer in the directional scorer.
+    num_layers: 3            # Total linear layers, including the final logit layer.
+    activation: relu         # Activation between linear layers.
+    dropout: 0.3             # Hidden-layer dropout (final logits remain linear).
+    normalization: layer_norm      # null | layer_norm | batch_norm
+
+training:
+  # epochs: 100
+  epochs: 4
+  batch_size: 256             # Seed roads per batch, not trajectories.
+  max_batches: 10           # Optional quick smoke run; omit for full epochs.
+  grad_clip_norm: 1.0
+  optimizer:
+    name: adamw
+    learning_rate: 0.001
+    weight_decay: 0.01         # AdamW regularization for encoder and decoder, BCE or BPR.
+  scheduler:
+    name: reduce_on_plateau
+    patience: 5              # LR reduces after validation stagnation.
+  early_stopping:
+    enabled: true
+    patience: 15             # Stop if validation does not improve.
+  checkpoint:
+    save_best: true          # Required for validation-selected testing.
+    save_last: false
+    every_epochs: 20         # Additional numbered checkpoints.
+
+tracking:
+  enabled: true
+  metrics_every_steps: 100  # Training progress logging interval.
+  experiment_name: urban_syn_hpc_smoke_test
+  logging:
+    gnn_diagnostics_every_steps: 100   # 0 disables per-step encoder gradient norms.
+    gnn_embedding_enabled: true
+    gnn_embedding_every_epochs: 1      # Deterministic embedding diagnostics cadence.
+    gnn_embedding_sample_size: 256    # Same road indices across experiments.
+
+runtime:
+  device: cuda               # auto | cpu | cuda
+  num_workers: 4
+  prefetch_factor: 2         # Batches prepared ahead per worker (workers > 0).
+  persistent_workers: true   # Keep sampler workers alive between epochs.
+  pin_memory: true           # Prepare CPU batches for faster GPU transfer.

@@ -44,6 +44,9 @@ def _stage_map(config: ResolvedExperimentConfig) -> dict[str, Stage]:
 
     graph_files = [paths.graph_config, graph_network, *graph_rebuild_sources(config)]
     training_files = [*graph_files, paths.train_sequences]
+    encoder = config.settings.model.road_encoder
+    if encoder.initialization == "pretrained" and config.settings.training.checkpoint.resume_from is None:
+        training_files.append(encoder.checkpoint)
     if config.settings.training.validation.enabled:
         training_files.append(paths.trip_id_map)
     training_inputs = _required_items(training_files)

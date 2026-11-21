@@ -51,10 +51,35 @@ class ExperimentPaths(_Settings):
 
 
 class RoadEncoderSettings(_Settings):
-    """V1 supports only an unfrozen jointly trained road encoder."""
+    """Select the source of GNN weights and whether diffusion updates them.
+
+    ``mode: joint`` is retained so existing experiment YAMLs still load.
+    It does not determine how weights are initialized or trained.
+    """
 
     mode: Literal["joint"] = "joint"
-    # Pretraining/frozen modes will be admitted when their code exists.
+    initialization: Literal["random", "pretrained"] = "random"
+    trainable: bool = True
+    checkpoint: Path | None = None
+
+    @model_validator(mode="after")
+    def validate_initialization(self) -> Self:
+        """Reject ambiguous checkpoint and trainability combinations."""
+        if self.initialization == "pretrained" and self.checkpoint is None:
+            raise ValueError(
+                "model.road_encoder.checkpoint is required when "
+                "initialization=pretrained (use the pretraining run's encoder.pt)."
+            )
+        if self.initialization == "random" and self.checkpoint is not None:
+            raise ValueError(
+                "model.road_encoder.checkpoint must be null when initialization=random."
+            )
+        if self.initialization == "random" and not self.trainable:
+            raise ValueError(
+                "A randomly initialized, frozen road encoder is not a supported "
+                "comparison. Use initialization=pretrained or trainable=true."
+            )
+        return self
 
 
 class ConditioningSettings(_Settings):
@@ -255,7 +280,19 @@ class TrackingLoggingSettings(_Settings):
     # Embedding diagnostics have their own cadence, independent of checkpoint writes.
     gnn_embedding_enabled: bool = True
     gnn_embedding_every_epochs: int = Field(default=1, ge=1)
-    gnn_embedding_probe_size: int = Field(default=128, ge=1)
+    gnn_embedding_sample_size: int = Field(default=128, ge=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_previous_sample_name(cls, value: Any) -> Any:
+        """Read existing experiment YAMLs while using the clearer setting name."""
+        if not isinstance(value, dict) or "gnn_embedding_probe_size" not in value:
+            return value
+        if "gnn_embedding_sample_size" in value:
+            raise ValueError("Use only tracking.logging.gnn_embedding_sample_size.")
+        updated = dict(value)
+        updated["gnn_embedding_sample_size"] = updated.pop("gnn_embedding_probe_size")
+        return updated
     log_system_metrics: bool = False
     log_resolved_config: bool = True
     log_git_info: bool = True
@@ -367,6 +404,16 @@ def _resolve_paths(paths: ExperimentPaths, root: Path) -> ExperimentPaths:
     )
 
 
+def _resolve_model_options(options: ModelOptions, root: Path) -> ModelOptions:
+    """Resolve pretrained encoder paths using the same root as other paths."""
+    selected = options.road_encoder
+    checkpoint = selected.checkpoint
+    if checkpoint is None:
+        return options
+    road_encoder = selected.model_copy(update={"checkpoint": _absolute(checkpoint, root)})
+    return options.model_copy(update={"road_encoder": road_encoder})
+
+
 def _read_model_settings(
     graph_path: Path, model_options: ModelOptions, training: TrainingExperimentSettings
 ) -> JointTrainingSettings:
@@ -393,7 +440,8 @@ def _read_model_settings(
 
 def load_experiment_config(
     path: str | Path,
-    project_root: str | Path | None = None
+    project_root: str | Path | None = None,
+    encoder_checkpoint: str | Path | None = None
 ) -> ResolvedExperimentConfig:
     """Validate a joint experiment and its referenced model architecture.
 
@@ -410,12 +458,35 @@ def load_experiment_config(
     This validates structure and the referenced graph YAML. Existence of data,
     graph cache, checkpoint, etc. belongs to the pipeline's later validate stage.
     No training, MLflow initialization, or heavy graph construction occurs.
+    An optional encoder checkpoint passed by the study launcher replaces a
+    null YAML checkpoint before normal settings validation.
     """
     source_path = Path(path).expanduser().resolve()
     root = Path(project_root).expanduser().resolve() if project_root is not None else Path.cwd().resolve()
     raw = _read_yaml_mapping(source_path)
+    if encoder_checkpoint is not None:
+        model = raw.get("model")
+        encoder = model.get("road_encoder") if isinstance(model, dict) else None
+        if not isinstance(encoder, dict) or encoder.get("initialization") != "pretrained":
+            raise ValueError(
+                "--encoder-checkpoint requires model.road_encoder.initialization=pretrained."
+            )
+        if encoder.get("checkpoint") is not None:
+            raise ValueError(
+                "Checkpoint is specified both in the joint YAML and by the launcher. "
+                "Set model.road_encoder.checkpoint: null when selecting it at submission."
+            )
+        # Copy only the edited nested dictionaries, leaving the input YAML
+        # and its other settings unchanged for reproducible run snapshots.
+        raw = dict(raw)
+        raw["model"] = dict(model)
+        raw["model"]["road_encoder"] = dict(encoder)
+        raw["model"]["road_encoder"]["checkpoint"] = str(encoder_checkpoint)
     parsed = ExperimentSettings.model_validate(raw)
-    resolved = parsed.model_copy(update={"paths": _resolve_paths(parsed.paths, root)})
+    resolved = parsed.model_copy(update={
+        "paths": _resolve_paths(parsed.paths, root),
+        "model": _resolve_model_options(parsed.model, root)
+    })
     joint = _read_model_settings(
         resolved.paths.graph_config, resolved.model, resolved.training
     )

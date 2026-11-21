@@ -1,19 +1,5 @@
-"""Small description of a pipeline stage and its external requirements."""
+"""Compatibility import for the shared URBAN-SYN stage description."""
 
-from dataclasses import dataclass
-from pathlib import Path
+from urban_syn.pipeline.stage import Stage
 
-
-@dataclass(frozen=True)
-class Stage:
-    """Describe work without importing models or starting a subprocess.
-
-    ``required_files`` are inputs that must already exist on disk.
-    Produced artifacts are checked by their eventual stage handlers.
-    """
-
-    name: str
-    description: str
-    required_files: tuple[Path, ...] = ()
-    missing_settings: tuple[str, ...] = ()
-    depends_on: tuple[str, ...] = ()
+__all__ = ["Stage"]
