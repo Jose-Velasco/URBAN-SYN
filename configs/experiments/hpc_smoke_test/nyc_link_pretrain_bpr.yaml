@@ -48,7 +48,7 @@ training:
   checkpoint:
     save_best: true          # Required for validation-selected testing.
     save_last: false
-    every_epochs: 20         # Additional numbered checkpoints.
+    every_epochs: 2000         # Additional numbered checkpoints.
 
 tracking:
   enabled: true
