@@ -31,7 +31,8 @@ class PipelineConfig:
 
     # Upstream read-only inputs
     network_path: Path
-    fmm_match_path: Path
+    fmm_train_match_path: Path
+    fmm_test_match_path: Path
     parquet_path: Path
     trip_id_map_path: Path
 
@@ -158,8 +159,11 @@ class PipelineConfig:
             network_path=_resolve_path(
                 _require_value(paths, "network"), base_dir
             ),
-            fmm_match_path=_resolve_path(
-                _require_value(paths, "fmm_match"), base_dir
+            fmm_train_match_path=_resolve_path(
+                _require_value(paths, "fmm_train_match"), base_dir
+            ),
+            fmm_test_match_path=_resolve_path(
+                _require_value(paths, "fmm_test_match"), base_dir
             ),
             parquet_path=_resolve_path(
                 _require_value(paths, "parquet"), base_dir

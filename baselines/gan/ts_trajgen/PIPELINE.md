@@ -62,18 +62,43 @@ Inside the container, the wrapper expects:
 
 ```text
 /workspace/upstream/fmm/data/road_network/nyc.gpkg
-/workspace/upstream/fmm/data/nyc_gps_points_fmm_trip_id_map.csv
-/workspace/upstream/fmm/outputs/nyc_fmm_match.csv
+/workspace/upstream/fmm/data/nyc_enriched_moves_fmm_trip_id_map.csv
+/workspace/upstream/fmm/outputs/nyc_enriched_moves/nyc_enriched_moves_train_fmm_matches.csv
+/workspace/upstream/fmm/outputs/nyc_enriched_moves/nyc_enriched_moves_test_fmm_matches.csv
 /workspace/upstream/data/nyc_output_tabular/output/enriched_moves.parquet
 ```
 
 These files must come from the same road-network/map-matching run. Do not mix artifacts produced from different network versions.
 
+From `fmm_scripts/`, using the shared road network and UBODT (see `fmm_scripts/README.md`; do not rebuild the network):
+
+```bash
+# 1. GPS points: one FMM trajectory per move of enriched_moves.parquet
+uv run prepare_fmm_gps.py \
+  --config ./config/nyc.yaml \
+  --trajectory_parquet ../data/nyc_output_tabular/output/enriched_moves.parquet \
+  --gps_output ./data/nyc_enriched_moves_fmm_gps_points.csv \
+  --trip_id_map_output ./data/nyc_enriched_moves_fmm_trip_id_map.csv \
+  --identity_columns uid tid move_id
+
+# 2. Map matching (FMM container), TS-TrajGen's copy of the shared XML
+fmm ./config/fmm_config_csv_point_ts_trajgen.xml
+
+# 3. Split by the shared by-user test trips
+uv run split_fmm_matches.py \
+  --config ./config/nyc.yaml \
+  --fmm_matches ./outputs/nyc_enriched_moves_fmm_match.csv \
+  --trip_id_map ./data/nyc_enriched_moves_fmm_trip_id_map.csv \
+  --test_trips ../data/split_by_user/test_trips.csv \
+  --output_dir ./outputs/nyc_enriched_moves \
+  --prefix nyc_enriched_moves
+```
+
 ### Trajectory IDs and split order
 
-Map matching is performed before the TS-TrajGen train/test split. `build-inputs` reads the completed FMM output and then creates `nyc_mm_train.csv` and `nyc_mm_test.csv` from the `split` column of `nyc_gps_points_fmm_trip_id_map.csv`: the by-user split shared by all baselines, written there by `fmm_scripts/prepare_fmm_inputs.py --test_trips ../data/split_by_user/test_trips.csv`. `build.train_ratio` is only used if that column is missing (a random split, which then differs from the other baselines).
+Map matching is performed before the TS-TrajGen train/test split. `fmm_scripts/split_fmm_matches.py --test_trips ../data/split_by_user/test_trips.csv` splits the FMM output by the by-user split shared by all baselines; `build-inputs` turns its train file into `nyc_mm_train.csv` and its test file into `nyc_mm_test.csv`. Every move of a test trip is in the test file. `build.train_ratio` is not used.
 
-The integer trajectory `id` used in the map-matched files is the FMM ID. `nyc_gps_points_fmm_trip_id_map.csv` maps it back to `trip_key`, which is `uid_tid_moveid`: one trajectory per move of `enriched_moves.parquet`. (`uid` is included because `tid` is not globally unique by itself; sources without `move_id`, such as `traj_cleaned.parquet`, give `uid_tid`.)
+The integer trajectory `id` used in the map-matched files is the FMM ID (`fmm_id`, starting at 1). `nyc_enriched_moves_fmm_trip_id_map.csv` maps it back to `uid, tid, move_id`: one trajectory per move of `enriched_moves.parquet`. FMM rows with `id=0` (unmatched) are left out by the splitter.
 
 ## Local Docker usage
 

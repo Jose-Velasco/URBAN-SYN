@@ -29,7 +29,7 @@ Important project-specific changes include:
 
 The pipeline uses separate training, validation/evaluation, and test data.
 
-- **Train/test membership:** the by-user split shared by all baselines (`data/split_by_user/test_trips.csv`), read from the `split` column of the FMM trip-id map. One trajectory per move.
+- **Train/test membership:** the by-user split shared by all baselines (`data/split_by_user/test_trips.csv`), applied by `fmm_scripts/split_fmm_matches.py`, which writes separate train and test FMM match files. One trajectory per move.
 - **Train:** used to fit model parameters and construct training-derived helper statistics such as OD-route histories, time distributions, and region-transition frequencies.
 - **Eval/validation:** used during model development/pretraining for validation behavior and checkpoint selection where supported.
 - **Test:** kept separate from training-derived statistics and used as the held-out OD/reference input for final generation/evaluation.
@@ -362,9 +362,34 @@ The wrapper expects these upstream NYC inputs inside the container:
 
 ```text
 /workspace/upstream/fmm/data/road_network/nyc.gpkg
-/workspace/upstream/fmm/data/nyc_gps_points_fmm_trip_id_map.csv
-/workspace/upstream/fmm/outputs/nyc_fmm_match.csv
+/workspace/upstream/fmm/data/nyc_enriched_moves_fmm_trip_id_map.csv
+/workspace/upstream/fmm/outputs/nyc_enriched_moves/nyc_enriched_moves_train_fmm_matches.csv
+/workspace/upstream/fmm/outputs/nyc_enriched_moves/nyc_enriched_moves_test_fmm_matches.csv
 /workspace/upstream/data/nyc_output_tabular/output/enriched_moves.parquet
+```
+
+From `fmm_scripts/`, using the shared road network and UBODT (see `fmm_scripts/README.md`; do not rebuild the network):
+
+```bash
+# 1. GPS points: one FMM trajectory per move of enriched_moves.parquet
+uv run prepare_fmm_gps.py \
+  --config ./config/nyc.yaml \
+  --trajectory_parquet ../data/nyc_output_tabular/output/enriched_moves.parquet \
+  --gps_output ./data/nyc_enriched_moves_fmm_gps_points.csv \
+  --trip_id_map_output ./data/nyc_enriched_moves_fmm_trip_id_map.csv \
+  --identity_columns uid tid move_id
+
+# 2. Map matching (FMM container), TS-TrajGen's copy of the shared XML
+fmm ./config/fmm_config_csv_point_ts_trajgen.xml
+
+# 3. Split by the shared by-user test trips
+uv run split_fmm_matches.py \
+  --config ./config/nyc.yaml \
+  --fmm_matches ./outputs/nyc_enriched_moves_fmm_match.csv \
+  --trip_id_map ./data/nyc_enriched_moves_fmm_trip_id_map.csv \
+  --test_trips ../data/split_by_user/test_trips.csv \
+  --output_dir ./outputs/nyc_enriched_moves \
+  --prefix nyc_enriched_moves
 ```
 
 They must come from the same road-network/map-matching run. The road network, FMM output, TS-TrajGen split, region partitioning, train-derived statistics, checkpoints, and generated trajectories form one dependency chain. If an upstream network or map-matching artifact changes, rebuild the dependent TS-TrajGen artifacts rather than mixing files from different runs.
@@ -384,16 +409,16 @@ This converts the canonical NYC road network and FMM map-matching output into TS
 ```bash
 uv run build_tstrajgen_inputs.py \
        --network_path ../../../fmm_scripts/data/road_network/nyc.gpkg \
-       --fmm_match_path ../../../fmm_scripts/outputs/nyc_fmm_match.csv \
+       --fmm_train_match_path ../../../fmm_scripts/outputs/nyc_enriched_moves/nyc_enriched_moves_train_fmm_matches.csv \
+       --fmm_test_match_path ../../../fmm_scripts/outputs/nyc_enriched_moves/nyc_enriched_moves_test_fmm_matches.csv \
        --parquet_path ../../../data/nyc_output_tabular/output/enriched_moves.parquet \
-       --trip_id_map_csv ../../../fmm_scripts/data/nyc_gps_points_fmm_trip_id_map.csv \
+       --trip_id_map_csv ../../../fmm_scripts/data/nyc_enriched_moves_fmm_trip_id_map.csv \
        --config ./repo/configs/ts_trajgen_nyc.yaml \
        --out_dir ./datasets/nyc \
        --log_dir ./datasets/logs \
        --dataset_name nyc \
        --min_len 2 \
        --min_delta_seconds 0.5 \
-       --train_ratio 0.8 \
        --no-interpolate_intermediate_edges
 ```
 

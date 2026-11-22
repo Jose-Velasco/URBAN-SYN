@@ -57,9 +57,9 @@ For the NYC run used in this project:
 ```text
 Input source data:
 <URBAN-SYN>/data/nyc_output_tabular/output/enriched_moves.parquet
-<URBAN-SYN>/fmm_scripts/data/nyc_gps_points_fmm_trip_id_map.csv   (its split column holds the shared train/test split)
+<URBAN-SYN>/fmm_scripts/data/nyc_enriched_moves_fmm_trip_id_map.csv
 <URBAN-SYN>/fmm_scripts/data/road_network/nyc.gpkg
-<URBAN-SYN>/fmm_scripts/outputs/nyc_fmm_match.csv
+<URBAN-SYN>/fmm_scripts/outputs/nyc_enriched_moves/nyc_enriched_moves_{train,test}_fmm_matches.csv   (split_fmm_matches.py with the shared test_trips.csv)
 
 Prepared TS-TrajGen data:
 <URBAN-SYN>/baselines/gan/ts_trajgen/datasets/nyc/
