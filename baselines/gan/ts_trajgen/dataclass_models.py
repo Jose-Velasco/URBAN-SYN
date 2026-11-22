@@ -50,7 +50,8 @@ class BuildConfig:
     """
 
     network_path: Path
-    fmm_match_path: Path
+    fmm_train_match_path: Path
+    fmm_test_match_path: Path
     parquet_path: Path
     trip_id_map_csv: Path
     geo_feature_columns: tuple[str, ...]

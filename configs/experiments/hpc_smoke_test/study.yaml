@@ -1,0 +1,30 @@
+# HPC smoke test: group existing pretraining and joint diffusion configurations.
+# Paths are relative to the repository root.
+study:
+  name: hpc_smoke_test
+  graph_config: configs/experiments/hpc_smoke_test/nyc_graph.yaml
+  experiments:
+    pretrain_bpr: configs/experiments/hpc_smoke_test/nyc_link_pretrain_bpr.yaml
+    pretrain_bce: configs/experiments/hpc_smoke_test/nyc_link_pretrain.yaml
+    # joint_scratch: configs/experiments/hpc_smoke_test/nyc_joint.yaml
+    # pretrain_bpr: configs/experiments/pretrain/nyc_link_pretrain.yaml
+    joint_scratch: configs/experiments/hpc_smoke_test/joint_scratch.yaml
+    joint_frozen:
+      config: configs/experiments/hpc_smoke_test/joint_frozen.yaml
+      pretrained_from: pretrain_bpr
+    joint_finetune:
+      config: configs/experiments/hpc_smoke_test/joint_finetune.yaml
+      pretrained_from: pretrain_bpr
+
+hpc:
+  partition: gpuqs
+  gres: gpu:a100:1
+  cpus_per_task: 8
+  memory: 64G
+  time: "01:00:00"
+  # Temporarily skip cs002, where CUDA failed during the A100 smoke test but not required
+  # exclude_nodes:
+  #   - cs002
+  # Opt in to notifications per submission with URBAN_SYN_MAIL_USER and
+  # URBAN_SYN_MAIL_TYPE=BEGIN,END,FAIL.
+  mail_type: NONE

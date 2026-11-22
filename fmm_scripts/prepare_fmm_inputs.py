@@ -341,7 +341,13 @@ def build_fmm_points_csv(
     Each row stores a single observation containing id(integer), x(longitude), y(latitude), timestamp(optional, integer).
 
     Build FMM-compatible GPS observations:
-        id, x, y, timestamp
+        fmm_id, x, y, timestamp
+    
+    Trip-ID mapping:
+        fmm_id, uid, tid
+
+        The trajectory identifier is assigned deterministically
+        from the configured identity columns.
 
     FMM expects observations to be ordered by trajectory ID and timestamp.
 
