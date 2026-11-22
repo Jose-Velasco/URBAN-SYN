@@ -89,7 +89,7 @@ training:
                                 # auto uses val/objective with validation, otherwise train/objective.
     save_last: false             # Save latest weights and optimizer state for resuming. saves model after every epoch in last.pt
     save_best: true             # Save checkpoint minimizing the monitored total objective.
-    every_epochs: 100           # Save a numbered checkpoint every N epochs; adjust for disk usage.
+    every_epochs: 2000           # Save a numbered checkpoint every N epochs; adjust for disk usage.
     resume_from: null           # null = new run; set a last.pt path to continue a previous run.
 
 generation:

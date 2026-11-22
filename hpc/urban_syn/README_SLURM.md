@@ -141,6 +141,48 @@ bash hpc/urban_syn/submit.sh \
 
 To run a pretraining-only experiment, change `--experiment` to `pretrain_bpr` or `pretrain_bce`. The standalone syntax is still supported: `bash hpc/urban_syn/submit.sh all configs/experiments/nyc_joint.yaml`.
 
+### Share one pretraining job between frozen and fine-tuned runs
+
+The launcher supports a **single** pretraining job with **two dependent** joint
+jobs. They can all be queued at once: no manual wait for the encoder file and
+no duplicate pretraining. The existing `jobs/<pretrain_job_id>.json` manifest
+pins both joint runs to the same exact encoder.
+
+```bash
+# Choose the study/source pair. For BCE use study_bce.yaml + pretrain_bce.
+STUDY=configs/experiments/nyc_full_training/study.yaml
+SOURCE=pretrain_bpr
+
+# Set the same options for all three submissions (adjust for your HPC account).
+export SBATCH_PARTITION=gpuqs SBATCH_GRES=gpu:a100:1
+export SBATCH_EXCLUDE=cs002 SBATCH_TIMELIMIT=20:00:00
+export SBATCH_MEM_PER_NODE=64G SBATCH_CPUS_PER_TASK=8
+
+# Submit pretraining ONCE, then capture its exact Slurm job ID.
+pretrain_output=$(bash hpc/urban_syn/submit.sh \
+  --study "$STUDY" --experiment "$SOURCE" --stage all)
+printf '%s\n' "$pretrain_output"
+pretrain_job_id=$(printf '%s\n' "$pretrain_output" \
+  | sed -nE 's/^Submitted batch job ([0-9]+).*$/\1/p' | tail -n 1)
+if [[ -z "$pretrain_job_id" ]]; then
+  echo "Could not read pretraining job ID; not submitting dependents." >&2
+else
+  # Both joint jobs use afterok:<same pretrain ID> and run ALL joint stages.
+  for experiment in joint_frozen joint_finetune; do
+    bash hpc/urban_syn/submit.sh --study "$STUDY" \
+      --experiment "$experiment" --stage all \
+      --pretrain-job-id "$pretrain_job_id"
+  done
+fi
+```
+
+The jobs run independently after pretraining succeeds, subject to Slurm QoS
+limits. Keep their study, graph, and experiment YAMLs unchanged while jobs are queued,
+because the jobs read those files when they execute. `--pretrain-job-id` is only for study-based pretrained joint
+`--stage all`; it cannot be combined with `--encoder-checkpoint` or dry-run
+modes. To reuse an **already completed** encoder without any Slurm dependency,
+use the existing `--encoder-checkpoint /path/to/encoder.pt` instead.
+
 ## 4. Reuse a checkpoint or generate without retraining
 
 ```bash
