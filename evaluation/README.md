@@ -11,12 +11,13 @@ One evaluation for every trajectory generation model in URBAN-SYN. Each baseline
 | `tstrajgen` | TS-TrajGen | road IDs |
 | `mobilitygpt` | MobilityGPT | road IDs |
 | `lstm_trajgan` | LSTM-TrajGAN | GPS points |
+| `urban_syn` | URBAN-SYN, our model (GNN road encoder + Diff-RNTraj) | road ID + position on the road, with GPS points |
 
-All five use the same split by user: `data/split_by_user/` (made by `scripts/split_enriched_moves_by_user.ipynb` from `enriched_moves.parquet`). The test users are listed in `data/split_by_user/test_trips.csv` (`uid, tid`).
+All six use the same split by user: `data/split_by_user/` (made by `scripts/split_enriched_moves_by_user.ipynb` from `enriched_moves.parquet`). The test users are listed in `data/split_by_user/test_trips.csv` (`uid, tid`).
 
 ## Quick start
 
-Run from the URBAN-SYN folder. In the dev container the packages are in `.venv` (made by `uv sync` when the container is created), so use `uv run` as below, or run `source .venv/bin/activate` once and then plain `python`. The container's system `python` has no numpy. Outside the container, any Python 3.10+ with numpy, pandas and pyyaml works.
+Run from the URBAN-SYN folder. In the dev container the packages are in `.venv` (made by `uv sync` when the container is created), so use `uv run` as below, or run `source .venv/bin/activate` once and then plain `python`. The container's system `python` has no numpy. Outside the container, any Python 3.10+ with numpy, pandas, pyyaml and pyarrow (for the Parquet files of `urban_syn`) works.
 
 ```bash
 # check that every input file is in place
@@ -76,7 +77,7 @@ Every setting (grid, bins, thresholds, sample sizes, seed) is in the `metrics:` 
 | Trajectory metrics | Hausdorff (symmetric, km); DTW with Haversine cost divided by the warping-path length (exact, no FastDTW); EDR with ε = 100 m, match when d < ε, divided by the longer length; Jaccard of unique grid cells |
 | Privacy | every trajectory (no sampling); each resampled to 32 evenly spaced points; distance = mean Haversine between corresponding points; MIA: training (members) vs test (non-members), score = minus the distance to the closest generated trajectory, ROC-AUC; each test trajectory's own generated counterpart is left out; uniqueness: more than 50 m from every training trajectory |
 | Off-network | native GPS points more than 30 m from TS-TrajGen's road network (`nyc.geo`), the same network for every model |
-| Snapped connectivity | directed, next road must start where the previous one ends, consecutive repeats collapsed, transition-weighted; TS-TrajGen's `nyc.rel` (Diff-RNTraj: `u`/`v` of `nyc_drive.gpkg`) |
+| Snapped connectivity | directed, next road must start where the previous one ends, consecutive repeats collapsed, transition-weighted; TS-TrajGen's `nyc.rel`, also for URBAN-SYN, whose `edge_id`s are the shared network's (Diff-RNTraj: `u`/`v` of `nyc_drive.gpkg`) |
 | Real-data rows | real training data at the model's unit in place of the generated set (sections 1-2); the real test set for off-network and connectivity |
 
 The full results of the run, including every setting of the threshold-dependent metrics, are in `evaluation/results/<run>/table.md` and `scores.csv`.
@@ -96,8 +97,12 @@ Each converter reads the baseline's files where the baseline wrote them, and `ev
 | `mobilitygpt` | `nyc_workflow/output/nycall_final/...` | the MobilityGPT `nyc_workflow`, run on TS-TrajGen's `nyc_mm_train.csv` / `nyc_mm_test.csv` |
 | `lstm_trajgan` | `outputs/lstm_trajgan_nyc_full/results/nyc_syn_traj_test.csv`, `data/nyc_full/nyc_test_latlon.csv`, `nyc_train_latlon.csv` | the LSTM-TrajGAN pipeline |
 | | FMM matches, in `fmm_dir` | made by the evaluation |
+| `urban_syn` | `outputs/experiments/<experiment>/<run_id>/generated/*_generated_gps.parquet`, one `generated_<name>` per run | the experiment's `generate` stage (`src/urban_syn`) |
+| | `fmm_scripts/outputs/urban_syn_ready/*_{test,train}_prepared_road_sequences.parquet`, TS-TrajGen's `nyc.geo` | `fmm_scripts/urban_syn_extension/` (see its README) |
 
-TS-TrajGen's `nyc.geo` and `nyc.rel` are also the road network of DiffTraj, LSTM-TrajGAN and MobilityGPT (`network: tstrajgen` in the converters), so all four must come from the same road network.
+TS-TrajGen's `nyc.geo` and `nyc.rel` are also the road network of DiffTraj, LSTM-TrajGAN, MobilityGPT and URBAN-SYN (`network: tstrajgen` in the converters), so all five must come from the same road network.
+
+**URBAN-SYN's files.** A generated file has one row per point: `trajectory_id`, `step`, `model_road_id`, `edge_id`, `rate`, `position_rate`, `lng`, `lat`. The evaluation scores the generator's own `lat`/`lng` and uses `edge_id` (the shared network's road ID, so a `geo_id` of `nyc.geo`) for the road metrics; `model_road_id` and `rate` are not needed. Each `generated_<name>` file under `files:` becomes one row group named `<name>`, e.g. `finetune`, `scratch` and `frozen` for the three `nyc_full_training` runs. The real test and training pieces are the prepared road sequences the model was tested and trained on, with each point placed on its road's `nyc.geo` geometry the same way the generator places its points. The converter checks this: if a generated point is more than 1 m from where its `edge_id` and `position_rate` put it on `nyc.geo`, the model used a different road network than TS-TrajGen, and the run stops. URBAN-SYN is unconditional, so like Diff-RNTraj it is paired by the shared fallback rule.
 
 ### After retraining a baseline
 
@@ -106,6 +111,7 @@ TS-TrajGen's `nyc.geo` and `nyc.rel` are also the road network of DiffTraj, LSTM
 - **LSTM-TrajGAN:** the paths stay the same. The evaluation remakes its FMM matches.
 - **TS-TrajGen:** the paths stay the same. If its road network changed (the shared network in `fmm_scripts/` was rebuilt), rerun MobilityGPT; the evaluation remakes the GPS models' FMM matches on the new network.
 - **MobilityGPT:** rerun it whenever TS-TrajGen's `nyc_mm_train.csv` / `nyc_mm_test.csv` change.
+- **URBAN-SYN:** point each `generated_<name>` at its run's `generated/` file (replace `RUN_ID` with the run folder). Its `urban_syn_ready/` files must come from the by-user split (`split_fmm_matches.py --test_trips ../data/split_by_user/test_trips.csv`) and be the ones the run was trained on.
 
 Then run `convert --check`, and `convert` without `--check` to see each model's counts and notes before scoring.
 
@@ -134,7 +140,7 @@ evaluation/
 ├── geo.py               distance, projection and point-on-road helpers
 ├── fmm_matches.py       reads FMM match files into road sequences
 ├── fmm_prepare.py       map-matches the GPS models with FMM when their matches are missing or out of date
-├── converters/          one converter per baseline
+├── converters/          one converter per model
 └── metrics/             the 12 metrics, the shared grid, JSD and pairing
 ```
 

@@ -1,5 +1,5 @@
 """One converter per baseline. Each has convert(files, options) -> Converted."""
-from evaluation.converters import difftraj, diffrntraj, lstm_trajgan, mobilitygpt, tstrajgen
+from evaluation.converters import difftraj, diffrntraj, lstm_trajgan, mobilitygpt, tstrajgen, urban_syn
 
 # Model name (as used in eval_config.yaml and on the command line) -> converter function.
 CONVERTERS = {
@@ -8,4 +8,5 @@ CONVERTERS = {
     "tstrajgen": tstrajgen.convert,
     "mobilitygpt": mobilitygpt.convert,
     "lstm_trajgan": lstm_trajgan.convert,
+    "urban_syn": urban_syn.convert,
 }

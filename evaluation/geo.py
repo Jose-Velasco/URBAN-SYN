@@ -41,6 +41,18 @@ def point_on_polyline(prepared: tuple[np.ndarray, np.ndarray], fraction: float) 
     return float(lat), float(lng)
 
 
+def tstrajgen_road_polylines(geo_path, only=None) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+    """Read TS-TrajGen's nyc.geo and return {geo_id: prepared polyline} (see prepare_polyline) of each road.
+
+    `only` limits the work to the road IDs a model uses. nyc.geo stores coordinates in GeoJSON order [lng, lat].
+    """
+    geo = pd.read_csv(geo_path, usecols=["geo_id", "coordinates"])
+    if only is not None:
+        geo = geo[geo["geo_id"].isin(set(only))]
+    return {int(geo_id): prepare_polyline([(lat, lng) for lng, lat in json.loads(coordinates)])
+            for geo_id, coordinates in zip(geo["geo_id"], geo["coordinates"])}
+
+
 def tstrajgen_road_midpoints(geo_path, only=None) -> dict[int, tuple[float, float]]:
     """Read TS-TrajGen's nyc.geo and return {geo_id: (lat, lng)} of each road's midpoint.
 

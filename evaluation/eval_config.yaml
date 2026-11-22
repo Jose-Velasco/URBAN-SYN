@@ -97,6 +97,24 @@ models:
       # cpath = the complete route, which FMM connects by construction.
       fmm_route: opath
 
+  urban_syn:
+    # Our model (GNN road encoder + Diff-RNTraj). Each generated_<name> is one experiment run's generated file and
+    # becomes its own group (column) in the results; remove the runs you don't have, or add more.
+    files:
+      generated_finetune: outputs/experiments/urban_syn_nyc_full_training/RUN_ID/generated/nyc_full_joint_finetune_generated_gps.parquet
+      generated_scratch: outputs/experiments/urban_syn_nyc_full_training/RUN_ID/generated/nyc_full_joint_scratch_generated_gps.parquet
+      generated_frozen: outputs/experiments/urban_syn_nyc_full_training/RUN_ID/generated/nyc_full_joint_frozen_generated_gps.parquet
+      real_test: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_test_prepared_road_sequences.parquet
+      real_train: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_train_prepared_road_sequences.parquet
+      geo: baselines/gan/ts_trajgen/datasets/nyc/nyc.geo
+    produced_by:
+      generated_finetune: the generate stage of configs/experiments/nyc_full_training/joint_finetune.yaml (set RUN_ID to that run's folder)
+      generated_scratch: the generate stage of configs/experiments/nyc_full_training/joint_scratch.yaml (set RUN_ID to that run's folder)
+      generated_frozen: the generate stage of configs/experiments/nyc_full_training/joint_frozen.yaml (set RUN_ID to that run's folder)
+      real_test: fmm_scripts/urban_syn_extension/convert_fmm_sequences.py (split by data/split_by_user/test_trips.csv)
+      real_train: fmm_scripts/urban_syn_extension/convert_fmm_sequences.py (split by data/split_by_user/test_trips.csv)
+      geo: the TS-TrajGen build-inputs stage (run_pipeline.py), from the same nyc.gpkg the model was trained on
+
 # FMM map matching of the GPS models (those with an fmm_dir), run by the evaluation when a model's matches are missing
 # or older than its trajectories.
 fmm:
