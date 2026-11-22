@@ -10,6 +10,7 @@ import logging
 from osmnx import _overpass
 from shapely.geometry import box
 import yaml
+from collections.abc import Sequence
 
 
 
@@ -186,13 +187,6 @@ def write_canonical_network(
         engine="pyogrio",
         use_arrow=True,
         index=False,
-
-        # # GeoPackage normally reserves the name "fid" for its internal
-        # # feature ID. Use a different internal name so our FMM `fid`
-        # # remains an ordinary, readable attribute column.
-        # layer_options={
-        #     "FID": "gpkg_fid",
-        # },
     )
 
     logger.info(
@@ -245,70 +239,159 @@ def write_fmm_network(
         format_duration(time.perf_counter() - start_time),
     )
 
+
+def _validate_trajectory_identity(
+    df: pd.DataFrame,
+    identity_columns: Sequence[str],
+) -> list[str]:
+    """Validate the columns used to uniquely identify trajectories."""
+    if isinstance(identity_columns, str):
+        raise ValueError("identity_columns must be a sequence of column names.")
+
+    columns = list(identity_columns)
+
+    if not columns or len(set(columns)) != len(columns):
+        raise ValueError("identity_columns must contain unique column names.")
+
+    missing = set(columns) - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing trajectory identity columns: {sorted(missing)}")
+
+    if df.empty or df[columns].isna().any().any():
+        raise ValueError("Trajectory identities must be nonempty and non-null.")
+
+    return columns
+
+
+def _to_unix_seconds(
+    timestamps: pd.Series,
+    timestamp_unit: str | None = None,
+) -> pd.Series:
+    """Convert timestamps to Unix seconds regardless of datetime resolution."""
+    if (
+        timestamp_unit is None
+        and pd.api.types.is_numeric_dtype(timestamps)
+    ):
+        raise ValueError(
+            "Numeric timestamps require an explicit timestamp_unit."
+        )
+
+    datetimes = pd.to_datetime(
+        timestamps,
+        unit=timestamp_unit,
+        utc=True,
+        errors="raise",
+    ) # pyright: ignore[reportCallIssue]
+
+    if datetimes.isna().any():
+        raise ValueError("GPS timestamps cannot contain missing values.")
+
+    # Explicitly convert to seconds before reading integer timestamps.
+    # This avoids assuming that datetime64 always uses nanoseconds.
+    return datetimes.dt.as_unit("s").astype("int64")
+
+
 def add_fmm_trajectory_ids(
     df: pd.DataFrame,
+    identity_columns: Sequence[str] = ("uid", "tid"),
 ) -> pd.DataFrame:
+    """Assign deterministic FMM trajectory IDs and return their mapping.
+
+    IDs start at 1 because FMM may output ID 0 for fully unmatched
+    trajectories. Road edge_id=0 remains a valid, unrelated identifier.
+
+    Parameters
+    ----------
+    df : DataFrame
+        GPS observations. The ``fmm_id`` column is added in place.
+    identity_columns : Sequence[str]
+        Columns identifying each trajectory, defaulting to (uid, tid).
+
+    Returns
+    -------
+    DataFrame
+        One row per trajectory containing fmm_id and its original
+        identity columns.
     """
-    Add integer FMM trajectory IDs and return their mapping.
+    columns = _validate_trajectory_identity(df, identity_columns)
 
-    The current dataset's `tid` is only unique within each user, so
-    `uid` and `tid` are combined into a unique trajectory key.
-    """
-    # Unique trip key
-    # tid is only unique within a user. NOTE: "tid is only unique within a user" this may not be for another NYC dateset 
-    df["trip_key"] = (
-        df["uid"].astype(str)
-        + "_"
-        + df["tid"].astype(str)
+    # Sort unique identity tuples so shuffling GPS rows does not
+    # change the IDs assigned to the same set of trajectories.
+    trip_id_map = (
+        df[columns]
+        .drop_duplicates()
+        .sort_values(columns, kind="stable")
+        .reset_index(drop=True)
     )
 
-    # factorize assigns each unique trip key a stable integer ID
-    # according to its first occurrence.
-    df["id"], unique_trip_keys = pd.factorize(
-        df["trip_key"],
-        sort=False,
+    trip_id_map.insert(
+        0,
+        "fmm_id",
+        np.arange(1, len(trip_id_map) + 1, dtype=np.int64),
     )
 
-    trip_id_map = pd.DataFrame(
-        {
-            "trip_key": unique_trip_keys,
-            "id": range(len(unique_trip_keys)),
-        }
-    )
+    # Match complete identity tuples, without constructing a
+    # potentially ambiguous string such as "uid_tid".
+    mapping_index = pd.MultiIndex.from_frame(trip_id_map[columns])
+    trajectory_index = pd.MultiIndex.from_frame(df[columns])
+
+    df["fmm_id"] = (
+        mapping_index.get_indexer(trajectory_index) + 1
+    ).astype("int64")
 
     return trip_id_map
 
+
 def prepare_fmm_points(
     df: pd.DataFrame,
+    timestamp_unit: str | None = None,
 ) -> pd.DataFrame:
-    """Convert GPS observations into FMM's point schema."""
+    """Convert GPS observations into FMM's point CSV schema.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Observations containing fmm_id, datetime, lng, and lat.
+    timestamp_unit : str | None
+        Unit for numeric timestamps, such as "s" or "ms".
+        Not needed for datetime values or timestamp strings.
+
+    Returns
+    -------
+    DataFrame
+        GPS observations with fmm_id, x, y, and timestamp,
+        sorted by trajectory ID and time.
+    """
     start_time = time.perf_counter()
 
-    logger.info(
-        "Converting timestamps and sorting GPS observations..."
-    )
+    logger.info("Converting timestamps and sorting GPS observations...")
 
+    if "fmm_id" not in df.columns:
+        raise ValueError(
+            "Missing fmm_id. Call add_fmm_trajectory_ids() first."
+        )
 
-    df["timestamp"] = (
-        pd.to_datetime(df["datetime"])
-        .astype("int64")
-        // 10**9
-    )
-
-    # FMM expects observations for each trajectory to be sequential.
-    # FMM expects points already ordered by trajectory then time.
-    df.sort_values(
-        ["id", "timestamp"],
-        inplace=True,
-    )
+    fmm_ids = df["fmm_id"].astype("int64")
+    if (fmm_ids < 1).any():
+        raise ValueError("Input fmm_id values must start at 1.")
 
     gps_df = pd.DataFrame(
         {
-            "id": df["id"].astype("int64"),
+            "fmm_id": fmm_ids,
             "x": df["lng"].astype(float),
             "y": df["lat"].astype(float),
-            "timestamp": df["timestamp"].astype("int64"),
+            "timestamp": _to_unix_seconds(
+                df["datetime"],
+                timestamp_unit=timestamp_unit,
+            ),
         }
+    )
+
+    # FMM requires points to be ordered by trajectory, then time.
+    gps_df = (
+        gps_df
+        .sort_values(["fmm_id", "timestamp"], kind="stable")
+        .reset_index(drop=True)
     )
 
     logger.info(
@@ -317,6 +400,7 @@ def prepare_fmm_points(
     )
 
     return gps_df
+
 
 def log_downloaded_graph(graph, start_time: float) -> None:
     """Log basic information about a downloaded OSMnx graph."""

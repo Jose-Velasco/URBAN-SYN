@@ -1,6 +1,6 @@
 import ast
 import json
-from typing import Any
+from typing import Any, Literal
 import re
 
 import pandas as pd
@@ -976,10 +976,19 @@ def _split_train_test(
     df: pd.DataFrame,
     train_ratio: float,
     random_state: int,
+    assign_split: Literal["train", "test"] | None = None,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Split trajectory dataframe into train and test sets.
+    With assign_split (the FMM file is already one split, from
+    fmm_scripts/split_fmm_matches.py) every row goes to that split;
+    otherwise it is a random draw.
     """
+    if assign_split == "train":
+        return df.reset_index(drop=True), df.iloc[0:0].reset_index(drop=True)
+    if assign_split == "test":
+        return df.iloc[0:0].reset_index(drop=True), df.reset_index(drop=True)
+
     train = df.sample(frac=train_ratio, random_state=random_state)
     test = df.drop(train.index)
 
@@ -1056,7 +1065,8 @@ def build_mm_csvs(
     min_delta_seconds: float = 1.0,
     logger: logging.Logger | None = None,
     max_train_trajectories: int | None = None,
-    max_test_trajectories: int | None = None
+    max_test_trajectories: int | None = None,
+    assign_split: Literal["train", "test"] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Build TS-TrajGen train/test CSVs from FMM map-matching output.
@@ -1090,6 +1100,10 @@ def build_mm_csvs(
         Minimum spacing used when fallback interpolation is required.
     logger : logging.Logger, optional
         Logger used for progress, debug messages, and summary output.
+    assign_split : {"train", "test"}, optional
+        Put every kept trajectory in this split instead of a random
+        ``train_ratio`` split. Used for the train/test files written by
+        ``fmm_scripts/split_fmm_matches.py``.
 
     Returns
     -------
@@ -1172,7 +1186,7 @@ def build_mm_csvs(
         interp_stats.log_summary(logger)
         return df, df.copy()
 
-    train, test = _split_train_test(df, train_ratio, random_state)
+    train, test = _split_train_test(df, train_ratio, random_state, assign_split)
 
     train = _limit_trajectories(
         train,
@@ -1234,25 +1248,32 @@ def build_trip_time_lookup(
     parquet_path : str
         Path to original cleaned parquet with datetime, uid, tid.
     trip_id_map_csv : str
-        CSV created during FMM input preparation mapping trip_key -> FMM id.
+        CSV created during FMM input preparation: fmm_id plus the identity
+        columns (uid, tid and, for enriched_moves, move_id), and optionally split.
 
     Returns
     -------
     dict[str, list[pd.Timestamp]]
         Mapping from FMM trajectory id string to timestamp list.
     """
-    df = pd.read_parquet(parquet_path, columns=[datetime_col, user_id_col, trajectory_id_col]).copy()
-    df["trip_key"] = df[user_id_col].astype(str) + "_" + df[trajectory_id_col].astype(str)
+    trip_map = pd.read_csv(trip_id_map_csv, dtype=str)
+    # The identity columns are whatever fmm_scripts/utils.py add_fmm_trajectory_ids used.
+    identity_columns = [c for c in trip_map.columns if c not in ("fmm_id", "split")]
 
-    trip_map = pd.read_csv(trip_id_map_csv).copy()
-    trip_map["id"] = trip_map["id"].astype(str)
+    df = pd.read_parquet(parquet_path)
+    # enriched_moves.parquet stores tid and move_id as the index.
+    if trajectory_id_col not in df.columns:
+        df = df.reset_index()
+    df = df.rename(columns={user_id_col: "uid", trajectory_id_col: "tid"})
+    df = df[[datetime_col, *identity_columns]]
+    df[identity_columns] = df[identity_columns].astype(str)
 
-    df = df.merge(trip_map, on="trip_key", how="left")
+    df = df.merge(trip_map[["fmm_id", *identity_columns]], on=identity_columns, how="left")
     df[datetime_col] = pd.to_datetime(df[datetime_col])
-    df = df.sort_values(["id", datetime_col]).reset_index(drop=True)
+    df = df.sort_values(["fmm_id", datetime_col]).reset_index(drop=True)
 
     lookup: dict[str, list[pd.Timestamp]] = {}
-    for traj_id, group in df.groupby("id", sort=False):
+    for traj_id, group in df.groupby("fmm_id", sort=False):
         lookup[str(traj_id)] = list(group[datetime_col])
 
     return lookup

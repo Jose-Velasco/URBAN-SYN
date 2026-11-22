@@ -16,9 +16,12 @@ paths:
 
   # Read-only upstream artifacts mounted into the container.
   network: /workspace/upstream/fmm/data/road_network/nyc.gpkg
-  fmm_match: /workspace/upstream/fmm/outputs/nyc_fmm_match.csv
-  parquet: /workspace/upstream/data/nyc_output_tabular/output/traj_cleaned.parquet
-  trip_id_map: /workspace/upstream/fmm/data/nyc_gps_points_fmm_trip_id_map.csv
+  # Shared FMM flow (fmm_scripts/README.md): prepare_fmm_gps.py -> fmm -> split_fmm_matches.py
+  # with --test_trips ../data/split_by_user/test_trips.csv (the by-user split shared by all baselines).
+  fmm_train_match: /workspace/upstream/fmm/outputs/nyc_enriched_moves/nyc_enriched_moves_train_fmm_matches.csv
+  fmm_test_match: /workspace/upstream/fmm/outputs/nyc_enriched_moves/nyc_enriched_moves_test_fmm_matches.csv
+  parquet: /workspace/upstream/data/nyc_output_tabular/output/enriched_moves.parquet
+  trip_id_map: /workspace/upstream/fmm/data/nyc_enriched_moves_fmm_trip_id_map.csv
 
 # TS-TrajGen experiment/model configuration.
 model_config: /workspace/repo/configs/ts_trajgen_nyc.yaml
@@ -30,6 +33,7 @@ runtime:
 build:
   min_len: 2
   min_delta_seconds: 0.5
+  # Unused: the train/test split comes from split_fmm_matches.py. Kept for compatibility.
   train_ratio: 0.8
   interpolate_intermediate_edges: false
 

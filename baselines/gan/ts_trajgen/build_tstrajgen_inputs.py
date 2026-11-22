@@ -42,10 +42,22 @@ def parse_args() -> BuildConfig:
         ),
     )
     parser.add_argument(
-        "--fmm_match_path",
+        "--fmm_train_match_path",
         type=Path,
         required=True,
-        help="Path to FMM output CSV containing id, cpath, and tpath columns.",
+        help=(
+            "Training FMM matches from fmm_scripts/split_fmm_matches.py, "
+            "e.g. <prefix>_train_fmm_matches.csv (id, opath, tpath, ...)."
+        ),
+    )
+    parser.add_argument(
+        "--fmm_test_match_path",
+        type=Path,
+        required=True,
+        help=(
+            "Test FMM matches from fmm_scripts/split_fmm_matches.py, "
+            "e.g. <prefix>_test_fmm_matches.csv."
+        ),
     )
     parser.add_argument(
         "--parquet_path",
@@ -57,7 +69,7 @@ def parse_args() -> BuildConfig:
         "--trip_id_map_csv",
         type=Path,
         required=True,
-        help="Path to the FMM trip-id map CSV created when preparing GPS points for FMM.",
+        help="FMM trip-id map CSV from fmm_scripts/prepare_fmm_gps.py (fmm_id + identity columns).",
     )
     parser.add_argument(
         "--config",
@@ -87,7 +99,7 @@ def parse_args() -> BuildConfig:
         "--train_ratio",
         type=float,
         default=0.8,
-        help="Fraction of trajectories used for training.",
+        help="Unused: the train/test split comes from split_fmm_matches.py. Kept for compatibility.",
     )
     parser.add_argument(
         "--random_state",
@@ -117,8 +129,8 @@ def parse_args() -> BuildConfig:
     parser.add_argument(
         "--fmm_sep",
         type=str,
-        default=";",
-        help="Delimiter used in the FMM output CSV.",
+        default=",",
+        help="Delimiter of the FMM match CSVs (split_fmm_matches.py writes comma-delimited CSV).",
     )
     parser.add_argument(
         "--verbose",
@@ -162,7 +174,8 @@ def parse_args() -> BuildConfig:
     
     return BuildConfig(
         network_path=args.network_path,
-        fmm_match_path=args.fmm_match_path,
+        fmm_train_match_path=args.fmm_train_match_path,
+        fmm_test_match_path=args.fmm_test_match_path,
         parquet_path=args.parquet_path,
         trip_id_map_csv=args.trip_id_map_csv,
         geo_feature_columns=geo_feature_columns,
@@ -308,23 +321,32 @@ def build_and_save_mm_csvs(
         trip_id_map_csv=config.trip_id_map_csv,
     )
 
-    logger.info("Building train/test map-matched CSV files")
-    train_df, test_df = build_mm_csvs(
-        fmm_path=config.fmm_match_path,
-        edge_id_to_geo_id=edge_id_to_geo_id,
-        geo_to_length=geo_to_length,
-        trip_time_lookup=trip_time_lookup,
-        train_ratio=config.train_ratio,
-        random_state=config.random_state,
-        interpolate_intermediate_edges=config.interpolate_intermediate_edges,
-        min_len=config.min_len,
-        verbose=config.verbose,
-        fmm_sep=config.fmm_sep,
-        min_delta_seconds=config.min_delta_seconds,
-        logger=logger,
-        max_train_trajectories=config.max_train_trajectories,
-        max_test_trajectories=config.max_test_trajectories,
-    )
+    # The shared by-user split: fmm_scripts/split_fmm_matches.py --test_trips
+    # ../data/split_by_user/test_trips.csv has already split the FMM output, so
+    # each file is used as one split (no random train_ratio draw).
+    def build_split(fmm_path: Path, split: str) -> pd.DataFrame:
+        logger.info("Building %s map-matched CSV from %s", split, fmm_path)
+        train_part, test_part = build_mm_csvs(
+            fmm_path=fmm_path,
+            edge_id_to_geo_id=edge_id_to_geo_id,
+            geo_to_length=geo_to_length,
+            trip_time_lookup=trip_time_lookup,
+            train_ratio=config.train_ratio,
+            random_state=config.random_state,
+            interpolate_intermediate_edges=config.interpolate_intermediate_edges,
+            min_len=config.min_len,
+            verbose=config.verbose,
+            fmm_sep=config.fmm_sep,
+            min_delta_seconds=config.min_delta_seconds,
+            logger=logger,
+            max_train_trajectories=config.max_train_trajectories,
+            max_test_trajectories=config.max_test_trajectories,
+            assign_split=split,
+        )
+        return train_part if split == "train" else test_part
+
+    train_df = build_split(config.fmm_train_match_path, "train")
+    test_df = build_split(config.fmm_test_match_path, "test")
 
     train_df.to_csv(train_path, index=False)
     test_df.to_csv(test_path, index=False)

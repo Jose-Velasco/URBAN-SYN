@@ -1,14 +1,12 @@
 """
-Build the DiffTraj training / test files from the MAT-Builder parquet (script version of
-DiffTraj_DataFormat.ipynb, in the same folder).
+Build the DiffTraj training / test files from the MAT-Builder parquet.
 
-One trajectory per MOVE (enriched_moves.parquet, default) or per user track
-(traj_cleaned.parquet, --source traj_cleaned). Test trips are the ones in
-fmm_scripts/nyc_test.csv (the same list as Diff-RNTraj, read from there, not copied);
-all moves of a test (uid, tid) go to the test set, like the Diff-RNTraj converter.
+One trajectory per MOVE (enriched_moves.parquet, default) or per user track (traj_cleaned.parquet, --source traj_cleaned).
+Test trips are the ones in data/split_by_user/test_trips.csv (URBAN-SYN root; the by-user split shared by all
+baselines, made by scripts/split_enriched_moves_by_user.ipynb); all moves of a test (uid, tid) go to the test set.
 Normalisation statistics come from the TRAIN trips only.
 
-Writes (into --out-dir, default: this folder):
+Outputs (into --out-dir, default: this folder):
     traj.npy                     train trips, (N, 2, 256), normalised      -> main.py
     head.npy                     train conditions, (N, 8), normalised      -> main.py
     head_test.npy                test conditions                            -> generate.py
@@ -22,10 +20,9 @@ head columns: [departure slot (5 min), distance m, duration min, #points, avg m 
                avg speed m/min, start cell, end cell]   (cells: 16x16 grid over the data)
 
 Usage
-    python prepare_data.py                  # data/.../enriched_moves.parquet + fmm_scripts/nyc_test.csv
-    python prepare_data.py --test-csv nyc_mm_test.csv --trip-map nyc_gps_points_fmm_trip_id_map.csv
+    python prepare_data.py                  # data/.../enriched_moves.parquet + data/split_by_user/test_trips.csv
+    python prepare_data.py --test-csv nyc_mm_test.csv
     python prepare_data.py --parquet output/traj_cleaned.parquet      # one trajectory per user track
-    (nyc_test.csv already has uid / tid, so it needs no trip map)
 """
 import argparse
 import json
@@ -106,8 +103,7 @@ def main():
     p.add_argument("--parquet", default="../../../../data/nyc_output_tabular/output/enriched_moves.parquet")
     p.add_argument("--source", choices=["enriched_moves", "traj_cleaned"], default=None,
                    help="default: from the parquet file name")
-    # the shared test list in URBAN-SYN/fmm_scripts (also used by Diff-RNTraj)
-    p.add_argument("--test-csv", default="../../../../fmm_scripts/nyc_test.csv",
+    p.add_argument("--test-csv", default="../../../../data/split_by_user/test_trips.csv",
                    help="test trips: a CSV with uid, tid, or with traj_id (+ --trip-map)")
     p.add_argument("--trip-map", default="nyc_gps_points_fmm_trip_id_map.csv")
     p.add_argument("--modes", type=int, nargs="*", default=None,

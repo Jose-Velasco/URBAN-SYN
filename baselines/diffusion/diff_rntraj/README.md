@@ -23,7 +23,7 @@ Everything else in `repo/` is the authors' code (changed files are listed under 
 - `repo/train_road_embed.py`: trains the road embedding (`road_embed.txt`).
 - `fmm_scripts/diffrntraj_version/` (in the URBAN-SYN root): the FMM pipeline that makes `repo/data/NYC/`, with
   its own README.
-- `fmm_scripts/nyc_test.csv` (gitignored): the test trips held out from training.
+- `data/split_by_user/test_trips.csv` (gitignored): the test trips held out from training (shared by all baselines).
 
 ## NYC adaptation notes
 
@@ -35,7 +35,7 @@ Changes to the training and generation scripts:
 - `--dataset NYC` added with its own map bounds, data folder (`data/NYC/`) and road count; the road count
   (`id_size`) is read from the converted data, so it stays right when the data is rebuilt. The map bounds are the
   bounding box of the NYC road network and need updating if the road network changes.
-- Training uses only the training split (`gen_train/`); TS-TrajGen's test trips are held out.
+- Training uses only the training split (`gen_train/`); the shared test trips are held out.
 - The learning rate is halved every `epochs / 10` epochs (at least 3) instead of every 3, so long runs keep
   learning. At the default 30 epochs this is the same as before.
 - GPU 0 is used by default unless `CUDA_VISIBLE_DEVICES` is already set (e.g. by Slurm); the original hard-coded
@@ -71,10 +71,10 @@ Other:
 
 ## Data-split policy
 
-- **Train (`gen_train/`):** all trips except TS-TrajGen's test trips. Used for training, the road graph and the
+- **Train (`gen_train/`):** all trips except the test trips. Used for training, the road graph and the
   number of trajectories generated per length.
-- **Test (`gen_test/`):** the same test trips as TS-TrajGen (listed in `fmm_scripts/nyc_test.csv`), held out
-  so both baselines are evaluated on the same trips.
+- **Test (`gen_test/`):** the trips in `data/split_by_user/test_trips.csv`, the by-user split shared by all
+  baselines, held out so all baselines are evaluated on the same trips.
 - **All (`gen_all/`):** train + test, kept for reference.
 - **No validation set:** like the original code, training has no validation split. Despite its name,
   `val-best-model.pt` is saved whenever the training loss improves, so it is the epoch with the lowest training
@@ -85,7 +85,7 @@ Other:
 All data and outputs are gitignored; only the code is committed.
 
 - **Raw input:** the MAT-Dataset NYC moves (`data/nyc_output_tabular/output/enriched_moves.parquet`) and the test
-  split (`fmm_scripts/nyc_test.csv`).
+  split (`data/split_by_user/test_trips.csv`).
 - **Model input (`repo/data/NYC/`):** made by the FMM pipeline in `fmm_scripts/diffrntraj_version/`: road data and
   road ID maps, the train/test/all trajectory files, the road network, the road graph and the road embedding.
 - **Outputs:** the trained model, losses and logs in `repo/results/NYC/`, and the generated trajectories in
@@ -130,7 +130,7 @@ compiles FMM, so it takes a while). Details are in
 ### 2. Train and generate
 
 **On the HPC:** submit `hpc/train_nyc.sbatch` from this folder, with the image as `diffrntraj.sif` next to it.
-The job trains, then generates with the trained model; `GENERATE_ONLY=1` skips training. If
+The job trains for 1,000 epochs, then generates with the trained model; `GENERATE_ONLY=1` skips training. If
 `repo/data/NYC/graph/road_embed.txt` is missing (pipeline run locally only up to the graph step), the job trains the
 road embedding first. 
 

@@ -14,7 +14,7 @@ Created only for the Diff-RNTraj version:
   road embedding).
 - `convert_fmm_to_diffrntraj.py`: turns the FMM matches into Diff-RNTraj's data files in `repo/data/NYC/`.
 - `README.md`: this file.
-- `fmm_scripts/nyc_test.csv` (one folder up, gitignored): TS-TrajGen's test trips, held out from training.
+- `data/split_by_user/test_trips.csv` (in the URBAN-SYN root, gitignored): the shared test trips, held out from training.
 
 Copies of TS-TrajGen files, changed for Diff-RNTraj (changes listed under NYC adaptation notes):
 - `prepare_fmm_inputs_diffrntraj.py`: builds the road network and the GPS points.
@@ -45,8 +45,8 @@ Every changed line is marked `CHANGED` or `NEW`.
 
 ## Test split
 
-`fmm_scripts/nyc_test.csv` lists TS-TrajGen's test trips: each trajectory in TS-TrajGen's `nyc_mm_test.csv`, looked up in
-the FMM trip-ID map to get its user and trip (`uid`, `tid`). The converter puts these trips in `gen_test/` and
+`data/split_by_user/test_trips.csv` lists the test trips (`uid`, `tid`) of the by-user split shared by all baselines
+(made by `scripts/split_enriched_moves_by_user.ipynb`). The converter puts these trips in `gen_test/` and
 everything else in `gen_train/`, so Diff-RNTraj trains without them. If the file is missing there is no split.
 
 ## How to run
@@ -64,5 +64,5 @@ add `--embed-cpu` on a computer without an NVIDIA GPU (much slower), or stop aft
 let the HPC training job train the road embedding by not including `--to embed`
 
 It needs `data/nyc_output_tabular/output/enriched_moves.parquet` (in the URBAN-SYN root) and
-`fmm_scripts/nyc_test.csv`. Outputs (gitignored) go to `data/` and `logs/` in this folder, and the model
+`data/split_by_user/test_trips.csv`. Outputs (gitignored) go to `data/` and `logs/` in this folder, and the model
 input to `baselines/diffusion/diff_rntraj/repo/data/NYC/`.
