@@ -1,6 +1,8 @@
 # URBAN-SYN Evaluation
 
-One evaluation for every trajectory generation model in URBAN-SYN. Each baseline writes its output in a different format, so this folder first converts every model's output, and the matching real test and training sets, into one common format. 
+One evaluation for every trajectory generation model in URBAN-SYN. Each model writes its output in a different format, so this folder first converts every model's output, and the matching real test and training sets, into one common format.
+
+**Everything is set in [`eval_config.yaml`](eval_config.yaml).** It lists the path of every input file: each model's generated and real files (`models:`), the road networks (`networks:`) and the FMM files used to map-match the GPS models (`fmm:`), plus every metric setting (`metrics:`). To point the evaluation at new files, edit only that file. `convert --check` lists any missing file with the step that makes it (see [Inputs](#inputs)).
 
 ## Models
 
@@ -64,7 +66,7 @@ Once their matches are up to date, the dev container commands above work for eve
 | 11 | Off-network rate | lower | share of native GPS points > 30 m from the canonical road network |
 | 12 | Road connectivity (RSC) | higher | share of consecutive roads where the next road directly follows |
 
-Every setting (grid, bins, thresholds, sample sizes, seed) is in the `metrics:` section of `eval_config.yaml`, so all models are scored the same way. The JSDs use log base 2 (0 to 1) and compare sets of equal size. Trajectories are paired by ID when the model was conditioned on a test trajectory, and otherwise with one shared rule: a real trajectory that starts and ends in the same grid cells (the share that finds one is reported with the scores). The privacy metrics use every trajectory. Each model also gets a **real train** row (a sample of real training data scored in place of the generated set) as the floor, and a **real test** row for the off-network rate and RSC of the real data.
+Every setting (grid, bins, thresholds, sample sizes, seed) is in the `metrics:` section of `eval_config.yaml`
 
 **Evaluation details**
 
@@ -84,25 +86,49 @@ The full results of the run, including every setting of the threshold-dependent 
 
 ## Inputs
 
-Each converter reads the baseline's files where the baseline wrote them, and `eval_config.yaml` lists every one of those paths. If a file is missing, the run stops before converting anything and lists every missing file with the step that produces it.
+Each converter reads a model's files where the model wrote them, and `eval_config.yaml` lists every one of those paths, along with the road networks and FMM files below. If a file is missing, the run stops before converting anything and lists every missing file with the step that produces it. All paths are relative to the URBAN-SYN folder.
 
-| Model | Files (`eval_config.yaml`) | Made by |
+### Model files (`models:`)
+
+| Model | Files | Made by |
 |---|---|---|
 | `difftraj` | `Files/<timestamp>/synthetic_trajectories.npy`, `synthetic_index.npy` | `generate.py` (one folder per run) |
 | | `real_trajectories_test.npy`, `traj_ids_test.npy`, `real_trajectories_train.npy`, `traj_ids_train.npy` | `prepare_data.py --extras` |
-| | FMM matches, in `fmm_dir` | made by the evaluation (see "FMM matches for the GPS models" below) |
+| | FMM matches, in `fmm_dir` | made by the evaluation (see [FMM files](#fmm-files-for-the-gps-models-fmm)) |
 | `diffrntraj` | `generate_data/<folder>/` (one `<length>.txt` per length) | the generation run |
 | | `data/NYC/extra_file/*.json`, `data/NYC/gen_test/*.bin`, `data/NYC/gen_train/*.bin` | `fmm_scripts/diffrntraj_version/` pipeline |
-| `tstrajgen` | `datasets/nyc/TS_TrajGen_GAN_generated_output.csv`, `nyc_mm_test.csv`, `nyc_mm_train.csv`, `nyc.geo`, `nyc.rel` | the TS-TrajGen pipeline (`run_pipeline.py`) |
+| `tstrajgen` | `datasets/nyc/TS_TrajGen_GAN_generated_output.csv`, `nyc_mm_test.csv`, `nyc_mm_train.csv`, `nyc.geo` | the TS-TrajGen pipeline (`run_pipeline.py`), from the shared network's FMM matches: `prepare_fmm_gps.py` → `fmm ./config/fmm_config_csv_point_ts_trajgen.xml` → `split_fmm_matches.py` in `fmm_scripts/` (see `baselines/gan/ts_trajgen/PIPELINE.md`) |
 | `mobilitygpt` | `nyc_workflow/output/nycall_final/...` | the MobilityGPT `nyc_workflow`, run on TS-TrajGen's `nyc_mm_train.csv` / `nyc_mm_test.csv` |
 | `lstm_trajgan` | `outputs/lstm_trajgan_nyc_full/results/nyc_syn_traj_test.csv`, `data/nyc_full/nyc_test_latlon.csv`, `nyc_train_latlon.csv` | the LSTM-TrajGAN pipeline |
-| | FMM matches, in `fmm_dir` | made by the evaluation |
+| | FMM matches, in `fmm_dir` | made by the evaluation (see [FMM files](#fmm-files-for-the-gps-models-fmm)) |
 | `urban_syn` | `outputs/experiments/<experiment>/<run_id>/generated/*_generated_gps.parquet`, one `generated_<name>` per run | the experiment's `generate` stage (`src/urban_syn`) |
 | | `fmm_scripts/outputs/urban_syn_ready/*_{test,train}_prepared_road_sequences.parquet` | `fmm_scripts/urban_syn_extension/` (see its README) |
 
-**Road networks.** DiffTraj, LSTM-TrajGAN and URBAN-SYN are scored on the shared road network itself, `fmm_scripts/data/road_network/nyc.gpkg` (`network: shared` in the converters), which the evaluation reads directly with Python's built-in `sqlite3` (no geopandas): DiffTraj and LSTM-TrajGAN through FMM's `fmm_nyc.shp`, built with it, and URBAN-SYN through its `edge_id`s. They need no TS-TrajGen files. TS-TrajGen and MobilityGPT write road IDs of TS-TrajGen's `nyc.geo` (`network: tstrajgen`), which TS-TrajGen builds from the same `nyc.gpkg`, so its `geo_id`s are the same `edge_id`s. The off-network rate of every model uses the shared `nyc.gpkg`. Keep FMM's files and TS-TrajGen's build from the same build of `nyc.gpkg`: the evaluation stops if FMM's network and `nyc.gpkg` have a different number of roads. Each network's files are listed once, under `networks:` in `eval_config.yaml`; the converters and the metrics both read them from there.
-
 **URBAN-SYN's files.** A generated file has one row per point: `trajectory_id`, `step`, `model_road_id`, `edge_id`, `rate`, `position_rate`, `lng`, `lat`. The evaluation scores the generator's own `lat`/`lng` and uses `edge_id` (the shared network's road ID) for the road metrics; `model_road_id` and `rate` are not needed. Each `generated_<name>` file under `files:` becomes one row group named `<name>`, e.g. `finetune`, `scratch` and `frozen` for the three `nyc_full_training` runs. The real test and training pieces are the prepared road sequences the model was tested and trained on, with each point placed on its road's geometry in the shared `nyc.gpkg` (`networks: shared:` in `eval_config.yaml`) the same way the generator places its points. The converter checks this: if a generated point is more than 1 m from where its `edge_id` and `position_rate` put it on that `nyc.gpkg`, the model used a different road network, and the run stops. URBAN-SYN is unconditional, so like Diff-RNTraj it is paired by the shared fallback rule.
+
+### Road networks (`networks:`)
+
+Road connectivity and the off-network rate are measured on a road network. Each network's files are listed once, under `networks:`, and both the converters and the metrics read them from there.
+
+| Network | Files | Used by | Made by |
+|---|---|---|---|
+| `shared` | `fmm_scripts/data/road_network/nyc.gpkg` | DiffTraj, LSTM-TrajGAN and URBAN-SYN; the off-network rate of every model | the shared road network (`fmm_scripts/README.md`, `build_road_network.py`) |
+| `tstrajgen` | `baselines/gan/ts_trajgen/datasets/nyc/nyc.geo`, `nyc.rel` | TS-TrajGen and MobilityGPT | TS-TrajGen's build-inputs stage, from the shared `nyc.gpkg` |
+| `diffrntraj_drive` | `fmm_scripts/diffrntraj_version/data/road_network/nyc_drive.gpkg` | Diff-RNTraj | the `fmm_scripts/diffrntraj_version/` pipeline (its own download) |
+
+**Shared network or TS-TrajGen's files.** DiffTraj, LSTM-TrajGAN and URBAN-SYN are scored on the shared road network itself (`NETWORK = "shared"` in their converters), which the evaluation reads directly with Python's built-in `sqlite3` (no geopandas): DiffTraj and LSTM-TrajGAN through FMM's `fmm_nyc.shp`, built with it, and URBAN-SYN through its `edge_id`s. So they need no TS-TrajGen files. TS-TrajGen and MobilityGPT write road IDs of TS-TrajGen's `nyc.geo` (`NETWORK = "tstrajgen"`), which TS-TrajGen builds from the same `nyc.gpkg`, so its `geo_id`s are the same `edge_id`s and both networks give the same scores. Keep FMM's files and TS-TrajGen's build from the same build of `nyc.gpkg`: the evaluation stops if FMM's network and `nyc.gpkg` have a different number of roads.
+
+### FMM files for the GPS models (`fmm:`)
+
+DiffTraj and LSTM-TrajGAN write GPS points, so the evaluation map-matches them onto the shared network with FMM, using the shared map-matching setup in `fmm_scripts/`:
+
+| File | Path | Made by |
+|---|---|---|
+| FMM config template | `fmm_scripts/config/fmm_config_csv_point.xml` | in git; the evaluation copies it and replaces only the GPS input file, the GPS id column, the output file and the output fields, so `k`, `r`, the GPS error and the network stay the shared settings |
+| FMM road network | `fmm_scripts/data/fmm/fmm_nyc.shp` (with `.dbf`, `.shx`) | `build_road_network.py`, together with `nyc.gpkg` |
+| Shortest-path table (UBODT) | `fmm_scripts/data/nyc_ubodt.bin` | `ubodt_gen ./config/ubodt_config.xml`, in the FMM image, from `fmm_scripts/` |
+
+The evaluation keeps each match in the model's `fmm_dir` (`fmm_scripts/outputs/difftraj`, `fmm_scripts/outputs/lstm_trajgan`): `<model>_<set>_fmm_points.csv` (FMM's input), `_fmm_trip_id_map.csv`, `_fmm_config.xml`, `_fmm_match.csv` (FMM's output) and `_fmm_source.json`, a fingerprint of the inputs. A match is reused until the trajectories, the FMM road network, the UBODT or the FMM settings change, and then made again.
 
 ### After retraining a baseline
 
