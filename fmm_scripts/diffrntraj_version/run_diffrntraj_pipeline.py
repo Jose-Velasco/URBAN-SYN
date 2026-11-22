@@ -69,8 +69,8 @@ FMM_XML = "./config/fmm_config_csv_point_diffrntraj.xml"
 PARQUET = "../../data/nyc_output_tabular/output/enriched_moves.parquet"
 CANONICAL_GPKG = "./data/road_network/nyc_drive.gpkg"
 TRIP_ID_MAP = "./data/nyc_gps_points_fmm_trip_id_map_drive.csv"
-# uid, tid of TS-TrajGen's test trips (held out in gen_test/ by the convert step)
-TEST_TRIPS = "../nyc_test.csv"                                   # in fmm_scripts/
+# uid, tid of the test trips: the by-user split shared by all baselines (held out in gen_test/ by the convert step)
+TEST_TRIPS = "../../data/split_by_user/test_trips.csv"           # in URBAN-SYN/data/
 PREP_LOG = "./logs/prepare_fmm_nyc_diffrntraj.log"
 # Everything the pipeline prints (all steps), appended run after run.
 PIPELINE_LOG = "./logs/run_diffrntraj_pipeline.log"
@@ -248,7 +248,7 @@ def step_convert() -> None:
         "--fmm-output", MATCH_CSV,
         "--road-network", CANONICAL_GPKG,
         "--output-dir", CONVERTER_OUT,
-        # Change for Diff-RNTraj (NYC): hold out TS-TrajGen's test trips in gen_test/
+        # Change for Diff-RNTraj (NYC): hold out the shared test trips in gen_test/
         "--trip-map", TRIP_ID_MAP,
         "--test-trips", TEST_TRIPS,
     )
@@ -336,7 +336,7 @@ def main() -> None:
         try:
             RUNNERS[name]()
         except Exception as exc:
-            print(f"\n❌ Step '{name}' failed: {exc}")
+            print(f"\n Step '{name}' failed: {exc}")
             print(f"   Fix the problem, then resume with:  python {Path(__file__).name} --from {name}")
             sys.exit(1)
         print(f"✅ {name} done in {(time.time() - t) / 60:.1f} min")

@@ -110,7 +110,7 @@ def generate_data(model, spatial_A_trans, rn_dict, parameters, SE):
     # Change for Diff-RNTraj (NYC): NYC length distribution (trajectories of 20-100 roads, from the converter)
     if parameters.dataset == "NYC":
         # Change for Diff-RNTraj (NYC): generate as many trajectories per length as gen_train/ has
-        length2num = np.load("./data/NYC/gen_train/length_distri.npy")
+        length2num = np.load("./data/NYC/gen_test/length_distri.npy")
         start_length, end_length = 20, 100
     # batchsize=1
     traj_all_num = int(length2num.sum())
@@ -118,6 +118,9 @@ def generate_data(model, spatial_A_trans, rn_dict, parameters, SE):
     with torch.no_grad():  # this line can help speed up evaluation
         for i in tqdm(range(start_length, end_length+1)):
             curr_length =i
+            # Change for Diff-RNTraj (NYC): skip lengths with no trajectories (an empty batch crashes the decoder)
+            if length2num[i] == 0:
+                continue
             # curr_batch = int(length2num[i] / length2num.sum() * traj_all_num)
             
             # Change for Diff-RNTraj (NYC): round instead of truncate; int() lost one trajectory at

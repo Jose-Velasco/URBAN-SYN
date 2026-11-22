@@ -1,8 +1,8 @@
 """
 Generate trajectories with a trained DiffTraj model (script version of
-process/Traj_Generation.ipynb, so it can run in a batch job on the HPC).
+process/Traj_Generation.ipynb from the original DiffTraj repo, so it can run in a batch job on the HPC).
 
-By default it generates one trajectory per row of head_test.npy, IN ORDER, so
+By default it generates one trajectory per row of head_test.npy in order, so
 synthetic[i] is conditioned on head_test[i] and can be compared 1:1 with
 real_trajectories_test.npy[i].
 

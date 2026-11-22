@@ -6,8 +6,11 @@ upstream ``data/csv2npy.py`` encoder and does not run model training or
 prediction. A future pipeline wrapper should call this script as the dataset
 preparation stage, then call the upstream encoder/training/prediction scripts.
 
-Expected source columns for the default GPS-only mode (e.g. traj_cleaned):
+Expected source columns for the default GPS-only mode (e.g. enriched_moves or traj_cleaned):
     uid, tid, lat, lng|lon, datetime
+
+If a move_id column is present (enriched_moves), each (tid, move_id) becomes one
+trajectory; otherwise each tid is one trajectory.
 
 Optional semantic mode additionally requires:
     category
@@ -292,6 +295,12 @@ def validate_source_columns(df, category_mode):
 
     if "lng" in df.columns:
         df = df.rename(columns={"lng": "lon"})
+
+    # One trajectory per move: enriched_moves files number move_id within each tid, so a
+    # move is (tid, move_id). Sources without move_id (e.g. traj_cleaned) are unchanged.
+    if "move_id" in df.columns:
+        df = df.copy()
+        df["tid"] = df["tid"].astype(str) + "_" + df["move_id"].astype(str)
 
     return df
 
