@@ -12,7 +12,7 @@ One evaluation for every trajectory generation model in URBAN-SYN. Each baseline
 | `mobilitygpt` | MobilityGPT | road IDs |
 | `lstm_trajgan` | LSTM-TrajGAN | GPS points |
 
-All five use the same split by user: `data/split_by_user/` (made by `data_expansion/split_enriched_moves_by_user.ipynb` from `enriched_moves.parquet`). The test users are listed in `data/split_by_user/test_trips.csv` (`uid, tid`).
+All five use the same split by user: `data/split_by_user/` (made by `scripts/split_enriched_moves_by_user.ipynb` from `enriched_moves.parquet`). The test users are listed in `data/split_by_user/test_trips.csv` (`uid, tid`).
 
 ## Quick start
 
