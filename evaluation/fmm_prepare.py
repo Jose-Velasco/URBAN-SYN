@@ -141,13 +141,15 @@ def _fmm_input(table: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def _config_xml(settings: dict, points: Path, match: Path) -> str:
-    """The template config with the GPS file, output file and output fields replaced.
+    """The template config with the GPS file, GPS id column, output file and output fields replaced.
 
     Paths are relative to workdir, so the config (and fingerprint) is the same in the dev container and Docker image.
+    The id column is set to "id" because _fmm_input writes id;x;y;timestamp (the shared template reads fmm_id).
     """
     tree = ET.ElementTree(ET.fromstring(settings["template_text"]))
     root = tree.getroot()
     root.find("input/gps/file").text = os.path.relpath(points, settings["workdir"]).replace(os.sep, "/")
+    root.find("input/gps/id").text = "id"
     output = root.find("output")
     output.find("file").text = os.path.relpath(match, settings["workdir"]).replace(os.sep, "/")
     fields = output.find("fields")
@@ -194,7 +196,7 @@ def _check_same_network(config: dict, settings: dict) -> None:
         raise SystemExit(
             f"ERROR  FMM's road network ({settings['network'].name}: {fmm_roads:,} roads) and TS-TrajGen's "
             f"nyc.geo ({geo_roads:,} roads) differ, so FMM's road IDs would not be TS-TrajGen's geo_ids. "
-            "Use the network that TS-TrajGen was built on (fmm_scripts/prepare_fmm_inputs.py writes both).")
+            "Use the shared road network that TS-TrajGen was built on (see fmm_scripts/README.md).")
     _checked_networks.add(key)
 
 

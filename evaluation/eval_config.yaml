@@ -107,8 +107,8 @@ fmm:
   command: fmm
   produced_by:
     template: fmm_scripts/config (in git)
-    network: fmm_scripts/prepare_fmm_inputs.py (the road network TS-TrajGen is built on)
-    ubodt: ubodt_gen ./config/ubodt_config.xml, in fmm_scripts, after prepare_fmm_inputs.py
+    network: the shared road network (fmm_scripts/README.md, build_road_network.py); TS-TrajGen is built on it
+    ubodt: ubodt_gen ./config/ubodt_config.xml, in fmm_scripts, after the road network
 
 # Road networks. A road table's `network` column names one of these.
 #   tstrajgen         geo_id of TS-TrajGen's nyc.geo; nyc.rel lists which road follows which

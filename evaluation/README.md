@@ -104,7 +104,7 @@ TS-TrajGen's `nyc.geo` and `nyc.rel` are also the road network of DiffTraj, LSTM
 - **DiffTraj:** every run writes a new `Files/<timestamp>/` folder, so point `generated` and `index` at it. If the split changed, rerun `prepare_data.py --extras` for the real files. The evaluation remakes its FMM matches.
 - **Diff-RNTraj:** point `generated_dir` at the generation that matches the test lengths (`repo/models/multi_train.py` reads `gen_test/length_distri.npy`). Its `data/NYC/` files must come from the same pipeline run the model was trained on.
 - **LSTM-TrajGAN:** the paths stay the same. The evaluation remakes its FMM matches.
-- **TS-TrajGen:** the paths stay the same. If its road network changed (`fmm_scripts/prepare_fmm_inputs.py` was rerun), rerun MobilityGPT; the evaluation remakes the GPS models' FMM matches on the new network.
+- **TS-TrajGen:** the paths stay the same. If its road network changed (the shared network in `fmm_scripts/` was rebuilt), rerun MobilityGPT; the evaluation remakes the GPS models' FMM matches on the new network.
 - **MobilityGPT:** rerun it whenever TS-TrajGen's `nyc_mm_train.csv` / `nyc_mm_test.csv` change.
 
 Then run `convert --check`, and `convert` without `--check` to see each model's counts and notes before scoring.
