@@ -6,7 +6,7 @@ import numpy as np
 from evaluation.tables import Converted, gps_table
 
 MODEL = "difftraj"
-NETWORK = "tstrajgen"  # road tables come from FMM on TS-TrajGen's network, so road IDs are geo_ids
+NETWORK = "shared"  # road tables come from FMM on the shared road network, so road IDs are nyc.gpkg edge_ids
 
 
 def convert(files: dict, options: dict) -> Converted:

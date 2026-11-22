@@ -99,26 +99,25 @@ models:
 
   urban_syn:
     # Our model (GNN road encoder + Diff-RNTraj). Each generated_<name> is one experiment run's generated file and
-    # becomes its own group (column) in the results; remove the runs you don't have, or add more.
+    # becomes its own group (column) in the results; remove the runs you don't have, or add more. Its road network is
+    # networks: shared (below): the nyc.gpkg the model was trained on.
     files:
       generated_finetune: outputs/experiments/urban_syn_nyc_full_training/RUN_ID/generated/nyc_full_joint_finetune_generated_gps.parquet
       generated_scratch: outputs/experiments/urban_syn_nyc_full_training/RUN_ID/generated/nyc_full_joint_scratch_generated_gps.parquet
       generated_frozen: outputs/experiments/urban_syn_nyc_full_training/RUN_ID/generated/nyc_full_joint_frozen_generated_gps.parquet
       real_test: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_test_prepared_road_sequences.parquet
       real_train: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_train_prepared_road_sequences.parquet
-      geo: baselines/gan/ts_trajgen/datasets/nyc/nyc.geo
     produced_by:
       generated_finetune: the generate stage of configs/experiments/nyc_full_training/joint_finetune.yaml (set RUN_ID to that run's folder)
       generated_scratch: the generate stage of configs/experiments/nyc_full_training/joint_scratch.yaml (set RUN_ID to that run's folder)
       generated_frozen: the generate stage of configs/experiments/nyc_full_training/joint_frozen.yaml (set RUN_ID to that run's folder)
       real_test: fmm_scripts/urban_syn_extension/convert_fmm_sequences.py (split by data/split_by_user/test_trips.csv)
       real_train: fmm_scripts/urban_syn_extension/convert_fmm_sequences.py (split by data/split_by_user/test_trips.csv)
-      geo: the TS-TrajGen build-inputs stage (run_pipeline.py), from the same nyc.gpkg the model was trained on
 
 # FMM map matching of the GPS models (those with an fmm_dir), run by the evaluation when a model's matches are missing
 # or older than its trajectories.
 fmm:
-  # TS-TrajGen's FMM config: road network, shortest-path table (UBODT), k, r and GPS error. Only its GPS input, output
+  # The shared FMM config: road network, shortest-path table (UBODT), k, r and GPS error. Only its GPS input, output
   # file and output fields are replaced; its relative paths start at workdir.
   template: fmm_scripts/config/fmm_config_csv_point.xml
   workdir: fmm_scripts
@@ -129,9 +128,17 @@ fmm:
     ubodt: ubodt_gen ./config/ubodt_config.xml, in fmm_scripts, after the road network
 
 # Road networks. A road table's `network` column names one of these.
-#   tstrajgen         geo_id of TS-TrajGen's nyc.geo; nyc.rel lists which road follows which
+#   shared            edge_id of the shared road network nyc.gpkg (layer roads); road b follows road a when u(b) = v(a).
+#                     DiffTraj, LSTM-TrajGAN (through FMM) and URBAN-SYN; also the off-network reference for every model
+#   tstrajgen         geo_id of TS-TrajGen's nyc.geo; nyc.rel lists which road follows which. TS-TrajGen and MobilityGPT,
+#                     whose outputs are on it; built from the shared nyc.gpkg, so geo_id = edge_id
 #   diffrntraj_drive  fid of nyc_drive.gpkg (table roads); road b follows road a when u(b) = v(a)
 networks:
+  shared:
+    files:
+      gpkg: fmm_scripts/data/road_network/nyc.gpkg
+    produced_by:
+      gpkg: the shared road network (fmm_scripts/README.md, build_road_network.py)
   tstrajgen:
     files:
       geo: baselines/gan/ts_trajgen/datasets/nyc/nyc.geo
@@ -171,6 +178,6 @@ metrics:
     uniqueness_m: 50
     uniqueness_sweep_m: [25, 50, 100]
   off_network:
-    network: tstrajgen        # the canonical network, used for every model
+    network: shared           # the canonical network, used for every model
     tau_m: 30
     sweep_m: [20, 30, 50]

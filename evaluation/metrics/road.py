@@ -7,7 +7,7 @@ import sqlite3
 import numpy as np
 import pandas as pd
 
-from evaluation.geo import project_m
+from evaluation.geo import project_m, read_gpkg_roads
 from evaluation.metrics.trajset import TrajSet
 
 BUCKET_M = 100.0       # side of the square buckets the road segments are filed under
@@ -42,7 +42,17 @@ class RoadSegments:
     def from_tstrajgen_geo(cls, geo_path, reach_m: float) -> "RoadSegments":
         """Read every road geometry of TS-TrajGen's nyc.geo (coordinates are [lng, lat])."""
         geo = pd.read_csv(geo_path, usecols=["coordinates"])
-        lines = [np.asarray(json.loads(c), dtype=float) for c in geo["coordinates"]]
+        return cls.from_lines([np.asarray(json.loads(c), dtype=float) for c in geo["coordinates"]], reach_m)
+
+    @classmethod
+    def from_gpkg(cls, gpkg_path, reach_m: float) -> "RoadSegments":
+        """Read every road geometry of a GeoPackage road network, such as the shared nyc.gpkg."""
+        _, lines = read_gpkg_roads(gpkg_path, columns=("edge_id",))
+        return cls.from_lines(lines, reach_m)
+
+    @classmethod
+    def from_lines(cls, lines: list[np.ndarray], reach_m: float) -> "RoadSegments":
+        """File the straight pieces of roads given as (n, 2) arrays of [lng, lat] vertices."""
         vertices = np.concatenate(lines)
         x, y = project_m(vertices[:, 1], vertices[:, 0])
         sizes = np.array([len(line) for line in lines])
@@ -98,10 +108,16 @@ def off_network_scores(roads: RoadSegments, trajectories: TrajSet, settings: dic
 def successor_keys(network: str, files: dict) -> np.ndarray:
     """Sorted keys (a * 2**32 + b) of every directed road pair where road b directly follows road a.
 
+    shared:           from the shared nyc.gpkg, b follows a when b starts at the node where a ends (u(b) = v(a)); the
+                      same rule TS-TrajGen uses to write nyc.rel from that file.
     tstrajgen:        the origin_id -> destination_id pairs of nyc.rel.
     diffrntraj_drive: from nyc_drive.gpkg, b follows a when b starts at the node where a ends (u(b) = v(a)).
     """
-    if network == "tstrajgen":
+    if network == "shared":
+        edges, _ = read_gpkg_roads(files["gpkg"], columns=("edge_id", "u", "v"), geometry=False)
+        pairs = edges[["edge_id", "v"]].merge(edges[["edge_id", "u"]], left_on="v", right_on="u", suffixes=("_a", "_b"))
+        a, b = pairs["edge_id_a"].to_numpy(np.int64), pairs["edge_id_b"].to_numpy(np.int64)
+    elif network == "tstrajgen":
         rel = pd.read_csv(files["rel"], usecols=["origin_id", "destination_id"])
         a, b = rel["origin_id"].to_numpy(np.int64), rel["destination_id"].to_numpy(np.int64)
     elif network == "diffrntraj_drive":

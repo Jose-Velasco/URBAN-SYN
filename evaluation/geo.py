@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+import struct
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -41,16 +44,73 @@ def point_on_polyline(prepared: tuple[np.ndarray, np.ndarray], fraction: float) 
     return float(lat), float(lng)
 
 
-def tstrajgen_road_polylines(geo_path, only=None) -> dict[int, tuple[np.ndarray, np.ndarray]]:
-    """Read TS-TrajGen's nyc.geo and return {geo_id: prepared polyline} (see prepare_polyline) of each road.
+def read_gpkg_roads(path, columns=("edge_id", "u", "v"), layer: str = "roads",
+                    geometry: bool = True) -> tuple[pd.DataFrame, list[np.ndarray] | None]:
+    """Read a road layer of a GeoPackage, such as the shared fmm_scripts/data/road_network/nyc.gpkg.
 
-    `only` limits the work to the road IDs a model uses. nyc.geo stores coordinates in GeoJSON order [lng, lat].
+    Uses Python's built-in sqlite3 (a GeoPackage is an SQLite file), so no GDAL or geopandas is needed. Returns the
+    requested columns sorted by the first one, and, with geometry=True, each road's [lng, lat] vertices in the same
+    order. The geometries must be WGS84 (EPSG:4326) LineStrings, as the shared road network's are.
     """
-    geo = pd.read_csv(geo_path, usecols=["geo_id", "coordinates"])
-    if only is not None:
-        geo = geo[geo["geo_id"].isin(set(only))]
-    return {int(geo_id): prepare_polyline([(lat, lng) for lng, lat in json.loads(coordinates)])
-            for geo_id, coordinates in zip(geo["geo_id"], geo["coordinates"])}
+    path = Path(path).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"Road network not found: {path}")
+    with sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True) as con:
+        row = con.execute("SELECT column_name, srs_id FROM gpkg_geometry_columns WHERE table_name = ?",
+                          (layer,)).fetchone()
+        if row is None:
+            raise ValueError(f"{path}: no road layer named '{layer}'")
+        geometry_column, srs_id = row
+        if geometry and srs_id != 4326:
+            raise ValueError(f"{path}: road geometries are in EPSG:{srs_id}; expected EPSG:4326 (longitude/latitude)")
+        selected = list(columns) + ([geometry_column] if geometry else [])
+        quoted = ", ".join(f'"{c}"' for c in selected)
+        rows = con.execute(f'SELECT {quoted} FROM "{layer}" ORDER BY "{columns[0]}"').fetchall()
+    table = pd.DataFrame([r[:len(columns)] for r in rows], columns=list(columns))
+    if table[columns[0]].duplicated().any():
+        raise ValueError(f"{path}: road IDs in '{columns[0]}' are not unique")
+    lines = [_gpkg_linestring(r[-1], path) for r in rows] if geometry else None
+    return table, lines
+
+
+def gpkg_road_count(path, layer: str = "roads") -> int:
+    """Number of roads in a GeoPackage road layer."""
+    path = Path(path).resolve()
+    with sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True) as con:
+        return int(con.execute(f'SELECT COUNT(*) FROM "{layer}"').fetchone()[0])
+
+
+def gpkg_road_polylines(path, only=None, id_column: str = "edge_id") -> dict[int, tuple[np.ndarray, np.ndarray]]:
+    """Read a GeoPackage road layer and return {road ID: prepared polyline} (see prepare_polyline) of each road.
+
+    `only` limits the result to the road IDs a model uses.
+    """
+    table, lines = read_gpkg_roads(path, columns=(id_column,))
+    keep = None if only is None else set(only)
+    return {int(road): prepare_polyline(line[:, ::-1]) for road, line in zip(table[id_column], lines)
+            if keep is None or int(road) in keep}
+
+
+def _gpkg_linestring(blob, path) -> np.ndarray:
+    """Decode one GeoPackage geometry (a short header, then standard WKB) into an (n, 2) array of [lng, lat]."""
+    if blob is None or bytes(blob[:2]) != b"GP":
+        raise ValueError(f"{path}: a road has no GeoPackage geometry")
+    flags = blob[3]
+    if flags & 0b10000:
+        raise ValueError(f"{path}: a road has an empty geometry")
+    envelope = {0: 0, 1: 32, 2: 48, 3: 48, 4: 64}[(flags >> 1) & 0b111]
+    wkb = memoryview(blob)[8 + envelope:]
+    order = "<" if wkb[0] == 1 else ">"
+    (kind,) = struct.unpack_from(order + "I", wkb, 1)
+    dims = 2 + bool(kind & 0x80000000) + bool(kind & 0x40000000)          # EWKB Z / M flags
+    kind &= 0x0FFFFFFF
+    dims += {0: 0, 1: 1, 2: 1, 3: 2}[kind // 1000]                         # ISO WKB: 1002 Z, 2002 M, 3002 ZM
+    if kind % 1000 != 2:
+        raise ValueError(f"{path}: road geometries must be LineStrings (found WKB type {kind})")
+    (n,) = struct.unpack_from(order + "I", wkb, 5)
+    if n < 2:
+        raise ValueError(f"{path}: a road has fewer than two vertices")
+    return np.frombuffer(wkb, dtype=order + "f8", count=n * dims, offset=9).reshape(n, dims)[:, :2].copy()
 
 
 def tstrajgen_road_midpoints(geo_path, only=None) -> dict[int, tuple[float, float]]:

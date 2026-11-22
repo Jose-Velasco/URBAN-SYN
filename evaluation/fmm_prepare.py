@@ -1,7 +1,7 @@
 """Map-match the GPS models' trajectories with FMM as part of the evaluation.
 
 DiffTraj and LSTM-TrajGAN write GPS points, so their road tables (for road connectivity) come from FMM map matching onto
-TS-TrajGen's road network. add_road_tables() makes the matches the first time a model is converted and again whenever
+the shared road network (fmm_nyc.shp, built with nyc.gpkg). add_road_tables() makes the matches the first time a model is converted and again whenever
 its trajectories, the road network or the FMM settings change; otherwise it reuses the last run's matches.
 
 For each set of a model (generated, real), these files are kept in the model's fmm_dir (eval_config.yaml):
@@ -31,6 +31,7 @@ import pandas as pd
 
 from evaluation import inputs
 from evaluation.fmm_matches import read_routes
+from evaluation.geo import gpkg_road_count
 from evaluation.tables import Converted, road_table
 
 # converted table (also the file name part) -> road table attribute
@@ -61,8 +62,7 @@ def add_road_tables(config: dict, model: str, result: Converted, network: str, m
                     args: str = "", log=print) -> None:
     """Fill result.generated_roads and result.real_roads from FMM matches, making the matches when needed."""
     settings = inputs.fmm_settings(config)
-    if network == "tstrajgen":
-        _check_same_network(config, settings)
+    _check_same_network(config, settings, network)
     folder = inputs.resolve(config, config["models"][model]["fmm_dir"])
     folder.mkdir(parents=True, exist_ok=True)
     route = inputs.model_options(config, model).get("fmm_route", "cpath")
@@ -177,26 +177,31 @@ def _file_stamp(path: Path) -> dict:
     return {"file": path.name, "bytes": stat.st_size, "modified": int(stat.st_mtime)}
 
 
-def _check_same_network(config: dict, settings: dict) -> None:
-    """Stop if FMM's network and TS-TrajGen's nyc.geo have a different number of roads.
+def _check_same_network(config: dict, settings: dict, network: str) -> None:
+    """Stop if FMM's network and the network the road tables are scored on have a different number of roads.
 
-    The road tables are scored on TS-TrajGen's network, which only works when FMM's road IDs are TS-TrajGen's geo_ids.
-    Both number the roads 0, 1, 2... from the same nyc.gpkg, so a different count means they come from different
-    downloads.
+    FMM's road IDs are the edge_ids of fmm_nyc.shp, which is written together with the shared nyc.gpkg (and TS-TrajGen's
+    nyc.geo numbers the roads of that nyc.gpkg the same way). Both number the roads 0, 1, 2..., so a different count
+    means they come from different builds.
     """
-    geo = inputs.network_files(config, "tstrajgen")["geo"]
-    key = f"{geo}|{settings['network']}"
+    files = inputs.network_files(config, network)
+    if network == "shared":
+        reference, roads = files["gpkg"], gpkg_road_count(files["gpkg"])
+    elif network == "tstrajgen":
+        reference, roads = files["geo"], len(pd.read_csv(files["geo"], usecols=[0]))
+    else:
+        raise ValueError(f"FMM road tables can be scored on the shared or tstrajgen network, not {network}")
+    key = f"{reference}|{settings['network']}"
     if key in _checked_networks:
         return
-    geo_roads = len(pd.read_csv(geo, usecols=[0]))
     dbf = settings["network"].with_suffix(".dbf")
     with dbf.open("rb") as handle:
         fmm_roads = int.from_bytes(handle.read(8)[4:8], "little")
-    if geo_roads != fmm_roads:
+    if roads != fmm_roads:
         raise SystemExit(
-            f"ERROR  FMM's road network ({settings['network'].name}: {fmm_roads:,} roads) and TS-TrajGen's "
-            f"nyc.geo ({geo_roads:,} roads) differ, so FMM's road IDs would not be TS-TrajGen's geo_ids. "
-            "Use the shared road network that TS-TrajGen was built on (see fmm_scripts/README.md).")
+            f"ERROR  FMM's road network ({settings['network'].name}: {fmm_roads:,} roads) and {reference.name} "
+            f"({roads:,} roads) differ, so FMM's road IDs would not match the road IDs of {reference.name}. Use FMM "
+            "files and a road network from the same build of the shared road network (see fmm_scripts/README.md).")
     _checked_networks.add(key)
 
 

@@ -51,9 +51,12 @@ def convert_model(config: dict, model: str, fmm: bool = True, module: str = "con
                   log=print) -> tables.Converted:
     """Run one model's converter on the files listed for it in the config.
 
-    For the GPS models (those with an fmm_dir), road tables are then made from FMM matches unless fmm is False.
+    The converter also gets the files of the road network its road tables use (networks: in eval_config.yaml), as
+    network_<key>, e.g. network_gpkg, so a network's path is written once and shared with the metrics. For the GPS
+    models (those with an fmm_dir), road tables are then made from FMM matches unless fmm is False.
     """
-    files = inputs.model_files(config, model)
+    network_files = inputs.network_files(config, model_network(model))
+    files = {**inputs.model_files(config, model), **{f"network_{k}": p for k, p in network_files.items()}}
     options = inputs.model_options(config, model)
     result = CONVERTERS[model](files, options)
     if fmm and fmm_prepare.uses_fmm(config, model):
@@ -95,7 +98,7 @@ def main(argv=None) -> int:
     config = inputs.load_config(args.config)
     models = chosen_models(args.model, config)
     try:
-        inputs.check_inputs(config, models, fmm=not args.no_fmm)
+        inputs.check_inputs(config, models, list(dict.fromkeys(model_network(m) for m in models)), fmm=not args.no_fmm)
     except inputs.MissingInputsError as error:
         print(f"ERROR  {error}", file=sys.stderr)
         return 1

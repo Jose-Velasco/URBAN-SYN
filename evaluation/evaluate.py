@@ -73,10 +73,14 @@ class Networks:
         """The canonical network's road segments, for the off-network rate."""
         if self._segments is None:
             off = self.config["metrics"]["off_network"]
-            if off["network"] != "tstrajgen":
-                raise ValueError("The off-network rate can only read the tstrajgen network (nyc.geo) so far")
             reach = max(off["sweep_m"] + [off["tau_m"]])
-            self._segments = RoadSegments.from_tstrajgen_geo(inputs.network_files(self.config, "tstrajgen")["geo"], reach)
+            files = inputs.network_files(self.config, off["network"])
+            if off["network"] == "shared":
+                self._segments = RoadSegments.from_gpkg(files["gpkg"], reach)
+            elif off["network"] == "tstrajgen":
+                self._segments = RoadSegments.from_tstrajgen_geo(files["geo"], reach)
+            else:
+                raise ValueError(f"The off-network rate can read the shared or tstrajgen network, not {off['network']}")
         return self._segments
 
     def successors(self, network: str) -> np.ndarray:

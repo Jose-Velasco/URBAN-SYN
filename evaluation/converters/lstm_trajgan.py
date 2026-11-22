@@ -7,7 +7,7 @@ import pandas as pd
 from evaluation.tables import GPS_COLUMNS, Converted
 
 MODEL = "lstm_trajgan"
-NETWORK = "tstrajgen"  # road tables come from FMM on TS-TrajGen's network, so road IDs are geo_ids
+NETWORK = "shared"  # road tables come from FMM on the shared road network, so road IDs are nyc.gpkg edge_ids
 
 
 def convert(files: dict, options: dict) -> Converted:

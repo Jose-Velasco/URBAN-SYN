@@ -6,16 +6,16 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from evaluation.geo import haversine_m, point_on_polyline, tstrajgen_road_polylines
+from evaluation.geo import gpkg_road_polylines, haversine_m, point_on_polyline
 from evaluation.tables import Converted, gps_table, road_table
 
 MODEL = "urban_syn"
-NETWORK = "tstrajgen"  # edge_id of the shared nyc.gpkg, which TS-TrajGen's nyc.geo numbers the same way (geo_id)
+NETWORK = "shared"  # edge_id of the shared road network, fmm_scripts/data/road_network/nyc.gpkg
 
 GENERATED_COLUMNS = ["trajectory_id", "step", "edge_id", "position_rate", "lng", "lat"]
 SEQUENCE_COLUMNS = ["fmm_id", "edge_ids", "rates"]
-# The generator places each point on its road's nyc.gpkg geometry; placed again on nyc.geo (built from the same file),
-# it must land in the same spot. A larger gap means the model used a different road network.
+# The generator places each point on its road's nyc.gpkg geometry; placed again on the road network listed in
+# eval_config.yaml, it must land in the same spot. A larger gap means the model used a different road network.
 MAX_REBUILD_M = 1.0
 
 
@@ -27,7 +27,9 @@ def convert(files: dict, options: dict) -> Converted:
     row per point (trajectory_id, step, model_road_id, edge_id, rate, position_rate, lng, lat); edge_id is the shared
     road network's ID, so the road tables use it directly, and lat/lng are the points the generator placed on those
     roads. The real pieces are the prepared road sequences the model was trained and tested on (fmm_id, edge_ids,
-    rates); each point is placed on its road's nyc.geo geometry with Diff-RNTraj's rate encoding, as the generator does.
+    rates); each point is placed on its road's geometry in the shared nyc.gpkg with Diff-RNTraj's rate encoding, as the
+    generator does. That nyc.gpkg is files["network_gpkg"], the shared network's file under networks: in
+    eval_config.yaml, which the road metrics use too.
     The model is unconditional, so generated trajectories have no ref_id.
     """
     runs = {key[len("generated_"):]: Path(path) for key, path in files.items() if key.startswith("generated_")}
@@ -39,12 +41,13 @@ def convert(files: dict, options: dict) -> Converted:
 
     used = set(np.concatenate([g["edge_id"].to_numpy() for g in generated.values()]).tolist())
     used |= {e for roads in real_roads + train_roads for e in roads.tolist()}
-    polylines = tstrajgen_road_polylines(files["geo"], only=used)
+    road_network = Path(files["network_gpkg"])
+    polylines = gpkg_road_polylines(road_network, only=used)
     unknown = used - set(polylines)
     if unknown:
         raise ValueError(
-            f"urban_syn: {len(unknown):,} road IDs are not in nyc.geo (e.g. {sorted(unknown)[:5]}): the model's road "
-            "network is not the shared network TS-TrajGen was built on. Rebuild one of them from the same nyc.gpkg.")
+            f"urban_syn: {len(unknown):,} road IDs are not in {road_network.name} (e.g. {sorted(unknown)[:5]}): point "
+            "networks: shared: gpkg in eval_config.yaml at the nyc.gpkg the model was trained on.")
 
     notes, gen_gps, gen_roads = {}, [], []
     for group, frame in generated.items():
@@ -52,15 +55,15 @@ def convert(files: dict, options: dict) -> Converted:
         if gap_m.max() > MAX_REBUILD_M:
             raise ValueError(
                 f"urban_syn ({group}): {int((gap_m > MAX_REBUILD_M).sum()):,} of {len(gap_m):,} generated points are "
-                f"more than {MAX_REBUILD_M:g} m from where their edge_id and position_rate put them on nyc.geo "
-                f"(largest {gap_m.max():,.0f} m): the model generated on a different road network than the one "
-                "TS-TrajGen was built on. Use the same nyc.gpkg for both.")
+                f"more than {MAX_REBUILD_M:g} m from where their edge_id and position_rate put them on "
+                f"{road_network.name} (largest {gap_m.max():,.0f} m): the model generated on a different road "
+                "network. Point networks: shared: gpkg in eval_config.yaml at the nyc.gpkg the model used.")
         for trajectory_id, part in _trajectories(frame):
             traj_id = f"{MODEL}:{group}:{trajectory_id}"
             gen_gps.append((traj_id, group, None, part[["lat", "lng"]].to_numpy(float), None))
             gen_roads.append((traj_id, group, part["edge_id"].to_numpy()))
         notes[f"{group}: generated trajectories, points"] = f"{frame['trajectory_id'].nunique():,}, {len(frame):,}"
-        notes[f"{group}: largest gap to nyc.geo"] = f"{gap_m.max():.3f} m"
+        notes[f"{group}: largest gap to the road network"] = f"{gap_m.max():.3f} m"
 
     return Converted(
         model=MODEL,
@@ -99,7 +102,7 @@ def _trajectories(frame: pd.DataFrame):
 
 
 def _rebuild_gap_m(frame: pd.DataFrame, polylines: dict) -> np.ndarray:
-    """Distance (m) from each generated point to where its edge_id and position_rate put it on nyc.geo."""
+    """Distance (m) from each generated point to where its edge_id and position_rate put it on the road network."""
     rebuilt = np.array([point_on_polyline(polylines[int(e)], float(p))
                         for e, p in zip(frame["edge_id"], frame["position_rate"])])
     return haversine_m(frame["lat"].to_numpy(float), frame["lng"].to_numpy(float), rebuilt[:, 0], rebuilt[:, 1])
@@ -130,7 +133,7 @@ def _read_sequences(path) -> tuple[list[str], list[np.ndarray], list[np.ndarray]
 
 
 def _gps(ids, roads, positions, group: str, polylines: dict) -> pd.DataFrame:
-    """GPS table of a real set: each point placed at its position along its road's nyc.geo geometry."""
+    """GPS table of a real set: each point placed at its position along its road's geometry."""
     return gps_table(
         (t, group, None, [point_on_polyline(polylines[int(e)], p) for e, p in zip(r, pos)], None)
         for t, r, pos in zip(ids, roads, positions))
