@@ -102,15 +102,29 @@ models:
     # becomes its own group (column) in the results; remove the runs you don't have, or add more. Its road network is
     # networks: shared (below): the nyc.gpkg the model was trained on.
     files:
-      generated_finetune: outputs/experiments/urban_syn_nyc_full_training/RUN_ID/generated/nyc_full_joint_finetune_generated_gps.parquet
-      generated_scratch: outputs/experiments/urban_syn_nyc_full_training/RUN_ID/generated/nyc_full_joint_scratch_generated_gps.parquet
-      generated_frozen: outputs/experiments/urban_syn_nyc_full_training/RUN_ID/generated/nyc_full_joint_frozen_generated_gps.parquet
+      generated_frozen_gatv2_bce: outputs/experiments/nyc_full_joint_frozen/20261121T110912Z_64807814/generated/nyc_full_joint_frozen_generated_gps.parquet
+      generated_frozen_gatv2_bpr: outputs/experiments/nyc_full_joint_frozen/20261121T132748Z_c6c96bcb/generated/nyc_full_joint_frozen_generated_gps.parquet
+      generated_frozen_gine_bce: outputs/experiments/nyc_full_joint_frozen/20261122T060802Z_a576ce16/generated/nyc_full_joint_frozen_generated_gps.parquet
+      generated_frozen_gine_bpr: outputs/experiments/nyc_full_joint_frozen/20261122T060024Z_c2be6afb/generated/nyc_full_joint_frozen_generated_gps.parquet
+      generated_finetune_gatv2_bce: outputs/experiments/nyc_full_joint_finetune/20261121T125147Z_96ee7766/generated/nyc_full_joint_finetune_generated_gps.parquet
+      generated_finetune_gatv2_bpr: outputs/experiments/nyc_full_joint_finetune/20261121T155400Z_52f97cfd/generated/nyc_full_joint_finetune_generated_gps.parquet
+      generated_finetune_gine_bce: outputs/experiments/nyc_full_joint_finetune/20261122T060802Z_19ad415b/generated/nyc_full_joint_finetune_generated_gps.parquet
+      generated_finetune_gine_bpr: outputs/experiments/nyc_full_joint_finetune/20261122T060024Z_225c99c5/generated/nyc_full_joint_finetune_generated_gps.parquet
+      generated_scratch_gatv2: outputs/experiments/nyc_full_joint_scratch/20261121T112730Z_98d844a0/generated/nyc_full_joint_scratch_generated_gps.parquet
+      generated_scratch_gine: outputs/experiments/nyc_full_joint_scratch/20261122T060710Z_60e78bf8/generated/nyc_full_joint_scratch_generated_gps.parquet
       real_test: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_test_prepared_road_sequences.parquet
       real_train: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_train_prepared_road_sequences.parquet
     produced_by:
-      generated_finetune: the generate stage of configs/experiments/nyc_full_training/joint_finetune.yaml (set RUN_ID to that run's folder)
-      generated_scratch: the generate stage of configs/experiments/nyc_full_training/joint_scratch.yaml (set RUN_ID to that run's folder)
-      generated_frozen: the generate stage of configs/experiments/nyc_full_training/joint_frozen.yaml (set RUN_ID to that run's folder)
+      generated_frozen_gatv2_bce: MLflow run 6470c3da of urban_syn_nyc_full_training (pretrained GNN, kept frozen, GATv2, BCE pretraining), mlflow/artifacts/6470c3da.../generated/
+      generated_frozen_gatv2_bpr: MLflow run c95871f6 of urban_syn_nyc_full_training (pretrained GNN, kept frozen, GATv2, BPR pretraining), mlflow/artifacts/c95871f6.../generated/
+      generated_frozen_gine_bce: MLflow run 171e303b of urban_syn_nyc_full_training (pretrained GNN, kept frozen, GINE, BCE pretraining), mlflow/artifacts/171e303b.../generated/
+      generated_frozen_gine_bpr: MLflow run d3539a50 of urban_syn_nyc_full_training (pretrained GNN, kept frozen, GINE, BPR pretraining), mlflow/artifacts/d3539a50.../generated/
+      generated_finetune_gatv2_bce: MLflow run 6daae166 of urban_syn_nyc_full_training (pretrained GNN, fine-tuned, GATv2, BCE pretraining), mlflow/artifacts/6daae166.../generated/
+      generated_finetune_gatv2_bpr: MLflow run d6813845 of urban_syn_nyc_full_training (pretrained GNN, fine-tuned, GATv2, BPR pretraining), mlflow/artifacts/d6813845.../generated/
+      generated_finetune_gine_bce: MLflow run 1b2f6c5e of urban_syn_nyc_full_training (pretrained GNN, fine-tuned, GINE, BCE pretraining), mlflow/artifacts/1b2f6c5e.../generated/
+      generated_finetune_gine_bpr: MLflow run 7754b6af of urban_syn_nyc_full_training (pretrained GNN, fine-tuned, GINE, BPR pretraining), mlflow/artifacts/7754b6af.../generated/
+      generated_scratch_gatv2: MLflow run 6ed08ab2 of urban_syn_nyc_full_training (GNN trained from scratch, GATv2), mlflow/artifacts/6ed08ab2.../generated/
+      generated_scratch_gine: MLflow run 83398bf4 of urban_syn_nyc_full_training (GNN trained from scratch, GINE), mlflow/artifacts/83398bf4.../generated/
       real_test: fmm_scripts/urban_syn_extension/convert_fmm_sequences.py (split by data/split_by_user/test_trips.csv)
       real_train: fmm_scripts/urban_syn_extension/convert_fmm_sequences.py (split by data/split_by_user/test_trips.csv)
 
