@@ -36,7 +36,7 @@ models:
 
   diffrntraj:
     files:
-      generated_dir: baselines/diffusion/diff_rntraj/repo/generate_data/NYC_user_split_train_length
+      generated_dir: baselines/diffusion/diff_rntraj/repo/generate_data/NYC_user_split_test_matched
       new2raw: baselines/diffusion/diff_rntraj/repo/data/NYC/extra_file/new2raw_rid.json
       rn_dict: baselines/diffusion/diff_rntraj/repo/data/NYC/extra_file/rn_dict.json
       real_test_eids: baselines/diffusion/diff_rntraj/repo/data/NYC/gen_test/eid_seqs.bin
@@ -44,7 +44,7 @@ models:
       real_train_eids: baselines/diffusion/diff_rntraj/repo/data/NYC/gen_train/eid_seqs.bin
       real_train_rates: baselines/diffusion/diff_rntraj/repo/data/NYC/gen_train/rate_seqs.bin
     produced_by:
-      generated_dir: the Diff-RNTraj generation run (one <length>.txt per trajectory length)
+      generated_dir: the Diff-RNTraj generation run with the test set's lengths (one <length>.txt per trajectory length)
       new2raw: fmm_scripts/diffrntraj_version/convert_fmm_to_diffrntraj.py
       rn_dict: fmm_scripts/diffrntraj_version/convert_fmm_to_diffrntraj.py
       real_test_eids: fmm_scripts/diffrntraj_version/convert_fmm_to_diffrntraj.py
@@ -181,3 +181,10 @@ metrics:
     network: shared           # the canonical network, used for every model
     tau_m: 30
     sweep_m: [20, 30, 50]
+
+# Trajectory plots (python -m evaluation.plot): the grid and the random seed come from metrics: above
+plots:
+  sample: null                # trajectories drawn per panel: null = all of them, a number = a random sample of that size
+  columns: 4                  # panels per row
+  dpi: 200                    # image resolution
+  overview_real: tstrajgen    # whose real test set the overview shows (if plotted; else the first model listed)

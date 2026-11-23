@@ -2,7 +2,7 @@
 
 One evaluation for every trajectory generation model in URBAN-SYN. Each model writes its output in a different format, so this folder first converts every model's output, and the matching real test and training sets, into one common format.
 
-**Everything is set in [`eval_config.yaml`](eval_config.yaml).** It lists the path of every input file: each model's generated and real files (`models:`), the road networks (`networks:`) and the FMM files used to map-match the GPS models (`fmm:`), plus every metric setting (`metrics:`). To point the evaluation at new files, edit only that file. `convert --check` lists any missing file with the step that makes it (see [Inputs](#inputs)).
+**Everything is set in [`eval_config.yaml`](eval_config.yaml).** It lists the path of every input file: each model's generated and real files (`models:`), the road networks (`networks:`) and the FMM files used to map-match the GPS models (`fmm:`), plus every metric setting (`metrics:`) and the plot settings (`plots:`). To point the evaluation at new files, edit only that file. `convert --check` lists any missing file with the step that makes it (see [Inputs](#inputs)).
 
 ## Models
 
@@ -19,7 +19,7 @@ All six use the same split by user: `data/split_by_user/` (made by `scripts/spli
 
 ## Quick start
 
-Run from the URBAN-SYN folder. In the dev container the packages are in `.venv` (made by `uv sync` when the container is created), so use `uv run` as below, or run `source .venv/bin/activate` once and then plain `python`. The container's system `python` has no numpy. Outside the container, any Python 3.10+ with numpy, pandas, pyyaml and pyarrow (for the Parquet files of `urban_syn`) works.
+Run from the URBAN-SYN folder. In the dev container the packages are in `.venv` (made by `uv sync` when the container is created), so use `uv run` as below, or run `source .venv/bin/activate` once and then plain `python`. The container's system `python` has no numpy. Outside the container, any Python 3.10+ with numpy, pandas, pyyaml and pyarrow (for the Parquet files of `urban_syn`) works, plus matplotlib for the plots.
 
 ```bash
 # check that every input file is in place
@@ -34,6 +34,9 @@ uv run python -m evaluation.evaluate --model all
 
 # only convert, and save the converted tables as CSV files
 uv run python -m evaluation.convert --model difftraj --save evaluation/results/converted
+
+# plot real and generated trajectories
+uv run python -m evaluation.plot --model all
 ```
 
 **DiffTraj and LSTM-TrajGAN** write GPS points, so the evaluation map-matches them with FMM for road connectivity. It does that by itself, but FMM isn't installed in the dev container, so when their matches are missing or out of date, run the evaluation in the `fmm_scripts` image, which has FMM and the evaluation's Python packages (Docker Desktop running; PowerShell or any shell, from the URBAN-SYN folder):
@@ -153,6 +156,18 @@ Each `evaluate` run writes a new folder `evaluation/results/<date>_<time>_<model
 
 The table is also printed at the end of the run. The `results/` folder is not tracked by git.
 
+### Plots
+
+Each `plot` run writes a new folder `evaluation/results/<date>_<time>_plots_<models>/`:
+
+| File | Content |
+|---|---|
+| `<model>_trajectories.png` | every trajectory, or a random sample when `plots: sample` in `eval_config.yaml` is a number (drawn with the metrics' seed): the real test set in grey, then each generated group in blue |
+| `<model>_density.png` | the share of points in each 0.005° grid cell, the cells the global geographic JSD compares, on one log color scale for all panels |
+| `overview_trajectories.png`, `overview_density.png` | every model side by side, next to one real test set, named in its panel title: TS-TrajGen's (`plots: overview_real`), or the first model listed when TS-TrajGen isn't plotted; only when more than one model is plotted |
+
+Each panel is named after its model; only a model with several generated groups, such as URBAN-SYN's three runs, gets one panel per group, with the group in brackets. The plots draw the converters' GPS tables, the points the metrics score, so models that write road IDs are drawn the way the metrics see them (MobilityGPT and TS-TrajGen through the midpoints of their roads). Each model's real test set is at its own unit (moves, pieces or sections), so the per-model plots compare like with like. The plots need no FMM matches, so run them in the dev container; the `fmm_scripts` image has no matplotlib.
+
 ## Folder layout
 
 ```text
@@ -161,6 +176,7 @@ evaluation/
 ├── eval_config.yaml     input paths per model, road networks and metric settings
 ├── convert.py           command line: --model, --check, --save, --no-fmm
 ├── evaluate.py          command line: --model, --no-fmm; scores every model and writes results/
+├── plot.py              command line: --model; trajectory and density plots into results/
 ├── inputs.py            reads the config, checks the input files
 ├── tables.py            the common format and its checks
 ├── geo.py               distance, projection and point-on-road helpers
