@@ -10,7 +10,7 @@ training:
       enabled: false
     connectivity_bpr:
       enabled: true
-      weight: 0.1
+      weight: 1.0
       include_in_total: true
       every_steps: 1
       negatives:

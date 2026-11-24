@@ -63,16 +63,16 @@ training:
     connectivity_bpr:
       enabled: false
   validation:
-    enabled: true
+    enabled: false
     fraction: 0.1
     split_group_columns:
     - uid
     - tid
   checkpoint:
     monitor: auto
-    save_last: true
+    save_last: false
     save_best: true
-    every_epochs: 100
+    every_epochs: 2000
     resume_from: null
 tracking:
   enabled: true
@@ -91,7 +91,7 @@ tracking:
     metrics_every_steps: 100
     gnn_diagnostics_every_steps: 500
     gnn_embedding_enabled: true
-    gnn_embedding_every_epochs: 10
+    gnn_embedding_every_epochs: 5
     gnn_embedding_sample_size: 512
     log_system_metrics: true
     log_resolved_config: true
@@ -99,7 +99,7 @@ tracking:
     gnn_embedding_source: trajectories
     scorer:
       enabled: false
-      every_epochs: 10
+      every_epochs: 5
       sample_size: 256
       chunk_size: 128
       negatives:
