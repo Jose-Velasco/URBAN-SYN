@@ -15,7 +15,8 @@ class Sampler(Protocol):
         schedule: Mapping[str, Any],
         batch_size: int,
         sequence_length: int,
-        feature_dim: int
+        feature_dim: int,
+        *, metadata=None
     ) -> Tensor:
         """Sample clean trajectory representations.
 

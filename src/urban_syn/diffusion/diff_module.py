@@ -45,8 +45,9 @@ class DiffusionEmbedding(nn.Module):
         return table
 
 class diff_CSDI(nn.Module):
-    def __init__(self, channels, inputdim, num_steps, embedding_dim, pre_dim, rdcl):
+    def __init__(self, channels, inputdim, num_steps, embedding_dim, pre_dim, rdcl, *, metadata_encoder=None):
         super().__init__()
+        self.metadata_encoder = metadata_encoder
         self.channels = channels
         self.pre_dim = pre_dim
         self.rdcl = rdcl
@@ -55,7 +56,7 @@ class diff_CSDI(nn.Module):
             embedding_dim,
         )
 
-        self.input_projection = Conv1d_with_init(self.pre_dim + 1, self.channels, 1)
+        self.input_projection = Conv1d_with_init(self.pre_dim + 1 + (metadata_encoder.condition_dim if metadata_encoder is not None else 0), self.channels, 1)
         self.output_projection1 = Conv1d_with_init(self.channels, self.channels, 1)
         self.output_projection2 = Conv1d_with_init(self.channels, self.channels, 1)
         self.output_layer = nn.Linear(self.channels, self.pre_dim + 1)
@@ -76,12 +77,15 @@ class diff_CSDI(nn.Module):
         self.bn = nn.BatchNorm1d(inputdim)
         self.out_bn = nn.BatchNorm1d(inputdim)
         self.layernorm = nn.LayerNorm(inputdim)
-    def forward(self, x, diffusion_step, mask_mat=None):
+    def forward(self, x, diffusion_step, mask_mat=None, *, metadata=None):
         """
         x.shape : B, T, F
         """
         
         B, step_length, c = x.shape
+        if self.metadata_encoder is not None:
+            condition = self.metadata_encoder(metadata, B, x.device, x.dtype)
+            x = torch.cat((x, condition[:, None, :].expand(-1, step_length, -1)), dim=-1)
         x = x.permute(0, 2, 1)   # B, F, T
         
         x = self.input_projection(x)

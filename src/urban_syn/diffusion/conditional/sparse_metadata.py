@@ -193,6 +193,9 @@ def _prepare_poi_assignments(aligned, trip_map, poi, stops):
 
 def prepare_rows(rows, weather, poi_assignments=None):
     """Join weather and optional move-level POI assignments without dropping rows."""
+    if 'label' in rows and {'uid', 'tid', 'move_id'}.issubset(rows):
+        if (rows.groupby(['uid', 'tid', 'move_id']).label.nunique(dropna=True) > 1).any():
+            raise ValueError('Conflicting mode labels within a trajectory')
     weather = weather.copy()
     # Missing feature columns are valid: identity/date columns remain required for joining.
     if "DESCRIPTION" not in weather:

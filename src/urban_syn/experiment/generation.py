@@ -146,7 +146,9 @@ def run_generation(
         road_geometries=road_geometries,
         length_counts=length_counts,
         sampler=sampler,
-        batch_size=settings.generation.batch_size
+        batch_size=settings.generation.batch_size,
+        metadata_requests=settings.generation.metadata_requests,
+        mask_metadata=settings.generation.mask_metadata
     )
     elapsed_seconds = perf_counter() - start
 
@@ -158,6 +160,10 @@ def run_generation(
     manifest = {
         "checkpoint": str(checkpoint),
         "checkpoint_epoch": int(info.get("epoch", -1)),
+        "metadata_schema": info.get("metadata_schema"),
+        "metadata_requests": settings.generation.metadata_requests,
+        "mask_metadata": settings.generation.mask_metadata,
+        "sampling_seed": settings.experiment.seed,
         "sampler": settings.generation.sampler.name,
         "generated_gps": str(output),
         "test_reference_gps": str(settings.paths.test_reference_gps) if settings.paths.test_reference_gps else None,

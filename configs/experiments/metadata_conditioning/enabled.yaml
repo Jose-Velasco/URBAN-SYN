@@ -1,0 +1,123 @@
+experiment:
+  name: metadata_smoke_enabled
+  seed: 101
+paths:
+  graph_config: configs/experiments/hpc_smoke_test/nyc_graph.yaml
+  train_sequences: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_train_prepared_road_sequences.parquet
+  test_sequences: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_test_prepared_road_sequences.parquet
+  trip_id_map: fmm_scripts/data/nyc_15s_fmm_trip_id_map.csv
+  road_network: fmm_scripts/data/road_network/nyc.gpkg
+  length_distribution: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_train_length_distribution.npy
+  test_reference_gps: null
+  output_root: outputs/experiments
+model:
+  diffusion:
+    hidden_dim: 16
+    residual_layers: 2
+    diffusion_steps: 4
+    beta_start: 0.0001
+    beta_end: 0.02
+    similarity_chunk_size: 2048
+  road_encoder:
+    initialization: random
+    trainable: true
+    checkpoint: null
+  conditioning:
+    enabled: true
+    metadata_dir: outputs/prepared_metadata_v3
+    condition_dim: 8
+    fields:
+    - weather_category
+    - transportation_mode
+    - temperature
+    all_dropout: 0.1
+    field_dropout: 0.1
+training:
+  epochs: 1
+  batch_size: 4
+  max_batches: 2
+  grad_clip_norm: 1.0
+  optimizer:
+    name: adamw
+    learning_rate: 0.001
+    weight_decay: 0.01
+  scheduler:
+    name: reduce_on_plateau
+    mode: min
+    factor: 0.5
+    threshold: 0.0001
+    threshold_mode: rel
+    cooldown: 0
+    min_lr: 1.0e-06
+    patience: 20
+    eps: 1.0e-08
+  losses:
+    noise_mse:
+      enabled: true
+      weight: 1.0
+      include_in_total: true
+      every_steps: 1
+    reconstruction_mse:
+      enabled: true
+      weight: 1.0
+      include_in_total: true
+      every_steps: 1
+    hard_connectivity:
+      enabled: true
+      weight: 1.0
+      include_in_total: false
+      every_steps: 1
+  validation:
+    enabled: true
+    fraction: 0.1
+    split_group_columns:
+    - uid
+    - tid
+  checkpoint:
+    monitor: auto
+    save_last: true
+    save_best: true
+    every_epochs: 1
+    resume_from: null
+generation:
+  enabled: false
+  checkpoint: null
+  checkpoint_choice: best
+  road_layer: roads
+  output_name: nyc_generated_gps.parquet
+  num_trajectories: 4
+  batch_size: 4
+  sampler:
+    name: ddpm
+tracking:
+  enabled: false
+  provider: mlflow
+  tracking_uri: null
+  storage_scope: shared
+  experiment_name: gnn_urban_syn_joint_road_embed_nyc_hps_smoke_test
+  run_name: null
+  tags:
+    dataset: nyc_15s_enriched_moves
+    model: gnn_urban_syn_joint
+    training_strategy: joint_scratch
+    conditioning: none
+    losses: nose_cleanX
+    road_embedding_training: end2end
+  logging:
+    metrics_every_steps: 150
+    gnn_diagnostics_every_steps: 1000
+    gnn_embedding_enabled: true
+    gnn_embedding_every_epochs: 10
+    gnn_embedding_sample_size: 256
+    log_system_metrics: true
+    log_resolved_config: true
+    log_git_info: true
+  artifacts:
+    log_best_checkpoint: true
+    log_last_checkpoint: true
+    log_generated_trajectories: true
+    log_training_logs: true
+runtime:
+  device: cuda
+  precision: fp32
+  num_workers: 0

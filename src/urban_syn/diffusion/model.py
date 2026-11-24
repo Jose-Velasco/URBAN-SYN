@@ -156,7 +156,8 @@ class Diff_RNTraj(nn.Module):
         self,
         graph: Data,
         src_eid_seqs: torch.Tensor,
-        src_rate_seqs: torch.Tensor
+        src_rate_seqs: torch.Tensor,
+        *, metadata=None
     ) -> JointTrainingOutput:
         """Encode roads and compute diffusion outputs without calculating losses.
 
@@ -186,7 +187,8 @@ class Diff_RNTraj(nn.Module):
         diffusion = diffuse_and_denoise(
             self.diff_model,
             clean,
-            self.diffusion_param
+            self.diffusion_param,
+            metadata=metadata
         )
 
         return JointTrainingOutput(
@@ -234,7 +236,8 @@ class Diff_RNTraj(nn.Module):
         self,
         graph: Data,
         src_eid_seqs: torch.Tensor,
-        src_rate_seqs: torch.Tensor
+        src_rate_seqs: torch.Tensor,
+        *, metadata=None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Preserve the original three-loss training interface.
 
@@ -256,7 +259,8 @@ class Diff_RNTraj(nn.Module):
         output = self.compute_training_outputs(
             graph,
             src_eid_seqs,
-            src_rate_seqs
+            src_rate_seqs,
+            metadata=metadata
         )
 
         losses = self.compute_training_losses(
@@ -280,6 +284,7 @@ class Diff_RNTraj(nn.Module):
         sampler: Sampler,
         similarity_chunk_size: int | None = None,
         road_embeddings: torch.Tensor | None = None,
+        *, metadata=None,
         ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Generate road-ID sequences and position rates
@@ -343,7 +348,8 @@ class Diff_RNTraj(nn.Module):
             schedule=self.diffusion_param,
             batch_size=batchsize,
             sequence_length=length,
-            feature_dim=pre_dim + 1
+            feature_dim=pre_dim + 1,
+            **({"metadata": metadata} if metadata is not None else {})
         )
 
         # x0 = cal_x0_from_noise_ddpm(

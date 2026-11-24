@@ -181,3 +181,24 @@ Pretraining uses `python -m urban_syn.link_pretrain` and its **own experiment YA
 | `training.early_stopping` | Whether to stop after validation stalls and how long to wait |
 
 Use the [pretraining guide](../../src/urban_syn/link_pretrain/README.md) for its full workflow. All three joint strategies use the same shared graph definition; **do not silently swap graph features between pretraining and joint runs**.
+
+## Optional metadata conditioning
+
+`metadata_conditioning/enabled.yaml` and `disabled.yaml` are paired two-batch
+smoke configurations with identical inputs, validation selection, seed, and
+training settings. Prepare a fresh `outputs/prepared_metadata_v3` using the
+[metadata preparation command](../../src/urban_syn/diffusion/conditional/README.md),
+then run:
+
+```bash
+PYTHONPATH=src python -m urban_syn.experiment train --config configs/experiments/metadata_conditioning/disabled.yaml
+PYTHONPATH=src python -m urban_syn.experiment train --config configs/experiments/metadata_conditioning/enabled.yaml
+```
+
+For a conditioned checkpoint comparison, set `generation.checkpoint`,
+`generation.metadata_requests` (one raw dictionary per requested trajectory), and
+run `python -m urban_syn.experiment generate --config YOUR_CONFIG.yaml` with
+`PYTHONPATH=src`. Repeat with `generation.mask_metadata: true`, a different
+output name, and the same seed and batch size. Checkpoint vocabularies and
+normalization encode both runs. Full commands, artifact contracts, and a
+self-contained synthetic smoke are in the metadata documentation linked above.

@@ -57,6 +57,8 @@ def experiment_fingerprint(config: ResolvedExperimentConfig, graph: Data) -> str
         "train_sequences": str(settings.paths.train_sequences),
         "trip_id_map": str(settings.paths.trip_id_map)
     }
+    if settings.model.conditioning.enabled:
+        relevant['conditioning'] = settings.model.conditioning.model_dump(mode='json')
     # Preserve fingerprints of older from-scratch runs (their configs did not
     # include initialization/trainability). New modes must not resume into
     # an experiment with different GNN initialization or freezing choices.
@@ -191,6 +193,7 @@ def save_training_checkpoint(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
+        "metadata_schema": getattr(model, "metadata_schema", None),
         "checkpoint_version": CHECKPOINT_VERSION,
         "epoch": epoch,
         "global_step": global_step,
@@ -277,6 +280,8 @@ def load_training_checkpoint(
     if (checkpoint.get("scheduler_state_dict") is None) != (scheduler is None):
         raise ValueError("Checkpoint and experiment use different scheduler modes.")
 
+    if checkpoint.get('metadata_schema') != getattr(model, 'metadata_schema', None):
+        raise ValueError('Checkpoint metadata schema, preprocessing, or artifact fingerprints differ')
     model.load_state_dict(checkpoint["model_state_dict"], strict=True)
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     if scheduler is not None:

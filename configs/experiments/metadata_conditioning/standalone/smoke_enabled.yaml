@@ -1,0 +1,34 @@
+paths:
+  train: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_train_prepared_road_sequences.parquet
+  test: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_test_prepared_road_sequences.parquet
+  identity_map: fmm_scripts/data/nyc_15s_fmm_trip_id_map.csv
+  embeddings: outputs/fixed_embeddings/matching_network.npz
+  network: fmm_scripts/data/road_network/nyc.gpkg
+  metadata: outputs/prepared_metadata_v3
+conditioning:
+  enabled: true
+  fields: [weather_category, transportation_mode, temperature]
+model:
+  channels: 16
+  steps: 4
+  residual_layers: 2
+  condition_dim: 8
+  all_dropout: 0.1
+  field_dropout: 0.1
+  comparison_chunk: 256
+training:
+  epochs: 1
+  batch_size: 4
+  max_batches: 2
+  validation_fraction: 0.1
+  learning_rate: 0.001
+seeds:
+  initialization: 42
+  metadata: 314
+  batch_order: 101
+  split: 101
+  training_noise: 202
+  evaluation_noise: 303
+  generation: 404
+device: cuda:0
+output: outputs/standalone/smoke_enabled

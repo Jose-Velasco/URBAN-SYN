@@ -1,329 +1,362 @@
-# Conditional contracts and diagnostics
+# Optional metadata in the joint GNN pipeline
 
-This directory owns conversion helpers, metadata sidecars, conditioning,
-diagnostics, audit, and tests. The current workflow is schema v2 sparse
-conditioning. Schema
-v1 weather-only conditioning is its predecessor. See the [package overview](../README.md)
-and [model documentation](../models/README.md).
+The canonical model is `urban_syn.diffusion.model.Diff_RNTraj`, constructed by
+`urban_syn.experiment`. The `diffusion/models/` files and v1/v2 binary sidecars
+remain historical references. Their pilot weights cannot be loaded into the
+joint GNN model. The current prepared metadata format is version 3.
 
-## Alignment before enrichment
+Prepare fresh metadata from the exact observations used to produce FMM input:
 
-metadata.py and sparse_metadata.py first replay the existing conversion. They
-read trajectory binaries, the trajectory-ID map, FMM matches, the saved road-ID
-mapping, and held-out trip list. Every accepted row must reproduce stored road
-IDs and moving rates, with identical split, length bucket, count, and
-index_within_length. Duplicate or missing identities, malformed counts, and
-drift fail closed before sidecars are written. This establishes source identity;
-it is separate from enrichment.
-
-Enrichment joins weather by (uid, tid, departure date), corresponding to the
-weather key (uid, tid, DATE). Duplicate full keys are rejected. Date extraction
-preserves the upstream naive-as-epoch convention, interpreted as UTC to match
-weather DATE; it makes no original-timezone claim. A piece crossing midnight
-uses its departure date. Split membership and bucket indices are preserved.
-Sidecars and source inputs are bound by SHA-256 hashes.
-
-This weather date join is separate from POI temporal association. POI move
-departure is the earliest timestamp for the move in the complete trajectory-ID
-map, before FMM filtering. The selector then finds the latest same-(uid, tid)
-stop departure at or before that move, applies the 900-second gap policy, and
-validates parent identity plus both stop timestamps against the enrichment.
-
-Historical manifests report 19,462 aligned trajectories: 15,794 train and 3,668
-test. They record 512 empty_opath FMM exclusions and 58 aligned records with
-missing weather source. The weather audit shows the 58 interpolation-created
-missing-weather pieces came from 15-second interpolation across a long source
-gap; they are separate from the 512 FMM exclusions. All 58 departures have zero
-original move points and one crosses midnight.
-
-## Schema
-
-metadata.py remains the weather-only schema-v1 sidecar predecessor. The current
-multi-field preparation and diagnostics are sparse_metadata.py and
-sparse_pilot.py; the retired weather-only pilot runner is not an entrypoint.
-
-V1 has one training-only categorical field, weather_category. Code 0 is
-<unknown>; the historical manifest maps heavy rain=1, light rain=2,
-moderate rain=3, sunny=4. Missing source and training-unseen categories remain
-aligned with code 0
-
-Current sparse workflow:
-
-| Field | Kind | Source | Contract |
-| --- | --- | --- | --- |
-| weather_category | categorical | weather DESCRIPTION | training-only vocabulary, code 0 unknown |
-| transportation_mode | categorical | trajectory-map label | training-only vocabulary, code 0 unknown |
-| temperature | continuous | weather TAVG_C | training-only Celsius mean/scale |
-| previous_stop_poi_category | categorical, optional | POI-enriched stop candidates | training-only vocabulary, code 0 unknown |
-
-Sparse means field-wise missingness and partial requests are first-class; it
-does not require complete values. Each descriptor records source, vocabulary or
-normalization, and exact_zero missing contribution. Rows carry
-field_available and field_status. Statuses are known, missing_source,
-unseen_training_category, or no_training_support.
-
-Vocabularies and temperature statistics use known gen_train rows only. The
-historical v2 manifest reports temperature mean 16.601950940518556, population
-scale 8.419925204480267, and 15,736 observed training rows. Zero scale falls
-back to 1; no training support leaves a field unavailable.
-
-### Frozen previous-stop POI policy
-
-The POI field is opt-in; the default remains the original three fields. Enable it
-with `--poi`, `--stops`, and `--fields ... previous_stop_poi_category`.
-Move departure is the earliest `start_timestamp` for that move in the complete,
-unfiltered trajectory-ID map, before FMM exclusions. Within the same `(uid, tid)`
-the policy selects the latest stop whose departure is no later than that move.
-The context gap must satisfy `0 <= move_start - stop_departure <= 900` seconds.
-Future stops and gaps above 900 seconds are Unknown. If the latest stop has no
-usable POI enrichment, the selector does not fall back to an older stop. Every
-accepted FMM piece of a move inherits the move-level assignment, including when
-an earlier piece of that move failed FMM.
-
-POI-to-stop association is validated by parent identity and both stop timestamps;
-ambiguous associations and conflicting duplicate candidate identities become
-Unknown. Usable candidates have a known category, finite nonnegative stored
-distance, and distance no greater than 50. Candidates are ranked without
-rounding by `(distance, element_type, numeric_osmid, category)`. Conflicting
-duplicates are rejected rather than resolved by input order. Unknown reason codes
-include `no_preceding_stop`, `excessive_gap`, `ambiguous_association`,
-`unavailable_candidate`, and `unseen_training_category`.
-
-The manifest records `distance_crs=EPSG:3857`, `distance_metric=planar`,
-`distance_units=projected_metres`, `max_distance=50`, the complete selection
-policy, and hashes for the POI and stop inputs. Selected stop/POI identity,
-stop/POI coordinates, dates, stored distance, and time gap are provenance
-columns only; the encoder receives only the category code and availability mask.
-The 50-metre cutoff is a projected
-metre cutoff for this existing batch. A future raw-enrichment pipeline must use
-a separately versioned 50-ground-metre WGS84 geodesic retrieval policy and
-retrieve candidates afresh; the existing projected-radius candidate set is not
-complete for that policy. Coordinate or source changes can legitimately change
-the nearest candidate, so deterministic tie-breaking cannot prevent that.
-
-There is currently no validation split. Any future validation split must be
-grouped before fitting vocabularies, statistics, or other training-derived
-artifacts. Before writing sidecars, the existing train/test partition is asserted
-disjoint both by parent trip and by user; no user or parent is moved between
-splits by POI enrichment.
-
-## Conditioning contract
-
-SparseMetadataEncoder adds known field contributions into [B,C]. Categorical
-fields use separate embeddings; temperature uses a linear projection. The
-complete contribution, including bias, is masked for unavailable fields, making
-all-missing input exactly zero. Known fields remain active when other fields are
-missing. Additivity applies to the condition vector, not final predictions.
-
-Training-only dropout drops all fields in a record with probability 0.1 and each
-field independently with probability 0.1. Evaluation and generation disable it.
-This exposes null and partial paths; it is not classifier-free sampling guidance
-(no two-pass score mixing or guidance scale).
-
-Explicit full, partial, and empty requests use encode_requests:
-
-Use a checkpoint whose metadata_fields includes the requested optional POI field;
-the three-field checkpoint accepts only weather, mode, and temperature.
-
-~~~python
-from urban_syn.diffusion.conditional.conditioning import encode_requests
-
-metadata = encode_requests([
-    {"weather_category": "sunny", "transportation_mode": "bus", "temperature": 18.0},
-    {"transportation_mode": "walk", "previous_stop_poi_category": "cafe"},
-    {},
-], checkpoint["metadata_fields"])
-road_ids, rates = model.generate_data(graph, embeddings, 3, 20, 64, metadata)
-~~~
-
-Omitted or None values are unavailable; unknown categories map to unknown and
-mask. Unsupported names raise an error. The model’s legacy argument is still
-named weather, but v2 accepts this metadata dictionary or None.
-
-## Toggle conditioning
-
-The model and metadata encoder expose runtime ablation flags. These flags do not
-remove modules or parameters and therefore preserve strict checkpoint loading.
-
-~~~python
-net = model.diff_model
-
-# Disable all metadata conditioning.
-net.skip_conditioning = True
-
-# Restore full conditioning.
-net.skip_conditioning = False
-if net.metadata_encoder is not None:
-    net.metadata_encoder.skip_conditioning = False
-~~~
-
-The model-level flag takes precedence: it skips encoder execution, accepts absent
-metadata, and applies the existing input projection using only its trajectory
-feature weight slice. The encoder-only option retains the model’s conditioning
-concatenation while returning zero conditions:
-
-~~~python
-# Return zero conditions while retaining concatenation.
-net.metadata_encoder.skip_conditioning = True
-~~~
-
-Flags are runtime state and must be reapplied after checkpoint reconstruction.
-Registered modules must remain intact for strict state-dictionary loading. This
-ablation is distinct from loading the original unconditional baseline: the
-conditional model, projection, and checkpoint parameters are retained, with only
-the conditioning contribution disabled at runtime.
-
-## Structure
-
-With conditioning enabled, each categorical metadata field uses a separate embedding, while training-normalized temperature uses a linear projection. Availability masks zero each missing field’s complete contribution, including projection bias. The contributions are summed into a shared `[B,C]` condition vector, broadcast across trajectory positions, and concatenated with noisy road-embedding/rate features before the input projection. The diffusion timestep is encoded separately using sinusoidal features and learned projections; each gated dilated-convolution residual block receives a projected timestep embedding. The denoiser predicts noise with the original trajectory feature dimensions. This project-specific metadata encoder uses masked addition and input concatenation. Training includes condition dropout, while generation uses ordinary DDPM sampling without classifier-free guidance mixing.
-
-
-### Citation
-```bibtex
-@article{ho2022classifier,
-  title={Classifier-free diffusion guidance},
-  author={Ho, Jonathan and Salimans, Tim},
-  journal={arXiv preprint arXiv:2207.12598},
-  year={2022}
-}
+```bash
+PYTHONPATH=src python -m urban_syn.diffusion.conditional.prepared_metadata \
+  --train fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_train_prepared_road_sequences.parquet \
+  --test fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_test_prepared_road_sequences.parquet \
+  --mapping fmm_scripts/data/nyc_15s_fmm_trip_id_map.csv \
+  --observations PATH_TO_CORRESPONDING_OBSERVATIONS.parquet \
+  --weather data/output/weather_enrichment.parquet \
+  --identity uid tid move_id piece \
+  --output outputs/prepared_metadata_v3
 ```
 
-Classifier-Free Diffusion Guidance - Related methodology for training conditional and unconditional paths through condition dropout. Our sampler does not implement CFG prediction mixing or a guidance scale.
+For move-only inputs, use `--identity uid tid move_id`. Use the sampled
+observations for sampled FMM inputs and the unsampled observations otherwise.
+`--timestamp` defaults to `datetime`; `--mode` defaults to `label`. Labels and
+point counts come from these observations. Conflicting labels, incomplete or
+duplicate identities, count mismatches, uncovered sequences, and shared train/
+test users fail preparation. Raw road IDs, including zero, remain unchanged;
+the dataset maps raw zero to a positive model ID. Upstream partitions remain fixed.
 
+Optional POI uses `--poi data/output/enriched_occasional.parquet --stops
+ data/output/stops.parquet`. Select `previous_stop_poi_category` in the enabled
+configuration's fields to train with it. Each move inherits one category from the
+latest same-parent stop departing at or before its complete-map move departure,
+with a gap of at most 900 seconds. Association validates both stop timestamps.
+Candidates require finite nonnegative stored distance <=50 projected metres
+(EPSG:3857), and rank by distance, element type, numeric OSM ID, and category.
+Ambiguous associations become unknown; selection never falls back to older stops.
 
-## Diagnostics and historical results
-**Context & Scope:** These are historical pilot results sourced from existing reports, not regenerated artifacts. They serve as successful conditioning diagnostics and trainability checks, rather than evaluations of trajectory quality, road realism, or conditional fidelity.
+Weather joins by `(uid, tid, departure date)` and preserves the upstream UTC
+naive-as-epoch date convention. Temperature uses departure-date `TAVG_C` in
+Celsius. No instantaneous-temperature or original-timezone interpretation is added.
 
----
+The preparation manifest records alignment, source SHA-256 hashes, sidecar hashes,
+and original partition IDs. Loading rejects changed inputs or sidecars. Validation
+selection uses the upstream grouped trip split. Vocabulary and temperature
+population mean/scale fit only optimizer-training indices; zero scale uses one.
+The run's `metadata_manifest.json` and checkpoint add these fitted field
+definitions, statistics, architecture, and exact training/validation IDs. Resume
+requires an identical schema, preprocessing, and artifact provenance.
 
-## 1. Pilot Results
+Run the paired configurations from the repository root:
 
-### Pilot v1: Weather Conditioning ($B = 2, L = 20$)
-Executed using one optimizer step across two length-20 examples.
+```bash
+PYTHONPATH=src python -m urban_syn.experiment train --config configs/experiments/metadata_conditioning/disabled.yaml
+PYTHONPATH=src python -m urban_syn.experiment train --config configs/experiments/metadata_conditioning/enabled.yaml
+```
 
-* **Batch Shape:** $[2, 20]$ for both ID and rate outputs
-* **Baseline Measurements:**
-  * **Noise:** `1.0489805936813354`
-  * **Connectivity:** `24.0`
-  * **$x_0$:** `0.01071049552410841`
-* **Gradients & Sensitivity:**
-  * **Weather Gradient Norm:** `0.0008343211375176907`
-  * **Condition-Shuffle Prediction Delta:** `0.09675382077693939`
-  * **Controlled-Sampling Delta:** `0.018283426761627197`
+Both configurations share partitions, seed, model settings, and training budget.
+Conditioning defaults to disabled. Enabled defaults are dimension 8, record
+dropout 0.1, and independent field dropout 0.1. The encoder sums field contributions,
+broadcasts over sequence length, and concatenates before input projection.
+Unavailable fields contribute exactly zero, including projection bias. Unknown
+categories and omitted request fields are unavailable. Evaluation disables dropout.
 
----
+For generation set `generation.checkpoint` to a joint checkpoint, supply one
+`generation.metadata_requests` dictionary per generated trajectory, then run:
 
-### Pilot v2: Sparse Multi-Field Conditioning ($B = 5, L = 20$)
-Executed using one optimizer step across five length-20 examples evaluating variable masking configurations (*fully known*, *mode-only*, and *all-unknown*).
+```bash
+PYTHONPATH=src python -m urban_syn.experiment generate --config YOUR_GENERATION_CONFIG.yaml
+```
 
-* **Batch Shape:** $[5, 20]$ for both ID and rate outputs
-* **Encoder Field Gradient Norms ($\ell_2$):**
-  * **Weather:** `0.0010924155358225107`
-  * **Mode:** `0.0012009519850835204`
-  * **Temperature:** `0.002279658103361726`
-* **Field Prediction Deltas:**
-  * **Weather:** `0.15676634013652802`
-  * **Mode:** `0.08280309289693832`
-  * **Temperature:** `0.11593136191368103`
-* **Conditioning Sensitivity & Updates:**
-  * **Condition-Shuffle Delta:** `0.18998119235038757`
-  * **Controlled-Sampling Delta:** `0.03839296102523804`
-  * **Missingness Semantics:** All-unknown mask produced exact-zero conditioning as intended.
-  * **Parameters:** Successful parameter updates confirmed after the optimizer step.
+Requests are ordered by increasing sequence length, then trajectory order within
+that length. For example `[{weather_category: sunny, temperature: 18.0}, {}]`
+requires two trajectories. Values use checkpoint vocabularies and normalization.
+Unsupported fields fail. Set `generation.mask_metadata: true` to suppress all
+fields. Compare known and masked requests using the same checkpoint, request
+list, experiment seed, lengths, and batch size, with different output names.
+This is ordinary DDPM sampling; there is no classifier-free guidance mixing.
+The Python API also accepts `metadata=` from `encode_requests(requests,
+model.metadata_schema['fields'])` in `model.generate_data`.
 
-The reported sparse field gradient values are sums of the individual parameter
-gradient norms within each field encoder, as computed by the pilot. They are
-not one norm of a concatenated gradient vector.
+Run the self-contained compatibility smoke in a fresh directory:
 
-### Historical POI-enabled v2 diagnostic
+```bash
+PYTHONPATH=src python -m urban_syn.diffusion.conditional.sparse_pilot --output outputs/metadata_joint_smoke_NEW
+PYTHONPATH=src python -m pytest src/urban_syn/diffusion/conditional/tests -q
+```
 
-The fresh POI-enabled sidecar reports 157 known training moves / 406 training
-pieces and 13 known test moves / 26 test pieces: 170 moves / 432 pieces
-combined. The POI sparse pilot passed its one-update conditioning diagnostic,
-including a POI field gradient norm of `0.0006304843700490892`, a POI prediction
-delta of `0.0945969969034195`, condition-shuffle delta `0.30694830417633057`,
-and controlled-sampling delta `0.034580230712890625`. These are historical
-diagnostic results, not learned POI fidelity or trajectory-quality results.
+The smoke writes synthetic prepared inputs, metadata, a fitted manifest, separate
+enabled/disabled/frozen joint checkpoints, and a report. It checks one finite
+update, encoder/GNN gradients, frozen weights, checkpoint reload, positive
+sampled model IDs, and same-seed known/masked reverse outputs. These synthetic
+results establish compatibility, not conditional quality. Existing output
+folders are never overwritten by preparation or this smoke.
 
----
+## Compatibility with the GNN pipeline and on/off comparisons
 
-## 2. Metric Definitions & Verification Criteria
+The legacy fixed-embedding conditioner expects converted binary length buckets,
+a saved legacy road-ID vocabulary, and a separate fixed embedding table. The
+joint pipeline instead reads prepared FMM sequence Parquets with raw `edge_ids`
+and maps those IDs into the current graph's node ordering through the canonical
+`RoadSequenceDataset`. Model IDs are one-based, with zero reserved for padding;
+raw road zero is still valid. The joint GNN learns the road embeddings used by
+diffusion. Legacy binary indices and embedding tables cannot substitute for
+these inputs or establish alignment to the new prepared sequences.
 
-| Metric / Check | Definition & Acceptance Criteria |
-| :--- | :--- |
-| **Gradient Norms** | For each field encoder, the finite non-zero diagnostic is the sum of the individual parameter-gradient Euclidean ($\ell_2$) norms. |
-| **Parameter Updates** | Evaluation of encoder weight differences ($\Delta \theta \neq 0$) before and after a single optimizer step. |
-| **Prediction Deltas** | Maximum absolute elementwise difference ($\|y_{c_1} - y_{c_2}\|_\infty$) on fixed noisy inputs under altered conditioning. |
-| **Controlled-Sampling Differences** | Maximum absolute elementwise difference computed using a fixed random generator. |
-| **Random-Draw Replay** | Verification of bitwise identical samples given an identical random seed and conditioning vector. |
-| **Shape Conformance** | Strict tensor shape enforcement of $[B, L]$ for both IDs and rates. |
-| **Checkpoint Restoration** | Full model reconstruction from configuration files and strict state dictionary reload, producing identical predictions on fixed inputs. |
+Preparation uses the exact sampled or unsampled observation Parquet supplied to
+FMM and its complete identity map. Configure every identity component, including
+`piece` for piece-level trajectories. Map and observation identities must cover
+each other, and each map identity must identify one FMM ID. If observations also
+carry FMM IDs, they must agree with that map. Counts must match prepared sequence
+lengths. Missing, blank, duplicate, or ambiguous identities fail explicitly;
+metadata is attached by `fmm_id` and restored to the exact input sequence order
+after alignment and enrichment. Feature values never determine row membership.
 
----
+With conditioning enabled, `MetadataDataset.dataset` remains the canonical
+trajectory dataset. Its road tensors and rates are returned directly; its FMM
+IDs and lengths remain authoritative. The existing validation selection and
+length-bucket sampler receive the same indices, lengths, split seed, and epoch
+seed for enabled and disabled runs. Metadata values and availability masks are
+additional batch members and enter only the diffusion encoder. They do not enter
+the GNN or change graph features, graph preparation, FMM processing, road mapping,
+or trajectory loading. With conditioning disabled, construction requires no
+metadata artifacts and uses the original denoiser projection.
 
-## 3. Scope of Validation
+Missing weather, mode, temperature, or optional POI values preserve trajectories.
+Unknown categories and unavailable continuous values have false masks and exact
+zero field contributions, including projection bias. Even an entirely missing
+metadata batch leaves trajectory tensors and batch order intact. Categorical
+vocabularies and temperature normalization fit only the selected training rows;
+validation, test, and raw generation requests use those frozen definitions.
+Checkpoint schema checks continue to protect fitted preprocessing and provenance.
 
-* **Verified:**
-  * Numerical stability and computational wiring
-  * Missingness and masking semantics (e.g., exact-zero conditioning)
-  * End-to-end model trainability
-  * Deterministic checkpoint reload and inference
-* **Not Verified (Out of Scope):**
-  * Conditional fidelity
-  * Unbiased marginal behavior under informative missingness
-  * Kinematic/road realism
-  * Downstream trajectory quality
+The paired configurations share source artifacts, graph and training settings,
+validation split seed, and batch-order seeds. Only the conditioning switch and
+experiment name differ. Run independently trained on/off models with:
 
-## Commands, audit, and tests
+```bash
+PYTHONPATH=src python -m urban_syn.experiment train --config configs/experiments/metadata_conditioning/disabled.yaml
+PYTHONPATH=src python -m urban_syn.experiment train --config configs/experiments/metadata_conditioning/enabled.yaml
+```
 
-The [package quickstart](../README.md) contains Docker commands for both
-sidecar builders, the sparse pilot, and the combined 16-test suite. The
-weather-only runner is retired; its historical results remain documented above.
-The read-only
-weather audit writes a new report directory:
+The GNN remains trainable in both runs. Identical trajectory inputs do not imply
+identical learned weights: the conditioning changes diffusion predictions and
+the gradients flowing back through the joint model.
 
-The POI sidecar is written to a fresh directory and reuses the unchanged FMM
-trajectory binaries, road mappings, graph, and embeddings:
+For an additional diagnostic, make two generation configs from the enabled
+configuration. Set the same `generation.checkpoint`, `experiment.seed`,
+`generation.num_trajectories`, `generation.batch_size`, and
+`generation.metadata_requests` in both. Use `generation.mask_metadata: false`
+for the known config and `true` for the masked config, with different output
+names. Then run:
 
-~~~bash
-docker compose -f fmm_scripts/diffrntraj_version/docker-compose.yml \
-  run --rm -T --user "$(id -u):$(id -g)" \
-  -e PYTHONPATH=/workspace/URBAN-SYN/src -w /workspace/URBAN-SYN \
-  diffrntraj-fmm python -m urban_syn.diffusion.conditional.sparse_metadata \
-  --dataset data/NYC_rerun/20261102T040340Z \
-  --trip-map fmm_scripts/diffrntraj_version/data/nyc_gps_points_fmm_trip_id_map_drive.csv \
-  --fmm-matches fmm_scripts/diffrntraj_version/data/nyc_drive_fmm_match.csv \
-  --test-trips fmm_scripts/nyc_test.csv \
-  --weather data/output/weather_enrichment.parquet \
-  --poi data/output/enriched_occasional.parquet \
-  --stops data/output/stops.parquet \
-  --fields weather_category transportation_mode temperature previous_stop_poi_category \
-  --output outputs/diff_rntraj_sparse_poi_<fresh-run>/metadata
-~~~
+```bash
+PYTHONPATH=src python -m urban_syn.experiment generate --config YOUR_KNOWN_CONFIG.yaml
+PYTHONPATH=src python -m urban_syn.experiment generate --config YOUR_MASKED_CONFIG.yaml
+```
 
-The current fresh POI artifact reports 157 known training moves, 13 known test
-moves, and 170 known moves combined, with 432 known gen_all trajectories (406
-train, 26 test). These are move- and trajectory-level coverage figures; they are
-not the unrelated 37.5% stop-level missingness statistic. The accompanying POI
-sparse pilot passed its conditioning diagnostic
-with a nonzero POI gradient norm and a condition-sensitive prediction delta.
-That is diagnostic success, not learned POI fidelity.
+This suppresses metadata on one conditioned checkpoint with identical sampling
+seeds. It measures sensitivity of that checkpoint; it differs from independently
+training an unconditional model with the disabled configuration above.
 
-~~~bash
-docker compose -f fmm_scripts/diffrntraj_version/docker-compose.yml \
-  run --rm -T --user "$(id -u):$(id -g)" \
-  -e PYTHONPATH=/workspace/URBAN-SYN/src -w /workspace/URBAN-SYN \
-  diffrntraj-fmm python -m urban_syn.diffusion.conditional.audit_weather \
-  --dataset data/NYC_rerun/20261102T040340Z \
-  --metadata-dir outputs/diff_rntraj_weather_pilot/metadata \
-  --moves data/output/enriched_moves.parquet \
-  --output outputs/diff_rntraj_weather_pilot/weather_audit_rerun
-~~~
+The original fixed-embedding implementation remains under
+`src/urban_syn/diffusion/models/`. Its legacy regression tests remain in
+`conditional/tests/test_pilot.py` and `conditional/tests/test_sparse.py`. They
+exercise the original model and encoder contracts and remain separate from
+canonical joint-model construction. The canonical compatibility checks are in
+`conditional/tests/test_prepared.py`. Run all three together with:
 
-The test modules are
-urban_syn.diffusion.conditional.tests.test_pilot and
-urban_syn.diffusion.conditional.tests.test_sparse. They cover conversion drift,
-duplicate/date joins, split and bucket alignment, training-only statistics,
-missing/partial fields, dropout, exact-zero paths, and checkpoint/generation
-smoke behavior.
+```bash
+PYTHONPATH=src python -m pytest src/urban_syn/diffusion/conditional/tests -q
+```
 
+These checks use synthetic fixtures for exact identity/order assertions,
+multiple lengths and remainder batches, three shuffled epochs, training and
+validation membership, all-missing metadata, train-only preprocessing, finite
+joint updates, frozen GNN behavior, sampling, and checkpoint reload/resume.
+They isolate compatibility properties with known expected identities. Real-data
+verification and new real-data artifact generation remain deferred because the
+required prepared train/test Parquets and matching FMM observations are not
+available in this checkout. Existing pilot artifacts remain preserved.
+
+## Standalone fixed-embedding diffusion
+
+`python -m urban_syn.diffusion.conditional.standalone` provides `check`, `train`,
+`generate`, and `evaluate`. This runner adapts the retained denoiser in
+`diffusion/models/`; it never constructs a GNN. The existing joint experiment
+entrypoint, graph preparation, FMM algorithms, models, and artifacts remain
+separate. Fixed embeddings are supplied data buffers, excluded from the
+optimizer. A frozen GNN still constructs an encoder and computes embeddings
+from graph features and weights; this standalone runner loads the embedding
+table directly and has no such encoder.
+
+Data flow is prepared sequence Parquets → explicit raw-road embedding vocabulary
+→ fixed vectors plus normalized rates → retained diffusion denoiser. Trajectory
+FMM IDs must be unique positive integers. Raw road zero is valid and maps to a
+positive model ID; model zero is padding and is excluded from generated road
+candidates. Neither absent roads nor absent features filter trajectories. Missing
+roads produce `missing_roads.json` and stop the run; missing metadata produces
+false masks. The unchanged canonical dataset and length-bucket loader preserve
+FMM IDs, rates, trajectory lengths, and ordering across the conditioning toggle.
+
+Use the exact FMM preparation command documented above to produce fresh v3
+metadata. The standalone configurations read those same sequence files, identity
+map, and `outputs/prepared_metadata_v3`. Disabled training does not read metadata
+artifacts. Enabled training fits vocabularies, normalization, and temperature
+quartile boundaries exclusively on its training indices. Validation is selected
+from the upstream training split, grouped by parent trip; the test split remains
+reserved for final reporting, with train/test user overlap rejected.
+
+### Matching fixed embedding inputs
+
+Supply an NPZ with these arrays (no pickled objects):
+
+| Array | Meaning |
+| --- | --- |
+| `edge_ids` | Unique nonnegative raw canonical road integers, one per embedding row |
+| `embeddings` | Finite `[N,D]` float matrix in exactly that vocabulary order |
+| `transitions` | Integer `[E,2]` directed valid transitions, expressed in those raw road IDs |
+| `network_sha256` | Scalar string containing SHA-256 of the exact FMM network file |
+
+`paths.network` must be the exact network used for those FMM inputs. The runner
+checks its hash against the embedding bundle, vocabulary uniqueness, transition
+coverage, finite embeddings, and complete train/test sequence road coverage. It
+does not infer network identity from coincident road numbers. Optional
+`paths.geometry` must have that same network hash and supply all vocabulary road
+geometries; `paths.geometry_layer` defaults to `roads`.
+
+For an existing word2vec text table and explicit JSON vocabulary, package only
+with verified provenance from the embedding producer:
+
+```bash
+PYTHONPATH=src python -m urban_syn.diffusion.conditional.standalone.pack_embeddings \
+  --embedding-text MATCHING/road_embed.txt \
+  --vocabulary MATCHING/new2raw_rid.json --vocabulary-index-base 1 \
+  --transitions MATCHING/raw_transitions.csv \
+  --network fmm_scripts/data/road_network/nyc.gpkg \
+  --provenance MATCHING/embedding_producer_provenance.json \
+  --output outputs/fixed_embeddings/matching_network.npz
+```
+
+The transitions CSV has raw integer `source,target` columns. The producer JSON
+must contain `embedding_text_sha256`, `vocabulary_sha256`, `transitions_sha256`,
+and `network_sha256` for those exact files. Text row IDs must be zero-based;
+the vocabulary index base specifies the explicit row-to-raw-ID association.
+This utility verifies and packages an existing table; it does not train one.
+Do not manufacture new-network provenance for an old table. The table in
+`data/NYC/graph/road_embed.txt` and `data/NYC/extra_file/new2raw_rid.json` has not
+been verified against the new FMM network or sequence coverage. Automatic reuse
+is disabled. If its mapping/network is incompatible or provenance unavailable,
+a matching fixed embedding table and producer provenance must be generated
+using the actual new FMM network before proceeding.
+
+### Commands and paired runs
+
+Run from the repository root in an environment containing the repository's
+Python dependencies, including pandas/pyarrow, PyTorch and PyYAML:
+
+```bash
+export PYTHONPATH="$PWD/src"
+python -m urban_syn.diffusion.conditional.standalone check --config configs/experiments/metadata_conditioning/standalone/smoke_enabled.yaml --device cpu
+python -m urban_syn.diffusion.conditional.standalone train --config configs/experiments/metadata_conditioning/standalone/smoke_disabled.yaml --device cuda:0
+python -m urban_syn.diffusion.conditional.standalone train --config configs/experiments/metadata_conditioning/standalone/smoke_enabled.yaml --device cuda:0
+python -m urban_syn.diffusion.conditional.standalone train --config configs/experiments/metadata_conditioning/standalone/full_enabled.yaml --resume outputs/standalone/full_enabled/last.pt
+```
+
+Use the paired `full_disabled.yaml` and `full_enabled.yaml` for full training.
+Configurations differ only in `conditioning.enabled` and output directory.
+Shared denoiser parameters initialize identically. Metadata initialization uses
+an isolated CPU RNG stream; the shared trajectory projection weights and bias
+are copied into the wider conditioned projection. Batch-order, split, training
+noise, evaluation noise, and generation seeds are explicit separate settings.
+Noise MSE plus road-vector reconstruction MSE drives updates. Connectivity is a
+separate evaluation diagnostic, never part of the optimization objective.
+
+Submit standalone jobs separately from joint-GNN jobs:
+
+```bash
+PYTHON_BIN=/path/to/venv/bin/python sbatch hpc/standalone_metadata/run.sbatch check configs/experiments/metadata_conditioning/standalone/smoke_enabled.yaml
+PYTHON_BIN=/path/to/venv/bin/python sbatch hpc/standalone_metadata/run.sbatch train configs/experiments/metadata_conditioning/standalone/full_disabled.yaml
+PYTHON_BIN=/path/to/venv/bin/python sbatch hpc/standalone_metadata/run.sbatch train configs/experiments/metadata_conditioning/standalone/full_enabled.yaml
+PYTHON_BIN=/path/to/venv/bin/python sbatch hpc/standalone_metadata/run.sbatch train configs/experiments/metadata_conditioning/standalone/full_enabled.yaml --resume outputs/standalone/full_enabled/last.pt
+```
+
+Slurm controls visible GPUs; `DEVICE=cuda:0` addresses the first allocated GPU.
+Locally, use `CUDA_VISIBLE_DEVICES=1` and `--device cuda:0` to select physical
+GPU 1. Checkpoints contain standalone model settings, fitted schema, source,
+embedding, vocabulary and network fingerprints, split IDs, optimizer, and RNG
+state. `best.pt` is selected solely by validation loss; `last.pt` supports epoch
+boundary resume. Increase only the epoch budget to extend a run. Other
+compatibility settings and artifact contents must match. A fresh training run
+refuses to overwrite an existing `last.pt`.
+
+```bash
+python -m urban_syn.diffusion.conditional.standalone evaluate --config configs/experiments/metadata_conditioning/standalone/full_enabled.yaml --checkpoint outputs/standalone/full_enabled/best.pt --split test
+python -m urban_syn.diffusion.conditional.standalone generate --config configs/experiments/metadata_conditioning/standalone/full_enabled.yaml --checkpoint outputs/standalone/full_enabled/best.pt --split test --metadata-mode correct
+python -m urban_syn.diffusion.conditional.standalone generate --config configs/experiments/metadata_conditioning/standalone/full_enabled.yaml --checkpoint outputs/standalone/full_enabled/best.pt --split test --metadata-mode masked
+python -m urban_syn.diffusion.conditional.standalone evaluate --config configs/experiments/metadata_conditioning/standalone/full_disabled.yaml --checkpoint outputs/standalone/full_disabled/best.pt --split test --report-metadata outputs/prepared_metadata_v3
+```
+
+Use `--split validation` for development. Evaluation performs correct, all-masked,
+and globally shuffled metadata diagnostics using identical sampled noise and
+timesteps. Whole metadata records, including masks, shuffle together. Generation
+uses a separate identical seed for each variant, excludes padding, and chunks
+both query vectors and road candidates during cosine decoding. Output sequence
+Parquets contain canonical raw `edge_ids`, `[0,1]` rates, lengths, and the
+held-out reference `fmm_id` used for that generation request. Matching geometry
+also enables GPS observation Parquet export.
+
+### Evaluation interpretation and compatibility
+
+Pooled generation uses exactly one request per held-out trajectory with its
+original length and metadata composition. Reports include trajectory counts,
+per-field unavailable counts (including training-unseen categories), noise and
+road reconstruction MSE, invalid directed-transition fraction, road-visitation
+Jensen–Shannon divergence in natural-log units, unique-road-sequence fraction,
+and road token entropy. Connectivity counts **all consecutive observation pairs**
+within each trajectory in its denominator, including repeated-road pairs. A pair
+is valid when both observations are on the same road, or when the directed road
+change occurs in the supplied transition table. Only disconnected road changes
+count in the numerator; no cross-trajectory pairs are formed. For a set with no
+observation pairs the fraction is unavailable (`null`). Metrics are also stratified by the original requested
+categories and training-defined temperature bins. Temperature bins extend the
+outer training quantile intervals to cover held-out extremes. Missing or unseen
+values form an explicit group. Disabled checkpoints can use `--report-metadata`
+for the same strata without requiring metadata during their training.
+
+When matching geometry is available, distance reports compare means and
+quantile-based Wasserstein distance in metres for the generated versus reference
+GPS observation-to-observation path lengths. These are displacement-based path
+lengths, not complete routed road distances. Without geometry, distance metrics
+are explicitly unavailable. MSE averages within each trajectory and then across trajectories. Tiny group counts and finite smoke losses are
+compatibility evidence; they do not establish conditional quality. Correct/
+masked/shuffled diagnostics on one conditioned checkpoint differ from the
+separate independently trained on/off model comparison.
+
+| Artifact | Accepted path |
+| --- | --- |
+| Legacy binary trajectories, fixed-embedding checkpoints | Original `diffusion/models/` loader and legacy tests only; preserved |
+| Joint-GNN checkpoints | Existing `urban_syn.experiment` runner only; preserved |
+| Prepared sequence Parquets and v3 metadata | Shared aligned inputs; no conversion to legacy binaries needed |
+| Verified matching fixed NPZ table | Standalone input; immutable in both conditioning modes |
+| `standalone-fixed-v1` checkpoints | New standalone resume/generation only; no legacy resume claim |
+
+Synthetic end-to-end tests in `conditional/tests/test_standalone.py` exercise
+explicit road-zero mapping, positive trajectory IDs, missing-road and network
+failures, immutable embeddings, initialization parity, identical on/off inputs,
+missing metadata, checkpoint reload and exact resumed-versus-uninterrupted
+training, generation, GPS reconstruction, and evaluation:
+
+```bash
+PYTHONPATH=src python -m pytest src/urban_syn/diffusion/conditional/tests -q
+```
+
+Real-data smoke remains deferred. `check` writes `missing_inputs.json` with exact
+missing paths, including missing prepared Parquets, identity map, metadata, and
+matching embedding/network artifacts. Missing-input checks exit with status 2. No existing pilot or joint artifacts are
+modified, and no real-data training or quality result is claimed.
+
+Standalone smoke YAMLs set `training.max_batches: 2`; full-training YAMLs set
+`training.max_batches: null` (all training batches). The loader accepts only
+YAML null or a positive integer here; strings, booleans, zero, and negatives fail
+configuration validation before training.

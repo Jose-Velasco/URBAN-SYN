@@ -83,14 +83,21 @@ class RoadEncoderSettings(_Settings):
 
 
 class ConditioningSettings(_Settings):
-    """Reserve a stable toggle without pretending conditioning is implemented."""
+    """Optional sparse metadata architecture and prepared artifact directory."""
 
     enabled: bool = False
+    metadata_dir: Path | None = None
+    condition_dim: int = Field(default=8, ge=1)
+    fields: list[str] = Field(default_factory=lambda: ["weather_category", "transportation_mode", "temperature"])
+    all_dropout: float = Field(default=0.1, ge=0, le=1)
+    field_dropout: float = Field(default=0.1, ge=0, le=1)
 
     @model_validator(mode="after")
-    def reject_unsupported_conditioning(self) -> Self:
-        if self.enabled:
-            raise ValueError("Metadata conditioning is not supported in the V1 joint trainer yet.")
+    def validate_metadata(self) -> Self:
+        if self.enabled and self.metadata_dir is None:
+            raise ValueError("Enabled conditioning requires metadata_dir")
+        if not self.fields or len(set(self.fields)) != len(self.fields):
+            raise ValueError("Metadata fields must be nonempty and unique")
         return self
 
 
@@ -339,6 +346,8 @@ class GenerationSettings(_Settings):
     enabled: bool = False
     checkpoint: Path | None = None
     checkpoint_choice: Literal["best", "last"] = "best"
+    metadata_requests: list[dict[str, Any]] | None = None
+    mask_metadata: bool = False
     road_layer: str = Field(default="roads", min_length=1)
     output_name: str = Field(default="nyc_generated_gps.parquet", pattern=r"^[^/\\]+\.parquet$")
     num_trajectories: int | None = Field(default=None, ge=1)

@@ -119,7 +119,16 @@ def build_model(config: ResolvedExperimentConfig, graph: Data) -> nn.Module:
 
     from .pretrained_encoder import load_pretrained_encoder
 
-    model = build_joint_model(graph, config.joint_settings)
+    encoder, schema = None, None
+    options = config.settings.model.conditioning
+    if options.enabled:
+        from .datasets import load_training_dataset, fitted_metadata
+        from urban_syn.diffusion.conditional.conditioning import SparseMetadataEncoder
+        dataset, selection = load_training_dataset(config, graph.edge_id)
+        _, schema = fitted_metadata(config, dataset, selection)
+        encoder = SparseMetadataEncoder(schema['fields'], **schema['architecture'])
+    model = build_joint_model(graph, config.joint_settings, metadata_encoder=encoder)
+    model.metadata_schema = schema
     settings = config.settings.model.road_encoder
     if settings.initialization == "pretrained" and config.settings.training.checkpoint.resume_from is None:
         # On a new run, transfer only GNN weights from encoder.pt. A resumed

@@ -295,7 +295,12 @@ def run_epoch(
     prefix = "train" if training else "val"
     recorded: list[dict[str, float]] = []
 
-    for batch_index, (road_ids, rates) in enumerate(batches):
+    for batch_index, batch in enumerate(batches):
+        road_ids, rates = batch[:2]
+        metadata = None
+        if len(batch) == 3:
+            metadata = {group: {name: value.to(graph.x.device) for name, value in fields.items()}
+                        for group, fields in batch[2].items()}
         if max_batches is not None and batch_index >= max_batches:
             break
         road_ids = road_ids.to(device=graph.x.device, dtype=torch.long, non_blocking=True)
@@ -307,7 +312,7 @@ def run_epoch(
             optimizer.zero_grad(set_to_none=True)
 
         with torch.set_grad_enabled(training):
-            output = model.compute_training_outputs(graph, road_ids, normalized_rates)
+            output = model.compute_training_outputs(graph, road_ids, normalized_rates, **({"metadata": metadata} if metadata is not None else {}))
             losses = model.compute_training_losses(
                 output,
                 composer,
@@ -604,6 +609,8 @@ def run_joint_training(config: ResolvedExperimentConfig, tracker: ExperimentTrac
         components = build_training_components(config)
         dataset, split = load_training_dataset(config, components.graph.edge_id)
         _save_run_files(config, split, run_dir)
+        if getattr(components.model, 'metadata_schema', None) is not None:
+            (run_dir/'metadata_manifest.json').write_text(json.dumps(components.model.metadata_schema, indent=2)+'\n')
         composer = build_loss_composer(training.losses)
         fingerprint = experiment_fingerprint(config, components.graph)
         monitor = _checkpoint_monitor(config)

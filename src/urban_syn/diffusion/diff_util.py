@@ -73,7 +73,8 @@ def std_normal(
 def diffuse_and_denoise(
     net: nn.Module,
     clean: Tensor,
-    diffusion_hyperparams: dict
+    diffusion_hyperparams: dict,
+    *, metadata=None
 ) -> DiffusionForwardOutput:
     """Apply forward diffusion, predict noise, and reconstruct clean input.
 
@@ -110,7 +111,7 @@ def diffuse_and_denoise(
     sqrt_one_minus_alpha = torch.sqrt(1 - alpha_bar_t)
     noisy = sqrt_alpha * clean + sqrt_one_minus_alpha * sampled_noise
 
-    predicted_noise = net(noisy, timesteps)
+    predicted_noise = net(noisy, timesteps, **({"metadata": metadata} if metadata is not None else {}))
     reconstructed = (
         noisy - sqrt_one_minus_alpha * predicted_noise
     ) / sqrt_alpha
@@ -131,7 +132,8 @@ def diff_forward_x0_constraint(
         road_embeddings: torch.Tensor,
         valid_transition_keys: torch.Tensor,
         road_id_base: int,
-        similarity_chunk_size: int = 128
+        similarity_chunk_size: int = 128,
+        *, metadata=None
         ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Compute noise prediction, connectivity, and reconstruction losses.
@@ -171,7 +173,7 @@ def diff_forward_x0_constraint(
     
     xt = torch.sqrt(Alpha_bar[diffusion_steps]) * x + torch.sqrt(1-Alpha_bar[diffusion_steps]) * z  # compute x_t from q(x_t|x_0)
     #这里得到的是噪声, loss函数之一
-    pred_noise = net(xt, diffusion_steps.view(B,1))  # predict \epsilon according to \epsilon_\theta
+    pred_noise = net(xt, diffusion_steps.view(B,1), **({"metadata": metadata} if metadata is not None else {}))  # predict \epsilon according to \epsilon_\theta
     
     noise_func = nn.MSELoss()
     xt_noise = noise_func(pred_noise, z)  #将预测的x0与真实的x0计算loss

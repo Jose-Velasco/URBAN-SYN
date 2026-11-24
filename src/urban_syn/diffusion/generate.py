@@ -278,7 +278,15 @@ def load_generation_model(
     model_state = _checkpoint_model_state(checkpoint)
     _check_graph_ids(model_state, graph)
 
-    model = build_joint_model(graph, settings).to(device)
+    schema = checkpoint.get('metadata_schema')
+    encoder = None
+    if schema is not None:
+        if schema.get('version') != 3:
+            raise ValueError('Unsupported joint metadata schema')
+        from .conditional.conditioning import SparseMetadataEncoder
+        encoder = SparseMetadataEncoder(schema['fields'], **schema['architecture'])
+    model = build_joint_model(graph, settings, metadata_encoder=encoder).to(device)
+    model.metadata_schema = schema
     model.load_state_dict(model_state, strict=True)
     model.eval()
     return model
@@ -356,6 +364,7 @@ def generate_gps_trajectories(
     sampler: Sampler,
     batch_size: int = 2,
     similarity_chunk_size: int | None = None,
+    *, metadata_requests=None, mask_metadata=False,
 ) -> pd.DataFrame:
     """Generate GPS trajectories using an injectable diffusion sampler.
 
@@ -390,6 +399,8 @@ def generate_gps_trajectories(
     road_vocab = road_vocab.detach().cpu().long()
     records: list[dict] = []
     trajectory_id = 0
+    if metadata_requests is not None and len(metadata_requests) != sum(length_counts.values()):
+        raise ValueError('One metadata request per generated trajectory is required')
     # Track rates distributions across all generation batches for sampling diagnostics and visibility.
     rate_diagnostics = RateDiagnostics()
 
@@ -401,6 +412,17 @@ def generate_gps_trajectories(
         for start in range(0, count, batch_size):
             batch_count = min(batch_size, count - start)
 
+            metadata = None
+            if metadata_requests is not None:
+                from .conditional.conditioning import encode_requests
+                schema = getattr(model, 'metadata_schema', None)
+                if schema is None:
+                    raise ValueError('Metadata requests require a conditioned joint checkpoint')
+                requests = metadata_requests[trajectory_id:trajectory_id+batch_count]
+                metadata = encode_requests(requests, schema['fields'], device=road_embeddings.device)
+                if mask_metadata:
+                    for mask in metadata['masks'].values():
+                        mask.zero_()
             # denoseing uses the cached road table: no GNN or graph per batch.
             model_ids, normalized_rates = model.generate_data(
                 graph=None,
@@ -408,7 +430,8 @@ def generate_gps_trajectories(
                 length=length,
                 sampler=sampler,
                 similarity_chunk_size=similarity_chunk_size,
-                road_embeddings=road_embeddings
+                road_embeddings=road_embeddings,
+                **({"metadata": metadata} if metadata is not None else {})
             ) # pyright: ignore[reportCallIssue]
 
             model_ids = torch.as_tensor(model_ids).detach().cpu().long()

@@ -21,7 +21,8 @@ class DDPMSampler:
         schedule: Mapping[str, Any],
         batch_size: int,
         sequence_length: int,
-        feature_dim: int
+        feature_dim: int,
+        *, metadata=None
     ) -> Tensor:
         """Generate trajectory representations using the trained schedule.
 
@@ -54,7 +55,7 @@ class DDPMSampler:
         )
 
         for t in range(diffusion_steps - 1, -1, -1):
-            predicted_noise = denoiser(diff_input, t)
+            predicted_noise = denoiser(diff_input, t, **({"metadata": metadata} if metadata is not None else {}))
 
             coeff1 = 1 / torch.sqrt(alpha[t])
             coeff2 = (1 - alpha[t]) / torch.sqrt(1 - alpha_bar[t])
@@ -76,7 +77,8 @@ def cal_x0_from_noise_ddpm(
     diffusion_hyperparams: dict,
     batchsize: int,
     length: int,
-    feature: int
+    feature: int,
+    *, metadata=None
 ) -> Tensor:
     """Provide the old DDPM sampling function API for existing callers.
 
@@ -98,4 +100,4 @@ def cal_x0_from_noise_ddpm(
     Tensor
         Sampled clean trajectory representations [B, T, F].
     """
-    return DDPMSampler().sample(net, diffusion_hyperparams, batchsize, length, feature)
+    return DDPMSampler().sample(net, diffusion_hyperparams, batchsize, length, feature, metadata=metadata)

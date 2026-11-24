@@ -204,4 +204,76 @@ def load_training_dataset(config: ResolvedExperimentConfig, graph_edge_ids) -> t
         config.settings.experiment.seed,
         settings.enabled
     )
+    if config.settings.model.conditioning.enabled:
+        rows, schema = fitted_metadata(config, dataset, selection)
+        dataset = MetadataDataset(dataset, rows, schema["fields"])
     return dataset, selection
+
+
+class MetadataDataset:
+    """Append metadata to an unchanged canonical trajectory dataset.
+
+    The wrapped dataset owns road tensors, rates, FMM IDs, and lengths. This
+    wrapper neither filters nor reorders trajectories; Subset and the original
+    length sampler operate on exactly the same indices in either toggle state.
+    """
+
+    def __init__(self, dataset, rows, fields):
+        from urban_syn.diffusion.conditional.conditioning import encode_requests
+        if rows.fmm_id.duplicated().any() or set(rows.fmm_id) != set(dataset.fmm_ids):
+            raise ValueError("Metadata FMM IDs differ from sequence dataset")
+        rows = rows.set_index('fmm_id').loc[dataset.fmm_ids]
+        self.dataset = dataset
+        # Convert pandas nulls to None for the raw-request encoder.
+        requests = rows.astype(object).where(pd.notna(rows), None)[[f['name'] for f in fields]].to_dict('records')
+        for row in requests:
+            for field in fields:
+                if field['kind'] == 'categorical' and row[field['name']] is not None:
+                    row[field['name']] = str(row[field['name']])
+        self.metadata = encode_requests(requests, fields)
+
+    @property
+    def fmm_ids(self):
+        return self.dataset.fmm_ids
+
+    @property
+    def lengths(self):
+        return self.dataset.lengths
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, index):
+        metadata = {group: {name: values[index] for name, values in fields.items()}
+                    for group, fields in self.metadata.items()}
+        return (*self.dataset[index], metadata)
+
+
+def fitted_metadata(config, dataset, selection):
+    """Fit only optimizer-training rows; bind the schema to sources and partitions."""
+    from urban_syn.diffusion.conditional.prepared_metadata import load_prepared_metadata
+    from urban_syn.diffusion.conditional.sparse_metadata import fit_fields
+    from urban_syn.diffusion.conditional.metadata import sha256
+    options = config.settings.model.conditioning
+    directory = options.metadata_dir
+    if not directory.is_absolute():
+        directory = config.project_root / directory
+    manifest = load_prepared_metadata(directory)
+    if manifest['sources']['train']['sha256'] != sha256(config.settings.paths.train_sequences):
+        raise ValueError("Metadata was built for different training sequences")
+    for source, configured in [('mapping', config.settings.paths.trip_id_map),
+                               ('test', config.settings.paths.test_sequences)]:
+        if configured is not None and manifest['sources'][source]['sha256'] != sha256(configured):
+            raise ValueError(f'Metadata was built for different {source} inputs')
+    rows = pd.read_parquet(directory/'gen_train.parquet')
+    if rows.fmm_id.duplicated().any() or set(rows.fmm_id) != set(dataset.fmm_ids):
+        raise ValueError("Metadata sequence coverage differs")
+    if not set(options.fields).issubset(manifest['fields']):
+        raise ValueError("Selected fields absent from metadata artifact")
+    ordered = rows.set_index('fmm_id').loc[dataset.fmm_ids]
+    fields = fit_fields(ordered.iloc[list(selection.train_indices)], options.fields)
+    schema = dict(version=3, fields=fields, provenance=manifest,
+                  train_fmm_ids=list(selection.train_fmm_ids), validation_fmm_ids=list(selection.validation_fmm_ids),
+                  architecture=dict(condition_dim=options.condition_dim, all_dropout=options.all_dropout,
+                                    field_dropout=options.field_dropout))
+    return rows, schema

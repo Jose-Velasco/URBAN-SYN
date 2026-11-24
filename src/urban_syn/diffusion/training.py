@@ -19,6 +19,7 @@ from .model import Diff_RNTraj
 def build_joint_model(
     graph: Data,
     settings: JointTrainingSettings,
+    *, metadata_encoder=None,
 ) -> Diff_RNTraj:
     """Build the GNN and diffusion denoiser as one trainable model.
 
@@ -65,6 +66,7 @@ def build_joint_model(
         embedding_dim=diff_settings.hidden_dim,
         pre_dim=gnn_settings.output_dim,
         rdcl=diff_settings.residual_layers,
+        metadata_encoder=metadata_encoder,
     )
 
     model = Diff_RNTraj(
@@ -159,7 +161,12 @@ def train_one_epoch(
     }
     num_batches = 0
 
-    for road_ids, rates in batches:
+    for batch in batches:
+        road_ids, rates = batch[:2]
+        metadata = None
+        if len(batch) == 3:
+            metadata = {group: {name: value.to(graph.x.device) for name, value in fields.items()}
+                        for group, fields in batch[2].items()}
         if (
             settings.max_batches is not None
             and num_batches >= settings.max_batches
@@ -178,6 +185,7 @@ def train_one_epoch(
             graph,
             road_ids,
             normalized_rates,
+            **({"metadata": metadata} if metadata is not None else {})
         )
 
         total_loss = noise_loss + const_loss + x0_loss
