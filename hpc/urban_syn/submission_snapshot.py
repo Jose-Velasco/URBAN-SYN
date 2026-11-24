@@ -120,6 +120,10 @@ def save_submission_snapshot(
         if selected.pretrain_config:
             original = yaml.safe_load(Path(selected.pretrain_config).read_text(encoding="utf-8"))
             original["paths"] = {**original["paths"], "graph_config": f"{relative}/graph.yaml"}
+            if prepared["tracking"]["tags"].get("profile") == "smoke":
+                # Match the local runner: the selected joint smoke budget also caps pretraining.
+                for key in ("epochs", "max_batches", "batch_size"):
+                    original["training"][key] = prepared["training"][key]
             _write_yaml(folder / "pretrain.yaml", original)
             pretrain_file = str(folder / "pretrain.yaml")
             files.append("pretrain.yaml")
