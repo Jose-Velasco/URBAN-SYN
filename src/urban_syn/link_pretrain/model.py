@@ -91,13 +91,38 @@ class DirectionalLinkDecoder(nn.Module):
         # Look up only the requested road embeddings, not every possible pair.
         source_features = embeddings[sources]
         destination_features = embeddings[destinations]
-        pair_features = torch.cat((source_features, destination_features), dim=-1)
+        return self.score_pairs(source_features, destination_features)
 
-        # The decoder accepts 2D features. Flatten aligned negative pairs and
-        # restore their [P, amount] shape after computing one logit per pair.
-        flattened_features = pair_features.reshape(-1, 2 * self.embedding_dim)
-        logits = self.mlp(flattened_features)
-        return logits.reshape(sources.shape)
+    def score_pairs(self, sources: Tensor, destinations: Tensor) -> Tensor:
+        """Return ordered-pair logits directly from continuous road embeddings.
+
+        Args:
+            sources (Tensor): Source embeddings shaped ``[..., embedding_dim]``.
+            destinations (Tensor): Destination embeddings with the same shape,
+                floating-point dtype, and device as ``sources``.
+
+        Returns:
+            Tensor: Raw connectivity logits shaped ``[...]``. The scorer
+                remains differentiable with respect to both input tensors.
+
+        Raises:
+            ValueError: If dimensions, dtypes, or devices are incompatible.
+        """
+        if sources.shape != destinations.shape or sources.ndim < 1:
+            raise ValueError("Source and destination embeddings must have matching shapes.")
+        if sources.size(-1) != self.embedding_dim:
+            raise ValueError(
+                f"Embedding pairs must have width {self.embedding_dim}, "
+                f"received {sources.size(-1)}."
+            )
+        if not sources.is_floating_point() or not destinations.is_floating_point():
+            raise ValueError("Embedding pairs must contain floating-point values.")
+        if sources.dtype != destinations.dtype or sources.device != destinations.device:
+            raise ValueError("Embedding pairs must have matching dtype and device.")
+
+        pair_features = torch.cat((sources, destinations), dim=-1)
+        logits = self.mlp(pair_features.reshape(-1, 2 * self.embedding_dim))
+        return logits.reshape(sources.shape[:-1])
 
 
 class RoadLinkPredictionModel(nn.Module):

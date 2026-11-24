@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from torch_geometric.data import Data
 from urban_syn.gnn.encoder import RoadGNNEncoder
 from .road_ids import encode_transition_keys
+from .gradient_warmup import apply_gradient_warmup
 from collections.abc import Mapping
 from .losses import (
     LossComposer,
@@ -69,6 +70,9 @@ class Diff_RNTraj(nn.Module):
 
         self.diff_model = diff_model
         self.road_encoder = road_encoder
+        # Optional pretrained pair scorer. It is attached by the experiment
+        # factory only when requested and never optimized in initial studies.
+        self.connectivity_scorer: nn.Module | None = None
         self.diffusion_steps = int(diffusion_hyperparams["T"])
         self.similarity_chunk_size = similarity_chunk_size
 
@@ -98,6 +102,21 @@ class Diff_RNTraj(nn.Module):
         )
 
         # self.diffusion_param = diffusion_hyperparams
+
+    def train(self, mode: bool = True) -> "Diff_RNTraj":
+        """Set model training mode while keeping the frozen scorer in eval mode.
+
+        Args:
+            mode (bool): Whether to enable training mode for trainable modules.
+
+        Returns:
+            Diff_RNTraj: This model with the requested mode applied. The
+                optional connectivity scorer remains in evaluation mode.
+        """
+        super().train(mode)
+        if self.connectivity_scorer is not None:
+            self.connectivity_scorer.eval()
+        return self
 
     @property
     def diffusion_param(self) -> dict:
@@ -156,7 +175,8 @@ class Diff_RNTraj(nn.Module):
         self,
         graph: Data,
         src_eid_seqs: torch.Tensor,
-        src_rate_seqs: torch.Tensor
+        src_rate_seqs: torch.Tensor,
+        gnn_gradient_scale: float = 1.0
     ) -> JointTrainingOutput:
         """Encode roads and compute diffusion outputs without calculating losses.
 
@@ -168,6 +188,10 @@ class Diff_RNTraj(nn.Module):
             Model road IDs of shape [B, T], with zero reserved for padding.
         src_rate_seqs : Tensor
             Position rates of shape [B, T], normalized to [-1, 1].
+        gnn_gradient_scale : float, default=1.0
+            Gradient scale applied only to this training forward. The same
+            warmed road table is used for diffusion inputs, reconstruction
+            targets, and any sampled negative embeddings.
 
         Returns
         -------
@@ -175,7 +199,9 @@ class Diff_RNTraj(nn.Module):
             Diffusion intermediate tensors and trainable road embeddings.
             The road embeddings can be reused by additional objectives.
         """
-        road_embeddings = self.encode_roads(graph)
+        road_embeddings = apply_gradient_warmup(
+            self.encode_roads(graph), gnn_gradient_scale
+        )
         embedded_roads = road_embeddings[src_eid_seqs.long()]
 
         clean = torch.cat(
@@ -199,7 +225,7 @@ class Diff_RNTraj(nn.Module):
         output: JointTrainingOutput,
         composer: LossComposer,
         step: int = 0,
-        batch: Mapping[str, torch.Tensor] | None = None
+        batch: Mapping[str, torch.Tensor | int] | None = None
     ) -> LossResult:
         """Evaluate independently configured objectives on shared model outputs.
 
@@ -211,7 +237,7 @@ class Diff_RNTraj(nn.Module):
             Injected loss implementations and their combination policy.
         step : int, default=0
             Zero-based optimizer step controlling metric-only frequency.
-        batch : Mapping[str, Tensor] | None, default=None
+        batch : Mapping[str, Tensor | int] | None, default=None
             Optional auxiliary tensors for additional objectives.
 
         Returns

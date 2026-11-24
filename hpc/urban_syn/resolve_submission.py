@@ -1,24 +1,42 @@
-"""Resolve an individual experiment or study selection for Slurm submission.
+"""Resolve selected study experiments and their Slurm checkpoint dependencies.
 
-The program only reads YAML; it does not import PyTorch or submit jobs.
-Both the login-node submitter and the container can use the same decisions.
+All substantive input validation lives in config_validation.py. The batch-node
+checkpoint and snapshot helpers remain standard-library-only.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
-import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+# The resolver is also loaded directly by path from HPC scripts and regression tests.
+_SCRIPT_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+
+from config_validation import (
+    HPCSettings, StudyExperiment, StudyFile, StudySettings,
+    detect_pipeline, inside_project, read_yaml_mapping,
+    validate_encoder_source, validate_pretraining_dependency,
+    validate_published_encoder_reference, validate_source_graph,
+    validate_study_entry, validate_study_graph
+)
+
+_read_yaml = read_yaml_mapping
+_inside_project = inside_project
+_pipeline = detect_pipeline
+
 
 @dataclass(frozen=True)
 class Submission:
-    """Validated experiment selection and optional Slurm defaults."""
+    """Resolved experiment selection and shell-compatible Slurm defaults."""
 
     config: Path
     pipeline: str
@@ -36,251 +54,217 @@ class Submission:
     source_run: str = ""
     pretrained_from: str = ""
     pretrain_config: str = ""
+    source_study_name: str = ""
+    job_name: str = ""
+    pretrain_job_name: str = ""
+    composed_config: dict[str, Any] | None = None
 
 
-def _read_yaml(path: Path) -> dict[str, Any]:
-    """Read a mapping from YAML, rejecting empty or malformed documents."""
-    if not path.is_file():
-        raise FileNotFoundError(f"YAML file not found: {path}")
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError(f"Expected a YAML mapping: {path}")
-    return data
+def _compose(root: Path, config_dir: Path, preset: str) -> dict[str, Any]:
+    """Load the standalone Hydra composer without requiring an HPC package."""
+    source = root / "hpc/urban_syn/compose_experiment.py"
+    spec = importlib.util.spec_from_file_location("urban_syn_hydra_composer", source)
+    if spec is None or spec.loader is None:
+        raise FileNotFoundError(f"Hydra composer not found: {source}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.compose_experiment(config_dir, preset)
 
 
-def _inside_project(value: str, root: Path) -> Path:
-    """Resolve repository-relative paths without allowing outside files."""
-    path = Path(value).expanduser()
-    path = (path if path.is_absolute() else root / path).resolve()
-    if not path.is_relative_to(root):
-        raise ValueError(f"Experiment files must be inside the project: {path}")
-    return path
+def _job_names(config: dict[str, Any]) -> tuple[str, str]:
+    """Generate compact job names from the validated preset metadata."""
+    tags = config["tracking"]["tags"]
+    architecture = tags["gnn_architecture"]
+    objective = tags["connectivity_loss"]
+    strategy = tags["gnn_update"]
+    mode = ("base-warm" if strategy == "warmup" else "base") if objective == "none" else (
+        f"{objective}-{'warm' if strategy == 'warmup' else 'frz'}"
+    )
+    if tags.get("profile") == "smoke":
+        mode = mode.replace("warm", "wrm")
+    suffix = "-s" if tags.get("profile") == "smoke" else ""
+    return (f"us-j-{architecture}-{mode}{suffix}",
+            f"us-p-{architecture}-{tags['pretraining_objective']}")
 
 
-def _pipeline(experiment: dict[str, Any], config_path: Path) -> str:
-    """Identify an existing pipeline without introducing new YAML keys.
+def _study_experiment(
+    root: Path, study: str, experiment_key: str
+) -> tuple[StudyFile, StudyExperiment, str]:
+    """Validate the study and return the selected entry without file writes."""
+    data = StudyFile.model_validate(_read_yaml(_inside_project(study, root)))
+    if experiment_key not in data.study.experiments:
+        raise ValueError(f"Experiment '{experiment_key}' is not listed in {study}.")
+    entry = data.study.experiments[experiment_key]
+    if isinstance(entry, str):
+        entry = StudyExperiment(config=entry)
+    validate_study_entry(entry, experiment_key)
+    return data, entry, data.study.name
 
-    Both experiment schemas reject unknown top-level keys. We distinguish
-    them by their existing 'pretraining' and 'model.diffusion' sections.
-    """
-    pretrain = "pretraining" in experiment
-    joint = isinstance(experiment.get("model"), dict) and "diffusion" in experiment["model"]
-    if pretrain == joint:
-        raise ValueError(f"Cannot distinguish link pretraining from joint diffusion: {config_path}")
-    return "link_pretrain" if pretrain else "joint"
+
+def _selected_published_encoder(
+    root: Path, source_study: str, source_experiment: str
+) -> tuple[str, str]:
+    """Resolve the exact encoder referenced by a completed study selection."""
+    reference_path = (root / "outputs/experiments/studies" / source_study / source_experiment / "selected_encoder.json")
+    if not reference_path.is_file():
+        raise FileNotFoundError(
+            f"No completed encoder has been published for '{source_experiment}' in "
+            f"study '{source_study}'. Submit that pretraining experiment first, "
+            f"then retry. Expected: {reference_path}"
+        )
+    reference = json.loads(reference_path.read_text(encoding="utf-8"))
+    return validate_published_encoder_reference(root, reference, reference_path, source_study, source_experiment)
+
+
+def _pretraining_source(
+    root: Path, settings: StudySettings, source_name: str, study_path: str
+) -> tuple[Path, dict[str, Any]]:
+    """Load a study's link-pretraining experiment, without resolving weights."""
+    entry = settings.experiments.get(source_name)
+    if entry is None:
+        raise ValueError(f"pretrained_from must name an experiment in {study_path}.")
+
+    config = entry if isinstance(entry, str) else entry.config
+    if config is None:
+        raise ValueError(f"Source experiment '{source_name}' needs a config path.")
+
+    path = _inside_project(config, root)
+    source = _read_yaml(path)
+    if _pipeline(source, path) != "link_pretrain":
+        raise ValueError(f"pretrained_from '{source_name}' must reference link pretraining.")
+    return path, source
+
+
+def _resolve_pretraining_dependency(
+    root: Path, settings: StudySettings, study_path: str, source_name: str,
+    source_study: str, joint: dict[str, Any], hydra_preset: bool, pending: bool
+) -> tuple[Path, str, str]:
+    """Validate the producing study entry and optionally find its published encoder."""
+    source_path, source = _pretraining_source(root, settings, source_name, study_path)
+    validate_source_graph(root, settings, source, joint, source_name, hydra_preset)
+    validate_encoder_source(joint)
+
+    if pending:
+        return source_path, "", ""
+    checkpoint, run_id = _selected_published_encoder(root, source_study, source_name)
+    return source_path, checkpoint, run_id
 
 
 def resolve_submission(
-    root: Path, *, config: str | None = None,
-    study: str | None = None, experiment_key: str | None = None,
-    pending_pretrain: bool = False
+    root: Path, *, study: str, experiment_key: str, pending_pretrain: bool = False
 ) -> Submission:
-    """Resolve YAML selection and scheduling defaults without side effects.
+    """Resolve a named study experiment and its pretraining dependency.
 
     Args:
-        root: Repository root containing the experiment YAML files.
-        config: Standalone experiment YAML path, relative to the root.
-        study: Optional YAML grouping several experiments and Slurm defaults.
-        experiment_key: Name of one experiment listed in the study.
-        pending_pretrain: Validate the pretraining dependency without requiring
-            an existing encoder. Used when Slurm will run pretraining first.
+        root: Repository root containing the study and its referenced inputs.
+        study: Study catalog YAML, relative to the repository or absolute.
+        experiment_key: Experiment name in the catalog.
+        pending_pretrain: Permit a pending upstream pretraining job without weights.
 
     Returns:
-        Submission with an absolute config path, pipeline, and scheduling defaults.
-
-    Raises:
-        ValueError: For invalid selection, paths, or unsupported settings.
+        Resolved experiment, checkpoint source, and Slurm defaults.
     """
     root = root.resolve()
-    if (config is None) == (study is None):
-        raise ValueError("Choose either --config or --study, not both.")
+    if not study or not experiment_key:
+        raise ValueError("--study and --experiment are required.")
 
-    defaults: dict[str, Any] = {}
-    study_name = ""
+    document, entry, study_name = _study_experiment(root, study, experiment_key)
+    settings = document.study
+    pretrained_from = entry.pretrained_from
+    source_study_name = entry.source_study or study_name
+    composed: dict[str, Any] | None = None
+    job_name = ""
+    pretrain_job_name = ""
+
+    if entry.preset is not None:
+        if settings.composition is None:
+            raise ValueError("Hydra entries require study.composition to name the config directory.")
+        config_dir = _inside_project(settings.composition, root)
+        composed = _compose(root, config_dir, entry.preset)
+        path = _inside_project(config_dir / "base.yaml", root)
+        job_name, pretrain_job_name = _job_names(composed)
+    else:
+        if entry.config is None:
+            raise ValueError(f"Study experiment '{experiment_key}' needs a config path.")
+        path = _inside_project(entry.config, root)
+
+    data = composed if composed is not None else _read_yaml(path)
+    pipeline = _pipeline(data, path)
+    if settings.composition and pipeline == "link_pretrain":
+        # Named link pretraining entries reference standalone training YAMLs.
+        # Their resolved configs can also be snapshotted by the submitter.
+        composed = data
+        graph = _read_yaml(_inside_project(data["paths"]["graph_config"], root))
+        architecture = graph["model"]["gnn"]["architecture"]
+        job_name = f"us-p-{architecture}-{data['pretraining']['objective']}"
+
     encoder_checkpoint = ""
     source_run = ""
-    pretrained_from = None
     source_path: Path | None = None
-    experiments: dict[str, Any] = {}
-    if study is not None:
-        if not experiment_key:
-            raise ValueError("--experiment is required with --study.")
-        study_data = _read_yaml(_inside_project(study, root))
-        if set(study_data) - {"study", "hpc"}:
-            raise ValueError("Study YAML accepts only 'study' and 'hpc' sections.")
-        study_info = study_data.get("study")
-        if not isinstance(study_info, dict):
-            raise ValueError("Study YAML requires a 'study' mapping.")
-        study_name = str(study_info.get("name", ""))
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", study_name):
-            raise ValueError("study.name must be a nonempty directory-safe name.")
-        experiments = study_info.get("experiments")
-        if not isinstance(experiments, dict) or experiment_key not in experiments:
-            raise ValueError(f"Experiment '{experiment_key}' is not listed in {study}.")
-        entry = experiments[experiment_key]
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", experiment_key):
-            raise ValueError("Study experiment keys must be directory-safe names.")
-        if isinstance(entry, dict):
-            unknown = set(entry) - {"config", "pretrained_from"}
-            if unknown:
-                raise ValueError(f"Unknown settings for experiment '{experiment_key}': {sorted(unknown)}")
-            pretrained_from = entry.get("pretrained_from")
-        # Either a path string or an explicit {config: path} is supported.
-        config = entry.get("config") if isinstance(entry, dict) else entry
-        if not isinstance(config, str) or not config.strip():
-            raise ValueError(f"Experiment '{experiment_key}' needs a config path.")
-        defaults = study_data.get("hpc") or {}
-        if not isinstance(defaults, dict):
-            raise ValueError("Study hpc settings must be a mapping.")
-        supported = {
-            "partition", "gres", "time", "memory", "cpus_per_task",
-            "mail_user", "mail_type", "exclude_nodes"
-        }
-        if set(defaults) - supported:
-            raise ValueError(f"Unknown HPC settings: {sorted(set(defaults) - supported)}")
-
-    if not isinstance(config, str) or not config.strip():
-        raise ValueError("An experiment config path is required.")
-    path = _inside_project(config, root)
-    data = _read_yaml(path)
-    pipeline = _pipeline(data, path)
-
     if pretrained_from is not None:
-        if pipeline != "joint":
-            raise ValueError("pretrained_from is only supported for joint diffusion experiments.")
-        if not isinstance(pretrained_from, str) or pretrained_from not in experiments:
-            raise ValueError(f"pretrained_from must name an experiment in {study}.")
-        source_entry = experiments[pretrained_from]
-        source_config = source_entry.get("config") if isinstance(source_entry, dict) else source_entry
-        if not isinstance(source_config, str):
-            raise ValueError(f"Source experiment '{pretrained_from}' needs a config path.")
-        source_path = _inside_project(source_config, root)
-        source_data = _read_yaml(source_path)
-        if _pipeline(source_data, source_path) != "link_pretrain":
-            raise ValueError(f"pretrained_from '{pretrained_from}' must reference link pretraining.")
-        source_graph = (source_data.get("paths") or {}).get("graph_config")
-        study_graph = study_info.get("graph_config")
-        if (not isinstance(source_graph, str) or not isinstance(study_graph, str) or
-                _inside_project(source_graph, root) != _inside_project(study_graph, root)):
-            raise ValueError(
-                f"Pretraining source '{pretrained_from}' must use the study's graph YAML."
-            )
-        encoder_options = (data.get("model") or {}).get("road_encoder") or {}
-        if encoder_options.get("initialization") != "pretrained":
-            raise ValueError("Study pretrained_from requires model.road_encoder.initialization=pretrained.")
-        if encoder_options.get("checkpoint") is not None:
-            raise ValueError(
-                "Set model.road_encoder.checkpoint: null when using study pretrained_from "
-                "to avoid two competing checkpoint selections."
-            )
-        if not pending_pretrain:
-            reference_path = (
-                root / "outputs/experiments/studies" / study_name /
-                pretrained_from / "selected_encoder.json"
-            )
-            if not reference_path.is_file():
-                raise FileNotFoundError(
-                    f"No completed encoder has been published for '{pretrained_from}' in "
-                    f"study '{study_name}'. Submit that pretraining experiment first, "
-                    f"then retry. Expected: {reference_path}"
-                )
-            reference = json.loads(reference_path.read_text(encoding="utf-8"))
-            if (not isinstance(reference, dict) or reference.get("format_version") != 1 or
-                    reference.get("study_name") != study_name or
-                    reference.get("experiment_key") != pretrained_from):
-                raise ValueError(f"Invalid or mismatched pretraining reference: {reference_path}")
-            source_run = str(reference.get("run_id", ""))
-            run_dir = reference.get("run_dir")
-            encoded = reference.get("encoder_checkpoint")
-            if not source_run or not isinstance(run_dir, str) or not isinstance(encoded, str):
-                raise ValueError(f"Incomplete pretraining reference: {reference_path}")
-            run_path = _inside_project(run_dir, root)
-            selected_path = _inside_project(encoded, root)
-            if selected_path != run_path / "checkpoints/encoder.pt":
-                raise ValueError(f"Pretraining reference has an unexpected encoder path: {reference_path}")
-            if run_path.name != source_run or not selected_path.is_file():
-                raise FileNotFoundError(
-                    f"Selected pretrained encoder is missing or does not match its run: {selected_path}"
-                )
-            encoder_checkpoint = str(selected_path)
+        validate_pretraining_dependency(pipeline, settings, study)
+        source_path, encoder_checkpoint, source_run = _resolve_pretraining_dependency(
+            root, settings, study, pretrained_from, source_study_name,
+            data, composed is not None, pending_pretrain
+        )
 
-    # A study's shared graph is a consistency check, not a second copy of the
-    # graph feature settings. The individual YAML remains standalone-valid.
-    if study is not None:
-        graph_ref = study_info.get("graph_config")
-        if graph_ref is not None:
-            config_graph = (data.get("paths") or {}).get("graph_config")
-            if not isinstance(config_graph, str):
-                raise ValueError(f"Missing paths.graph_config in {path}")
-            if _inside_project(graph_ref, root) != _inside_project(config_graph, root):
-                raise ValueError(f"Graph YAML differs from the study for {experiment_key}: {config_graph}")
+    validate_study_graph(root, settings.graph_config, data, experiment_key)
 
-    def setting(name: str) -> str:
-        value = defaults.get(name)
-        if value is None:
-            return ""
-        if not isinstance(value, (str, int)):
-            raise ValueError(f"hpc.{name} must be a string or integer.")
-        result = str(value)
-        if "\n" in result or "\r" in result:
-            raise ValueError(f"hpc.{name} cannot contain line breaks.")
-        return result
-
-    # Slurm expects a comma-separated host list for --exclude. Let the study
-    # express it as a readable YAML list, and validate names before forwarding.
-    excluded = defaults.get("exclude_nodes", [])
-    if not isinstance(excluded, list):
-        raise ValueError("hpc.exclude_nodes must be a list of node names.")
-    for node in excluded:
-        if not isinstance(node, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", node):
-            raise ValueError("hpc.exclude_nodes contains an invalid node name.")
-
+    hpc = document.hpc
     return Submission(
         config=path, pipeline=pipeline,
-        partition=setting("partition"), gres=setting("gres"),
-        time=setting("time"), memory=setting("memory"),
-        cpus=setting("cpus_per_task"), mail_user=setting("mail_user"),
-        mail_type=setting("mail_type"), study_name=study_name,
-        experiment_key=experiment_key or "", exclude_nodes=",".join(excluded),
+        partition=hpc.shell_value("partition"), gres=hpc.shell_value("gres"),
+        time=hpc.shell_value("time"), memory=hpc.shell_value("memory"),
+        cpus=hpc.shell_value("cpus_per_task"), mail_user=hpc.shell_value("mail_user"),
+        mail_type=hpc.shell_value("mail_type"), study_name=study_name,
+        experiment_key=experiment_key, exclude_nodes=",".join(hpc.exclude_nodes),
         encoder_checkpoint=encoder_checkpoint, source_run=source_run,
         pretrained_from=pretrained_from or "",
-        pretrain_config=str(source_path) if source_path is not None else ""
+        pretrain_config=str(source_path) if source_path is not None else "",
+        source_study_name=source_study_name,
+        job_name=job_name or ("urban-syn-joint" if pipeline == "joint" else "urban-syn-pretrain"),
+        pretrain_job_name=pretrain_job_name or "urban-syn-pretrain",
+        composed_config=composed
     )
 
 
 def main() -> int:
-    """Emit newline-separated fields for the shell or a single requested field."""
+    """Emit fields for the existing Bash submitter without executing jobs."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-root", required=True, type=Path)
-    selection = parser.add_mutually_exclusive_group(required=True)
-    selection.add_argument("--config")
-    selection.add_argument("--study")
-    parser.add_argument("--experiment")
+    parser.add_argument("--study", required=True, help="Study catalog YAML")
+    parser.add_argument("--experiment", required=True, help="Experiment name in the study")
     parser.add_argument("--field", choices=("pipeline", "config"))
-    parser.add_argument(
-        "--pending-pretrain", action="store_true",
-        help="Validate source YAML without requiring an existing pretraining checkpoint"
-    )
+    parser.add_argument("--snapshot", action="store_true", help="Save immutable Hydra submission files")
+    parser.add_argument("--source-job-id", default="", help="Producing Slurm job ID for the snapshot")
+    parser.add_argument("--selected-encoder", default="", help="Manual encoder reference for the snapshot")
+    parser.add_argument("--pending-pretrain", action="store_true")
     args = parser.parse_args()
     try:
         selected = resolve_submission(
-            args.project_root, config=args.config, study=args.study,
+            args.project_root, study=args.study,
             experiment_key=args.experiment, pending_pretrain=args.pending_pretrain
         )
-    except (ValueError, FileNotFoundError, yaml.YAMLError) as error:
+        if args.snapshot and selected.composed_config is not None:
+            from submission_snapshot import save_submission_snapshot
+            selected = save_submission_snapshot(
+                args.project_root, selected, source_job_id=args.source_job_id,
+                selected_encoder=args.selected_encoder
+            )
+    except (ValueError, RuntimeError, OSError, KeyError, TypeError, yaml.YAMLError) as error:
         parser.exit(2, f"ERROR: {error}\n")
 
     if args.field:
         print(getattr(selected, args.field))
     else:
-        # One field per line, in a fixed order. The submitter never evaluates
-        # this output as shell code, including paths with spaces.
         for value in (
             selected.config, selected.pipeline, selected.partition, selected.gres,
             selected.time, selected.memory, selected.cpus, selected.mail_user,
             selected.mail_type, selected.study_name, selected.experiment_key,
             selected.exclude_nodes, selected.encoder_checkpoint, selected.source_run,
-            selected.pretrained_from, selected.pretrain_config
+            selected.pretrained_from, selected.pretrain_config,
+            selected.source_study_name, selected.job_name, selected.pretrain_job_name
         ):
             print(value)
     return 0

@@ -235,7 +235,7 @@ def _execution_paths(
     A standalone test needs an explicit prior run or checkpoint; it never
     silently starts a new run with an untrained model.
     """
-    if args.dry_run or args.validate_only or args.target == "validate":
+    if args.dry_run or args.validate_only or args.target in ("validate", "prepare-graph"):
         return None, None
 
     checkpoint_option = args.checkpoint
@@ -291,6 +291,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             selected_splits = None
             fixed_samples = None
             trained = None
+
+            def prepare_graph_handler(experiment: ResolvedLinkPretrainConfig) -> None:
+                """Reuse the joint pipeline's graph builder before model loading."""
+                from urban_syn.experiment.graph_preparation import prepare_experiment_graph
+
+                prepare_experiment_graph(experiment)
 
             def validate_handler(experiment: ResolvedLinkPretrainConfig) -> None:
                 """Validate and retain graph tensors for subsequent handlers."""
@@ -363,6 +369,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
 
             handlers = {
+                "prepare-graph": prepare_graph_handler,
                 "validate": validate_handler,
                 "prepare": prepare_handler,
                 "train": train_handler,

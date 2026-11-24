@@ -33,7 +33,7 @@ class LossContext:
     similarity_chunk_size : int
         Number of reconstructed road vectors decoded per chunk.
     batch : Mapping[str, Tensor]
-        Optional auxiliary batch tensors for future objectives.
+        Optional batch values including source road IDs and sampling step.
     """
 
     diffusion: DiffusionForwardOutput
@@ -41,7 +41,7 @@ class LossContext:
     valid_transition_keys: Tensor
     road_id_base: int
     similarity_chunk_size: int = 128
-    batch: Mapping[str, Tensor] = field(default_factory=dict)
+    batch: Mapping[str, Tensor | int] = field(default_factory=dict)
 
 
 class LossFunction(Protocol):

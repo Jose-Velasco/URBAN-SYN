@@ -169,5 +169,7 @@ temp-baseline/
 container_exports/
 hpc_mlflow_snapshot/
 
+tests/
+
 # Preserve Python source, YAML configs, and project metadata in case future
 # Dockerfiles need to COPY them. Do not exclude src/, configs/, or models/.

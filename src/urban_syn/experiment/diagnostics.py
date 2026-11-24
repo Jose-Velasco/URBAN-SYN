@@ -249,7 +249,9 @@ class EmbeddingDiagnostics:
         sample_size: int,
         seed: int,
         metrics: Sequence[EmbeddingMetric] | None = None,
-        source: RoadEmbeddingSource | None = None
+        source: RoadEmbeddingSource | None = None,
+        road_indices: Tensor | None = None,
+        metric_split: str = "train"
     ):
         """Configure a reproducible road sample and its metric strategies.
 
@@ -260,6 +262,9 @@ class EmbeddingDiagnostics:
                 similarity, feature variance, and collapse measurements.
             source: Model adapter producing padding-free ``[N, D]`` embeddings.
                 Defaults to the joint model's encode_road_nodes interface.
+            road_indices: Optional zero-based roads from the selected trajectory
+                partition. When omitted, sample from the full road graph.
+            metric_split: Prefix for logged metrics, ``train`` or ``val``.
         """
         if sample_size < 1:
             raise ValueError("sample_size must be positive.")
@@ -271,6 +276,17 @@ class EmbeddingDiagnostics:
         self._previous: Tensor | None = None
         self._num_roads: int | None = None
         self._sampled_road_ids: Tensor | None = None
+        if metric_split not in ("train", "val"):
+            raise ValueError("Embedding metric split must be train or val.")
+        self.metric_split = metric_split
+        if road_indices is not None:
+            if road_indices.ndim != 1 or road_indices.dtype != torch.long:
+                raise ValueError("road_indices must be a one-dimensional long tensor.")
+            if road_indices.numel() == 0:
+                raise ValueError("road_indices cannot be empty.")
+            self.road_indices = torch.unique(road_indices.detach().cpu(), sorted=True)
+        else:
+            self.road_indices = None
 
     def _select_roads(self, embeddings: Tensor) -> Tensor:
         """Select physical road rows once from an unpadded ``[N, D]`` tensor."""
@@ -279,7 +295,14 @@ class EmbeddingDiagnostics:
         num_roads = embeddings.shape[0]
         if self._indices is None:
             generator = torch.Generator(device="cpu").manual_seed(self.seed)
-            self._indices = torch.randperm(num_roads, generator=generator)[:self.sample_size]
+            candidates = (
+                torch.arange(num_roads, dtype=torch.long)
+                if self.road_indices is None else self.road_indices
+            )
+            if bool(((candidates < 0) | (candidates >= num_roads)).any()):
+                raise ValueError("Selected monitoring road is outside the graph.")
+            permutation = torch.randperm(candidates.numel(), generator=generator)
+            self._indices = candidates[permutation[:self.sample_size]]
             self._num_roads = num_roads
         elif num_roads != self._num_roads:
             raise ValueError("The road vocabulary size changed between observations.")
@@ -327,33 +350,39 @@ class EmbeddingDiagnostics:
         return path
 
     @torch.no_grad()
-    def observe(self, model: nn.Module, graph: Data) -> dict[str, float]:
-        """Compute current embedding diagnostics from one eval-mode GNN pass.
+    def observe_embeddings(self, embeddings: Tensor, graph: Data) -> dict[str, float]:
+        """Update the fixed-road metrics using an existing graph embedding table.
 
         Args:
-            model: Model understood by the injected road embedding source.
-            graph: Device-ready message-passing graph for this experiment.
+            embeddings: Evaluation-mode road embeddings ``[num_roads, D]``.
+            graph: Graph providing road-ID order for identity checks.
 
         Returns:
-            Named scalar embedding metrics, including drift when there is a
-            previous snapshot. The snapshot is held on CPU without gradients.
+            Current representation metrics, including drift after the first
+            observation. No GNN forward pass is performed here.
         """
+        current = self._select_roads(embeddings)
+        self._verify_road_ids(graph)
+        result: dict[str, float] = {}
+        for metric in self.metrics:
+            values = metric.compute(current, self._previous)
+            overlap = result.keys() & values.keys()
+            if overlap:
+                raise ValueError(f"Embedding diagnostics returned duplicate keys: {sorted(overlap)}")
+            result.update(values)
+        self._previous = current
+        if self.metric_split == "val":
+            return {key.replace("train/", "val/", 1): value for key, value in result.items()}
+        return result
+
+    @torch.no_grad()
+    def observe(self, model: nn.Module, graph: Data) -> dict[str, float]:
+        """Encode the road graph once in evaluation mode and record metrics."""
         encoder = self.source.module(model)
         was_training = encoder.training
         encoder.eval()
         try:
-            # Message passing needs the entire graph before subset extraction.
-            current = self._select_roads(self.source.encode(model, graph))
-            self._verify_road_ids(graph)
-            result: dict[str, float] = {}
-            for metric in self.metrics:
-                values = metric.compute(current, self._previous)
-                overlap = result.keys() & values.keys()
-                if overlap:
-                    raise ValueError(f"Embedding diagnostics returned duplicate keys: {sorted(overlap)}")
-                result.update(values)
-            self._previous = current
-            return result
+            return self.observe_embeddings(self.source.encode(model, graph), graph)
         finally:
             encoder.train(was_training)
 

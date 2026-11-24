@@ -1,0 +1,113 @@
+# Road graph preparation shared by every full-training experiment in this folder.
+# Source: NYC road GeoPackage + TRAINING-ONLY FMM matches (never the held-out test matches).
+# Important: dataset.root caches road_graph.pt and preprocessor.joblib. New feature/transform
+# choices require a different dataset.root or a deliberate rebuild of BOTH cached files.
+# The graph file owns road/GNN settings; diffusion/training lives in each experiment YAML.
+
+dataset:
+  network_path: fmm_scripts/data/road_network/nyc.gpkg   # Existing network, not downloaded here.
+  layer: roads                                             # GeoPackage layer name.
+  root: outputs/pyg/nyc_full_training                     # Dedicated cache; don't reuse an older smoke graph.
+
+features:
+  numeric: [log_length, speed_kph, lanes, width]          # Numeric road measurements.
+  categorical: [highway, surface, access, junction]       # One-hot-encoded OSM road tags.
+  boolean: [oneway, bridge, tunnel]                       # Road flags.
+  geometry: [start_lon, start_lat, mid_lon, mid_lat, end_lon, end_lat, bearing_sin, bearing_cos, straightness]
+  # Other supported geographic features: relative_x_km, relative_y_km.
+
+graph:
+  allow_self_loops: false       # A road does not connect to itself unless explicitly allowed.
+  transforms:
+    # Node features. Expensive centralities / spectral transforms are computed at graph-build time.
+    degree_features:
+      enabled: true
+      log_scale: true
+    local_degree_profile:
+      enabled: true
+      log_scale: true
+    random_walk_pe:
+      enabled: true
+      walk_length: 3
+      drop_first: true
+    pagerank_features:
+      enabled: true
+      alpha: 0.85
+      tolerance: 1.0e-8
+    clustering_features:
+      enabled: true
+      turbo: false
+    betweenness:
+      enabled: true
+      k: 100                 # Approximate rather than exact betweenness on the large NYC graph.
+      seed: 42
+      normalized: true
+      parallel: false       # Predictable memory/reproducibility for the initial configuration.
+    constraint_features:
+      enabled: true
+    laplacian_pe:
+      enabled: true
+      k: 16
+
+    # Empirical road-transition probability from train cpath CSV. Never use test FMM matches.
+    edge_transition_count:
+      enabled: true
+      match_csv: fmm_scripts/outputs/nyc_15s_enriched_moves/nyc_15s_train_fmm_matches.csv
+      smoothing:
+        method: additive    # Current implementation supports only additive smoothing.
+        alpha: 1.0
+
+    # Optional alternatives. Enable and add the resulting names to model.edge_features.
+    adamic_adar_edge_features:
+      enabled: false
+      batch_size: 25000
+    random_walk_edge_features:
+      enabled: false        # Requires the random_walk_pe node transform above.
+    laplacian_edge_features:
+      enabled: false        # Requires the laplacian_pe node transform above.
+
+model:
+  # Only selected processed groups are passed into the encoder; ordering matters for checkpoints.
+  node_features:
+    - x                     # OSM and geographic fields from features above.
+    - degree_features
+    - local_degree_profile
+    - random_walk_pe
+    - pagerank_features
+    - clustering_features
+    - betweenness
+    - constraint_features
+    - laplacian_pe
+  edge_features:
+    - edge_transition_prob  # Smoothed probabilities from the training-only FMM CSV.
+    # - edge_transition_count
+    # - adamic_adar_edge_features
+    # - random_walk_edge_features
+    # - laplacian_edge_features
+  gnn:
+    architecture: gine      # Must match the selected pretrained GNN checkpoint.
+    hidden_dim: 256
+    output_dim: 128
+    num_layers: 3
+    dropout: 0.45
+    activation: relu        # Also supports e.g. gelu, elu, leaky_relu via PyG resolver.
+    normalization: layer    # layer | layer_norm | batch | batch_norm | none | null
+    residual: true
+
+    gatv2:
+      heads: 4
+      concat: true
+      final_concat: true
+      attention_dropout: 0.5
+      add_self_loops: false  # Different from graph.allow_self_loops (physical topology).
+    
+    gine:                   # GINE layer and MLP settings.
+      train_eps: true
+      eps: 0.0
+      mlp:
+        hidden_dim: 128
+        num_layers: 3
+        activation: relu
+        dropout: 0.45
+        normalization: layer_norm
+        plain_last: true

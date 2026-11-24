@@ -16,6 +16,7 @@ from torch import nn
 from torch.optim import Adam, AdamW, Optimizer
 from torch.optim.lr_scheduler import CosineAnnealingLR, LRScheduler, ReduceLROnPlateau
 
+from urban_syn.diffusion.connectivity import ConnectivityBCE, ConnectivityBPR
 from urban_syn.diffusion.losses import (
     ConfiguredLoss,
     HardConnectivity,
@@ -31,6 +32,7 @@ from .config import LossSettings, OptimizerSettings, ResolvedExperimentConfig, S
 
 if TYPE_CHECKING:
     from torch_geometric.data import Data
+    from urban_syn.link_pretrain.model import DirectionalLinkDecoder
 
 
 Scheduler = LRScheduler | ReduceLROnPlateau | None
@@ -112,20 +114,23 @@ def load_experiment_graph(config: ResolvedExperimentConfig, device: torch.device
 def build_model(config: ResolvedExperimentConfig, graph: Data) -> nn.Module:
     """Create a joint diffusion model with the configured GNN initialization.
 
-    Random starts preserve the existing joint-training behavior. Pretrained
-    starts load *only* encoder weights, never the pretraining link decoder.
+    Random starts preserve existing behavior. The optional frozen scorer is
+    loaded from the same pretraining run as its paired encoder.
     """
     from urban_syn.diffusion.training import build_joint_model
 
     from .pretrained_encoder import load_pretrained_encoder
+    from .pretrained_scorer import load_pretrained_scorer
 
     model = build_joint_model(graph, config.joint_settings)
     settings = config.settings.model.road_encoder
     if settings.initialization == "pretrained" and config.settings.training.checkpoint.resume_from is None:
-        # On a new run, transfer only GNN weights from encoder.pt. A resumed
-        # joint checkpoint restores the *entire* model; its original encoder.pt
-        # does not need to remain available for recovery.
+        # A resumed joint checkpoint restores the encoder after construction.
         load_pretrained_encoder(model, graph, config)
+
+    if config.settings.model.connectivity_scorer.enabled:
+        scorer = load_pretrained_scorer(model, graph, config)
+        model.connectivity_scorer = scorer.to(graph.x.device)
 
     if not settings.trainable:
         # Must happen before optimizer creation, otherwise frozen parameters
@@ -232,13 +237,24 @@ def build_training_components(
     )
 
 
-def build_loss_composer(settings: LossSettings) -> LossComposer:
+def build_loss_composer(
+    settings: LossSettings,
+    scorer: DirectionalLinkDecoder | None = None,
+    graph: Data | None = None,
+    sampling_seed: int = 0
+) -> LossComposer:
     """Construct the enabled training objectives from validated settings.
 
     Parameters
     ----------
     settings : LossSettings
         Selection, weight, and frequency of each available loss.
+    scorer : DirectionalLinkDecoder | None, default=None
+        Injected frozen MLP, required when connectivity guidance is enabled.
+    graph : Data | None, default=None
+        Current directed road graph, needed only for BPR negative sampling.
+    sampling_seed : int, default=0
+        Experiment seed for reproducible sampling and checkpoint resumes.
 
     Returns
     -------
@@ -264,6 +280,40 @@ def build_loss_composer(settings: LossSettings) -> LossComposer:
             include_in_total=choice.include_in_total,
             every_steps=choice.every_steps,
             differentiable=differentiable
+        ))
+
+    guidance = settings.connectivity_bce
+    if guidance.enabled:
+        if scorer is None:
+            raise ValueError("BCE connectivity guidance requires a pretrained scorer.")
+        selected.append(ConfiguredLoss(
+            name="connectivity_bce",
+            function=ConnectivityBCE(scorer),
+            weight=guidance.weight,
+            include_in_total=guidance.include_in_total,
+            every_steps=guidance.every_steps,
+            differentiable=True
+        ))
+
+    ranking = settings.connectivity_bpr
+    if ranking.enabled:
+        if scorer is None or graph is None:
+            raise ValueError("BPR connectivity guidance requires a pretrained scorer and road graph.")
+        from .connectivity_sampling import DiffusionNegativeSampler
+
+        negatives = DiffusionNegativeSampler(
+            graph.edge_index,
+            int(graph.num_nodes),
+            ranking.negatives,
+            sampling_seed
+        )
+        selected.append(ConfiguredLoss(
+            name="connectivity_bpr",
+            function=ConnectivityBPR(scorer, negatives),
+            weight=ranking.weight,
+            include_in_total=ranking.include_in_total,
+            every_steps=ranking.every_steps,
+            differentiable=True
         ))
 
     return LossComposer(selected)

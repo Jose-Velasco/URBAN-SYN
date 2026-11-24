@@ -91,6 +91,7 @@ def build_pretraining_tracker(config: ResolvedLinkPretrainConfig, run_dir: Path)
         run_name=settings.tracking.run_name or run_dir.name,
         tracking_uri=settings.tracking.tracking_uri,
         storage_scope=settings.tracking.storage_scope,
+        store_root=settings.tracking.store_root,
         tags=tags,
         parameters=parameters,
         artifacts=artifacts

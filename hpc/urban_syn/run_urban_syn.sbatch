@@ -12,20 +12,24 @@
 
 # Run the existing URBAN-SYN experiment pipeline inside Apptainer.
 # The companion submit.sh places Slurm stdout/stderr in hpc/urban_syn/logs/.
-# Usage: sbatch hpc/urban_syn/run_urban_syn.sbatch [stage] [config] [mode] [--run-dir DIR] [--checkpoint FILE] [--encoder-checkpoint FILE]
+# Internal compute-node entry point. submit.sh selects the study and exports URBAN_SYN_PIPELINE.
 
 set -euo pipefail
 
-STAGE="${1:-all}"
-CONFIG_ARG="${2:-configs/experiments/nyc_joint.yaml}"
+if (($# < 2)); then
+    echo "ERROR: Missing resolved stage/config. Submit a named experiment with submit.sh." >&2
+    exit 2
+fi
+STAGE="$1"
+CONFIG_ARG="$2"
 MODE=""
 RUN_DIR=""
 CHECKPOINT=""
 ENCODER_CHECKPOINT=""
 ENCODER_FROM_JOB=""
 ENCODER_SOURCE_EXPERIMENT=""
-shift "$(( $# >= 2 ? 2 : $# ))"
-# Keep the historical optional third positional mode, with optional paths.
+shift 2
+# The submitter passes the resolved configuration and optional pipeline arguments.
 while (($#)); do
     case "$1" in
         --dry-run|--validate-only)
@@ -48,17 +52,17 @@ done
 usage() {
     cat <<'USAGE'
 Usage:
-  sbatch hpc/urban_syn/run_urban_syn.sbatch [stage] [config] [mode] [--run-dir DIR] [--checkpoint FILE] [--encoder-checkpoint FILE]
+  bash hpc/urban_syn/submit.sh --study STUDY.yaml --experiment NAME [--stage STAGE]
 
 Joint stages: all | validate | prepare-graph | train | generate | export-eval
-Pretraining stages: all | validate | prepare | train | test
-Config: Path relative to the repository root (default: configs/experiments/nyc_joint.yaml).
+Pretraining stages: all | validate | prepare-graph | prepare | train | test
+Config: Resolved path passed internally by submit.sh.
 Mode:   --validate-only | --dry-run (optional)
 
 Environment overrides:
   URBAN_SYN_PROJECT_ROOT  Absolute path to URBAN-SYN checkout on HPC.
   URBAN_SYN_SIF           Absolute path to urban-syn.sif on HPC.
-  URBAN_SYN_PIPELINE      joint | link_pretrain (normally set by submit.sh).
+  URBAN_SYN_PIPELINE      joint | link_pretrain (required; set by submit.sh).
 USAGE
 }
 
@@ -71,12 +75,16 @@ if [[ -z "${SLURM_JOB_ID:-}" ]]; then
     echo "ERROR: Submit this script with sbatch, not bash." >&2
     exit 2
 fi
+if [[ "${URBAN_SYN_PIPELINE:-}" != joint && "${URBAN_SYN_PIPELINE:-}" != link_pretrain ]]; then
+    echo "ERROR: URBAN_SYN_PIPELINE must be set by submit.sh. Submit with --study and --experiment." >&2
+    exit 2
+fi
 
 # Slurm copies submitted batch scripts into its spool directory before running
 # them. Do not use BASH_SOURCE to locate other project files: it points to the
 # spool copy (for example /var/spool/slurmd/job12345), not this checkout.
-# submit.sh supplies the project root explicitly. For direct sbatch use,
-# fall back to the directory from which the job was submitted (not the spool).
+# submit.sh supplies the project root explicitly. SLURM_SUBMIT_DIR is a
+# fallback when the batch script is executed from a Slurm spool directory.
 PROJECT_ROOT="${URBAN_SYN_PROJECT_ROOT:-${SLURM_SUBMIT_DIR:-}}"
 if [[ -z "$PROJECT_ROOT" || ! -f "$PROJECT_ROOT/hpc/urban_syn/study_checkpoints.py" ]]; then
     echo "ERROR: Cannot find the URBAN-SYN checkout. Set URBAN_SYN_PROJECT_ROOT or submit from the repository root." >&2
@@ -104,7 +112,7 @@ if [[ -n "$ENCODER_FROM_JOB" || -n "$ENCODER_SOURCE_EXPERIMENT" ]]; then
     fi
     ENCODER_CHECKPOINT="$(python3 "$STUDY_CHECKPOINTS" \
         --project-root "$PROJECT_ROOT" \
-        --study-name "$URBAN_SYN_STUDY_NAME" \
+        --study-name "${URBAN_SYN_SOURCE_STUDY_NAME:-$URBAN_SYN_STUDY_NAME}" \
         --experiment-key "$ENCODER_SOURCE_EXPERIMENT" \
         --job-id "$ENCODER_FROM_JOB" --resolve-job)"
     if [[ "$ENCODER_CHECKPOINT" != "$PROJECT_ROOT/"* ]]; then
@@ -138,6 +146,11 @@ if [[ "$CONFIG_HOST" != "$PROJECT_ROOT/"* ]]; then
 fi
 CONFIG_CONTAINER="/workspace/${CONFIG_HOST#"$PROJECT_ROOT"/}"
 
+# Snapshots are hashed at submission. Check again when a queued job starts.
+if [[ "$CONFIG_HOST" == "$PROJECT_ROOT/outputs/experiments/submissions/"* ]]; then
+    python3 "$PROJECT_ROOT/hpc/urban_syn/submission_snapshot.py" --verify "$CONFIG_HOST"
+fi
+
 mkdir -p "$LOG_DIR"
 RESOURCE_LOG="$LOG_DIR/resources-${SLURM_JOB_ID}.log"
 GPU_LOG="$LOG_DIR/gpu-${SLURM_JOB_ID}.csv"
@@ -156,7 +169,7 @@ METADATA_LOG="$LOG_DIR/job-${SLURM_JOB_ID}.txt"
     echo "project_root=$PROJECT_ROOT"
     echo "container_image=$SIF"
     echo "stage=$STAGE"
-    echo "pipeline=${URBAN_SYN_PIPELINE:-detect_from_yaml}"
+    echo "pipeline=$URBAN_SYN_PIPELINE"
     echo "study=${URBAN_SYN_STUDY_NAME:-none}"
     echo "study_experiment=${URBAN_SYN_EXPERIMENT_KEY:-none}"
     echo "slurm_time_limit=${SLURM_TIMELIMIT:-unknown}"
@@ -204,14 +217,9 @@ APPTAINER_ARGS=(
     "$SIF"
 )
 
-# Resolve the pipeline from the experiment YAML when run directly through sbatch.
-# The normal submit.sh entry point already resolved it before allocating resources.
-PIPELINE="${URBAN_SYN_PIPELINE:-}"
-if [[ -z "$PIPELINE" ]]; then
-    PIPELINE="$(apptainer "${APPTAINER_ARGS[@]}" /opt/venv/bin/python \
-        /workspace/hpc/urban_syn/resolve_submission.py \
-        --project-root /workspace --config "$CONFIG_CONTAINER" --field pipeline)"
-fi
+# The launcher already resolved the pipeline from the named study experiment.
+# Never re-resolve an arbitrary YAML on the compute node.
+PIPELINE="$URBAN_SYN_PIPELINE"
 case "$PIPELINE" in
     joint)
         PYTHON_MODULE=urban_syn.experiment
@@ -236,7 +244,7 @@ case "$PIPELINE" in
             exit 2
         fi
         PYTHON_MODULE=urban_syn.link_pretrain
-        case "$STAGE" in all|validate|prepare|train|test) ;; *) echo "ERROR: Invalid pretraining stage: $STAGE" >&2; exit 2;; esac ;;
+        case "$STAGE" in all|validate|prepare-graph|prepare|train|test) ;; *) echo "ERROR: Invalid pretraining stage: $STAGE" >&2; exit 2;; esac ;;
     *) echo "ERROR: Unknown experiment pipeline: $PIPELINE" >&2; exit 2 ;;
 esac
 
@@ -327,15 +335,6 @@ if [[ -n "$GPU_MONITOR_ID" ]]; then
 fi
 monitor_resources &
 RESOURCE_MONITOR_PID=$!
-
-# Link pretraining expects the same PyG cache as joint diffusion. Reuse the
-# joint pipeline's existing graph builder if the cache is missing; this occurs
-# only for real executions, never during dry-run or read-only validation.
-if [[ "$PIPELINE" == link_pretrain && -z "$MODE" && "$STAGE" != validate ]]; then
-    apptainer "${APPTAINER_ARGS[@]}" /opt/venv/bin/python \
-        /workspace/hpc/urban_syn/prepare_pretrain_graph.py \
-        --config "$CONFIG_CONTAINER" --project-root /workspace
-fi
 
 COMMAND=(
     /opt/venv/bin/python -m "$PYTHON_MODULE" "$STAGE"
