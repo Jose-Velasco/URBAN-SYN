@@ -36,6 +36,7 @@ from .checkpoint import (
 from .config import GradientWarmupSettings, ResolvedExperimentConfig
 from .connectivity_diagnostics import ScorerDiagnostics, sample_monitor_roads
 from .datasets import DatasetSplit, build_epoch_loader, load_training_dataset
+from .connectivity_sampling import DiffusionBatchCollator, DiffusionNegativeSampler
 from .diagnostics import (
     EmbeddingDiagnostics,
     gradient_norm,
@@ -237,7 +238,7 @@ def _skip_gnn_update_when_zero_scale(model: nn.Module, scale: float) -> None:
 def run_epoch(
     model: nn.Module,
     graph: Data,
-    batches: Iterable[tuple[Tensor, Tensor]],
+    batches: Iterable[tuple[Tensor, Tensor] | dict[str, Tensor | int]],
     composer: LossComposer,
     optimizer: Optimizer | None,
     grad_clip_norm: float,
@@ -256,8 +257,8 @@ def run_epoch(
         Trainable joint model exposing compute_training_outputs/losses.
     graph : Data
         Graph on the same device as the joint model.
-    batches : Iterable[tuple[Tensor, Tensor]]
-        Same-length road-ID and [0, 1] rate batches.
+    batches : Iterable
+        Same-length road IDs and rates, with prepared negatives for BPR.
     composer : LossComposer
         Independently configured objective implementations.
     optimizer : Optimizer | None
@@ -292,10 +293,22 @@ def run_epoch(
     prefix = "train" if training else "val"
     recorded: list[dict[str, float]] = []
 
-    for batch_index, (road_ids, rates) in enumerate(batches):
+    for batch_index, batch in enumerate(batches):
         if max_batches is not None and batch_index >= max_batches:
             break
+        sample_step = global_step if training else batch_index
+        batch_values = {"sample_step": sample_step}
+        if isinstance(batch, dict):
+            road_ids, rates = batch["road_ids"], batch["rates"]
+            if batch["sample_step"] != sample_step:
+                raise ValueError("Prepared BPR batch has the wrong sampling step.")
+            for key in ("negative_retained_mask", "negative_model_ids"):
+                if key in batch:
+                    batch_values[key] = batch[key].to(device=graph.x.device, non_blocking=True)
+        else:
+            road_ids, rates = batch
         road_ids = road_ids.to(device=graph.x.device, dtype=torch.long, non_blocking=True)
+        batch_values["road_ids"] = road_ids
         rates = rates.to(device=graph.x.device, dtype=graph.x.dtype, non_blocking=True)
 
         # Existing diffusion training expects [-1, 1] position rates.
@@ -329,10 +342,7 @@ def run_epoch(
                 output,
                 composer,
                 step=global_step if training else batch_index,
-                batch={
-                    "road_ids": road_ids,
-                    "sample_step": global_step if training else batch_index
-                }
+                batch=batch_values
             )
             if not torch.isfinite(losses.total).item():
                 raise FloatingPointError(f"Non-finite {prefix} objective in batch {batch_index}.")
@@ -558,16 +568,40 @@ def _train_epochs(
             _record_epoch_metrics(run_dir / "metrics" / "history.jsonl", 0, 0, initial)
             run.log_metrics({**initial, "epoch": 0.0}, step=0)
 
-    for epoch in range(start_epoch, training.epochs + 1):
-        train_batches = build_epoch_loader(
-            dataset,
-            split.train_indices,
-            training.batch_size,
-            seed=settings.experiment.seed + epoch,
-            num_workers=settings.runtime.num_workers,
-            shuffle=True,
-            pin_memory=components.device.type == "cuda"
+    ranking = training.losses.connectivity_bpr
+    collator = None
+    if ranking.enabled:
+        negatives = DiffusionNegativeSampler(
+            components.graph.edge_index,
+            int(components.graph.num_nodes),
+            ranking.negatives,
+            settings.experiment.seed
         )
+        collator = DiffusionBatchCollator(negatives, ranking.every_steps)
+
+    runtime = settings.runtime
+    loader_options = {
+        "seed": settings.experiment.seed,
+        "num_workers": runtime.num_workers,
+        "pin_memory": runtime.pin_memory and components.device.type == "cuda",
+        "prefetch_factor": runtime.prefetch_factor,
+        "persistent_workers": runtime.persistent_workers,
+        "collate_fn": collator
+    }
+    train_batches = build_epoch_loader(
+        dataset, split.train_indices, training.batch_size, shuffle=True, **loader_options
+    )
+    validation_batches = None
+    if training.validation.enabled:
+        validation_batches = build_epoch_loader(
+            dataset, split.validation_indices, training.batch_size, shuffle=False, **loader_options
+        )
+
+    for epoch in range(start_epoch, training.epochs + 1):
+        if collator is not None:
+            train_batches.batch_sampler.set_epoch(epoch, global_step)
+        else:
+            train_batches.batch_sampler.set_epoch(epoch)
         train_metrics, global_step = run_epoch(
             components.model,
             components.graph,
@@ -584,16 +618,7 @@ def _train_epochs(
         )
         metrics = dict(train_metrics)
 
-        if training.validation.enabled:
-            validation_batches = build_epoch_loader(
-                dataset,
-                split.validation_indices,
-                training.batch_size,
-                seed=settings.experiment.seed,
-                num_workers=settings.runtime.num_workers,
-                shuffle=False,
-                pin_memory=components.device.type == "cuda"
-            )
+        if validation_batches is not None:
             val_metrics, _ = run_epoch(
                 components.model,
                 components.graph,
@@ -725,9 +750,7 @@ def run_joint_training(config: ResolvedExperimentConfig, tracker: ExperimentTrac
         _save_run_files(config, split, run_dir)
         composer = build_loss_composer(
             training.losses,
-            scorer=getattr(components.model, "connectivity_scorer", None),
-            graph=components.graph,
-            sampling_seed=settings.experiment.seed
+            scorer=getattr(components.model, "connectivity_scorer", None)
         )
         fingerprint = experiment_fingerprint(config, components.graph)
         monitor = _checkpoint_monitor(config)

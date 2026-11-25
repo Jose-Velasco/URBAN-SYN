@@ -442,6 +442,9 @@ class RuntimeSettings(_Settings):
     device: Literal["auto", "cpu", "cuda"] = "auto"
     precision: Literal["fp32"] = "fp32"  # AMP added after supporting/tested.
     num_workers: int = Field(default=4, ge=0)
+    prefetch_factor: int = Field(default=2, ge=1)
+    persistent_workers: bool = True
+    pin_memory: bool = True
 
 
 class ExperimentSettings(_Settings):
@@ -559,7 +562,8 @@ def _read_model_settings(
 def load_experiment_config(
     path: str | Path,
     project_root: str | Path | None = None,
-    encoder_checkpoint: str | Path | None = None
+    encoder_checkpoint: str | Path | None = None,
+    generation_checkpoint: str | Path | None = None
 ) -> ResolvedExperimentConfig:
     """Validate a joint experiment and its referenced model architecture.
 
@@ -614,6 +618,8 @@ def load_experiment_config(
             }
         else:
             raise ValueError("Unknown road encoder initialization for pretraining checkpoint selection.")
+    if generation_checkpoint is not None:
+        raw = {**raw, "generation": {**raw.get("generation", {}), "checkpoint": str(generation_checkpoint)}}
     parsed = ExperimentSettings.model_validate(raw)
     resolved = parsed.model_copy(update={
         "paths": _resolve_paths(parsed.paths, root),

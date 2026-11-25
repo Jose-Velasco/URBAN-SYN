@@ -12,8 +12,8 @@ The study YAML provides default Slurm resources. Environment overrides take prio
   SBATCH_EXCLUDE (e.g. cs002 or cs002,cs003)
   URBAN_SYN_MAIL_USER and URBAN_SYN_MAIL_TYPE (e.g. BEGIN,END,FAIL)
 
---run-dir and --checkpoint are supported for standalone link-pretraining stages.
-For joint generation, select generation.checkpoint in the joint experiment YAML.
+--run-dir is supported for standalone link-pretraining stages.
+--checkpoint selects a link-pretraining checkpoint or a joint generation checkpoint.
 For a joint study experiment with pretrained_from, --stage all automatically submits
 pretraining followed by a dependent joint job (generation follows YAML settings).
 For --stage train, a previously published encoder is reused.
@@ -188,6 +188,20 @@ if [[ "$RUN_DIR" == "$PROJECT_ROOT/"* ]]; then
 fi
 if [[ "$CHECKPOINT" == "$PROJECT_ROOT/"* ]]; then
     CHECKPOINT="/workspace/${CHECKPOINT#"$PROJECT_ROOT/"}"
+fi
+if [[ "$PIPELINE" == joint && -n "$CHECKPOINT" ]]; then
+    if [[ "$STAGE" != generate ]]; then
+        echo "ERROR: Joint --checkpoint requires --stage generate." >&2; exit 2
+    fi
+    if [[ "$CHECKPOINT" != /workspace/* ]]; then
+        if [[ "$CHECKPOINT" == /* ]]; then
+            echo "ERROR: Generation checkpoint must be inside the repository bind mount." >&2; exit 2
+        fi
+        CHECKPOINT="/workspace/${CHECKPOINT#./}"
+    fi
+    if [[ ! -f "$PROJECT_ROOT/${CHECKPOINT#/workspace/}" ]]; then
+        echo "ERROR: Generation checkpoint does not exist: $CHECKPOINT" >&2; exit 2
+    fi
 fi
 if [[ -n "$ENCODER_CHECKPOINT" ]]; then
     if [[ "$PIPELINE" != joint ]]; then

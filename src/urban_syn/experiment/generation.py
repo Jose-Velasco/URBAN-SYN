@@ -54,7 +54,7 @@ def resolve_generation_checkpoint(
         checkpoint = source if source.is_absolute() else config.project_root / source
     else:
         raise ValueError(
-            "Standalone generation requires generation.checkpoint in experiment YAML. "
+            "Standalone generation requires --checkpoint or generation.checkpoint in experiment YAML. "
             "The 'all' target automatically uses the checkpoint produced by training."
         )
     checkpoint = checkpoint.resolve()

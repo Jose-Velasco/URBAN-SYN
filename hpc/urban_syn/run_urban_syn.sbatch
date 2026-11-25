@@ -234,9 +234,20 @@ case "$PIPELINE" in
             fi
         fi
         case "$STAGE" in all|validate|prepare-graph|train|generate|export-eval) ;; *) echo "ERROR: Invalid joint stage: $STAGE" >&2; exit 2;; esac
-        if [[ -n "$RUN_DIR" || -n "$CHECKPOINT" ]]; then
-            echo "ERROR: Joint generation/checkpoint paths are configured in the experiment YAML." >&2
+        if [[ -n "$RUN_DIR" || ( -n "$CHECKPOINT" && "$STAGE" != generate ) ]]; then
+            echo "ERROR: Joint --checkpoint requires generate; --run-dir is not supported." >&2
             exit 2
+        fi
+        if [[ -n "$CHECKPOINT" ]]; then
+            if [[ "$CHECKPOINT" == "$PROJECT_ROOT/"* ]]; then
+                CHECKPOINT="/workspace/${CHECKPOINT#"$PROJECT_ROOT/"}"
+            elif [[ "$CHECKPOINT" != /* ]]; then
+                CHECKPOINT="/workspace/${CHECKPOINT#./}"
+            fi
+            if [[ "$CHECKPOINT" != /workspace/* || ! -f "$PROJECT_ROOT/${CHECKPOINT#/workspace/}" ]]; then
+                echo "ERROR: Generation checkpoint must exist inside the project checkout." >&2
+                exit 2
+            fi
         fi ;;
     link_pretrain)
         if [[ -n "$ENCODER_CHECKPOINT" ]]; then

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import torch
 import torch.nn.functional as F
 from torch import Tensor
 
@@ -14,7 +15,6 @@ from .connectivity_validation import (
 from .losses import LossContext
 
 if TYPE_CHECKING:
-    from urban_syn.experiment.connectivity_sampling import DiffusionNegativeSampler
     from urban_syn.link_pretrain.model import DirectionalLinkDecoder
 
 
@@ -58,26 +58,20 @@ class ConnectivityBPR:
     by the graph-aware sampler from the ground-truth source road.
     """
 
-    def __init__(
-        self,
-        scorer: DirectionalLinkDecoder,
-        negatives: DiffusionNegativeSampler
-    ) -> None:
+    def __init__(self, scorer: DirectionalLinkDecoder) -> None:
         """Configure pretrained connectivity ranking guidance.
 
         Args:
             scorer: Frozen BPR-pretrained directional connectivity scorer.
-            negatives: Sampler of directed nonedges aligned to source positions.
         """
         self.scorer = scorer
-        self.negatives = negatives
 
     def __call__(self, context: LossContext) -> Tensor:
         """Compute pairwise BPR against each retained graph-negative candidate.
 
         Args:
             context: Predicted clean vectors, GNN road embedding table,
-                source road IDs, and deterministic sampling-step metadata.
+                source road IDs, and prepared negative IDs and masks.
 
         Returns:
             Scalar mean of ``softplus(negative_logit - generated_pair_logit)``.
@@ -94,20 +88,23 @@ class ConnectivityBPR:
         if not mask.any():
             return predicted_roads.sum() * 0.0
 
-        step = context.batch.get("sample_step", 0)
-        if not isinstance(step, int) or step < 0:
-            raise ValueError("BPR sampling requires a nonnegative integer sample_step.")
-
-        model_road_ids = model_road_ids.long()
-        source_ids = model_road_ids[:, :-1][mask]
-        sampled = self.negatives.sample(source_ids, step)
-        if not sampled.retained_mask.any():
+        keep = context.batch.get("negative_retained_mask")
+        negative_ids = context.batch.get("negative_model_ids")
+        if not isinstance(keep, Tensor) or not isinstance(negative_ids, Tensor):
+            raise ValueError("BPR requires negative samples prepared by the DataLoader.")
+        source = predicted_roads[:, :-1, :][mask]
+        if keep.dtype != torch.bool or keep.shape != (source.shape[0],):
+            raise ValueError("BPR retained mask must match the valid source positions.")
+        if negative_ids.dtype != torch.long or negative_ids.ndim != 2:
+            raise ValueError("BPR negative IDs must be a two-dimensional long tensor.")
+        if negative_ids.shape[1] < 1:
+            raise ValueError("BPR requires at least one negative per retained source.")
+        source = source[keep]
+        if source.shape[0] != negative_ids.shape[0]:
+            raise ValueError("BPR negative IDs must match the retained source positions.")
+        if source.shape[0] == 0:
             return predicted_roads.sum() * 0.0
-
-        keep = sampled.retained_mask.to(device=predicted_roads.device)
-        source = predicted_roads[:, :-1, :][mask][keep]
         destination = predicted_roads[:, 1:, :][mask][keep]
-        negative_ids = sampled.negative_model_ids.to(device=predicted_roads.device)
         negative_embeddings = context.road_embeddings[negative_ids]
 
         positive_logits = self.scorer.score_pairs(source, destination).unsqueeze(1)

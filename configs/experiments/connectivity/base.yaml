@@ -125,3 +125,6 @@ runtime:
   device: cuda
   precision: fp32
   num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: true
+  pin_memory: true

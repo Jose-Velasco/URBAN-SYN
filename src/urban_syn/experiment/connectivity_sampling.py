@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 import torch
 from torch import Tensor
+from torch.utils.data import default_collate
 
 from urban_syn.link_pretrain.config import NegativeSamplingSettings
 from urban_syn.link_pretrain.graph import FullPositiveIndex
@@ -127,3 +128,26 @@ class DiffusionNegativeSampler:
         )
         negative_ids = sampled.negative_dst[safe_positions[retained_mask]] + 1
         return DiffusionNegativeBatch(retained_mask, negative_ids)
+
+
+class DiffusionBatchCollator:
+    """Prepare trajectory tensors and graph negatives in a DataLoader worker."""
+
+    def __init__(self, negatives: DiffusionNegativeSampler, every_steps: int = 1) -> None:
+        self.negatives = negatives
+        self.every_steps = every_steps
+
+    def __call__(self, samples):
+        trajectories, steps = zip(*samples)
+        step = steps[0]
+        if any(value != step for value in steps):
+            raise ValueError("All trajectories in a batch must share the sampling step.")
+        road_ids, rates = default_collate(trajectories)
+        batch = {"road_ids": road_ids, "rates": rates, "sample_step": step}
+        if step % self.every_steps == 0:
+            valid = road_ids.ne(0)
+            mask = valid[:, :-1] & valid[:, 1:]
+            sampled = self.negatives.sample(road_ids[:, :-1][mask], step)
+            batch["negative_retained_mask"] = sampled.retained_mask
+            batch["negative_model_ids"] = sampled.negative_model_ids
+        return batch

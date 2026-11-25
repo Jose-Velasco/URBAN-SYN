@@ -239,9 +239,7 @@ def build_training_components(
 
 def build_loss_composer(
     settings: LossSettings,
-    scorer: DirectionalLinkDecoder | None = None,
-    graph: Data | None = None,
-    sampling_seed: int = 0
+    scorer: DirectionalLinkDecoder | None = None
 ) -> LossComposer:
     """Construct the enabled training objectives from validated settings.
 
@@ -251,10 +249,6 @@ def build_loss_composer(
         Selection, weight, and frequency of each available loss.
     scorer : DirectionalLinkDecoder | None, default=None
         Injected frozen MLP, required when connectivity guidance is enabled.
-    graph : Data | None, default=None
-        Current directed road graph, needed only for BPR negative sampling.
-    sampling_seed : int, default=0
-        Experiment seed for reproducible sampling and checkpoint resumes.
 
     Returns
     -------
@@ -297,19 +291,11 @@ def build_loss_composer(
 
     ranking = settings.connectivity_bpr
     if ranking.enabled:
-        if scorer is None or graph is None:
-            raise ValueError("BPR connectivity guidance requires a pretrained scorer and road graph.")
-        from .connectivity_sampling import DiffusionNegativeSampler
-
-        negatives = DiffusionNegativeSampler(
-            graph.edge_index,
-            int(graph.num_nodes),
-            ranking.negatives,
-            sampling_seed
-        )
+        if scorer is None:
+            raise ValueError("BPR connectivity guidance requires a pretrained scorer.")
         selected.append(ConfiguredLoss(
             name="connectivity_bpr",
-            function=ConnectivityBPR(scorer, negatives),
+            function=ConnectivityBPR(scorer),
             weight=ranking.weight,
             include_in_total=ranking.include_in_total,
             every_steps=ranking.every_steps,
