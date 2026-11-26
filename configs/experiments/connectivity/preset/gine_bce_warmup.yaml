@@ -1,0 +1,27 @@
+# @package _global_
+defaults:
+- /gnn: gine
+- /encoder: warmup
+- /pretraining: bce
+- /connectivity: bce
+- _self_
+experiment:
+  name: nyc_full_connectivity_bce_gnn_warmup
+  seed: 101
+tracking:
+  tags:
+    dataset: nyc_15s_enriched_moves
+    pipeline: joint_diffusion
+    strategy: bce_gnn_warmup
+    encoder_init: pretrained
+    conditioning: none
+    gradient_losses: noise_mse_reconstruction_mse_connectivity_bce
+    comparison: connectivity_regularization
+    road_encoder: pretrained
+    gnn_update: warmup
+    scorer: frozen_bce
+    connectivity_loss: bce
+    sequence_representation: opath
+    gnn_architecture: gine
+generation:
+  output_name: nyc_full_connectivity_bce_gnn_warmup_generated_gps.parquet

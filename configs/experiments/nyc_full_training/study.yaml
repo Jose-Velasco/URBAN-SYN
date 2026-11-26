@@ -1,22 +1,24 @@
-# Full-training comparison driven by the existing study-aware HPC submitter.
-# "all" is a STAGE for the selected experiment; it does not submit all study entries.
-# On the joint pretrained entries, --stage all submits a required pretrain job first,
-# followed by dependent joint training/generation with the EXACT producing encoder.pt.
-# To skip pretraining when an encoder already exists, use --stage train (published
-# selected_encoder.json), or pass --encoder-checkpoint with an explicit encoder.pt path.
-
+# Existing study name retained for reuse of published pretraining checkpoints.
+# Selecting an experiment submits only that experiment, not the entire study.
 study:
   name: nyc_full_bpr_comparison
-  graph_config: configs/experiments/nyc_full_training/nyc_graph.yaml                           # Must match each experiment's paths.graph_config.
+  graph_config: configs/experiments/nyc_full_training/nyc_graph.yaml
   experiments:
     pretrain_bpr: configs/experiments/nyc_full_training/link_pretrain_bpr.yaml
     pretrain_bce: configs/experiments/nyc_full_training/link_pretrain_bce.yaml
     joint_scratch: configs/experiments/nyc_full_training/joint_scratch.yaml
     joint_frozen:
       config: configs/experiments/nyc_full_training/joint_frozen.yaml
-      pretrained_from: pretrain_bpr        # Dependency resolved by submit.sh.
+      pretrained_from: pretrain_bpr
     joint_finetune:
       config: configs/experiments/nyc_full_training/joint_finetune.yaml
+      pretrained_from: pretrain_bpr
+    joint_connectivity_baseline: configs/experiments/nyc_full_training/joint_connectivity_baseline.yaml
+    joint_connectivity_bpr_frozen:
+      config: configs/experiments/nyc_full_training/joint_connectivity_bpr_frozen.yaml
+      pretrained_from: pretrain_bpr
+    joint_connectivity_bpr_gnn_warmup:
+      config: configs/experiments/nyc_full_training/joint_connectivity_bpr_gnn_warmup.yaml
       pretrained_from: pretrain_bpr
 
 hpc:

@@ -15,6 +15,7 @@ from torch import Tensor
 
 from .config import NegativeSamplingSettings
 from .data import LinkBatch, SamplingStats
+from .loss import calculate_link_loss
 from .graph import FullPositiveIndex
 from .sampling import NegativeSampler, NoValidNegativesError, build_negative_sampler
 
@@ -148,4 +149,79 @@ def build_fixed_evaluation(
         "test": _fixed_phase_samples(
             splits[2].edge_label_index, sampler, settings, test_seed
         )
+    }
+
+
+@torch.no_grad()
+def evaluate_link_scores(
+    embeddings: Tensor,
+    scorer: torch.nn.Module,
+    samples: LinkBatch,
+    objective: str,
+    chunk_size: int
+) -> dict[str, float]:
+    """Evaluate fixed directed graph links without recomputing road embeddings.
+
+    Args:
+        embeddings: Current road embeddings ``[num_roads, embedding_dim]``.
+        scorer: Directional MLP or model exposing ``score_batch``.
+        samples: Fixed source-aligned positive and negative PyG road indices.
+        objective: Graph-supervised ``bce`` or ``bpr`` evaluation objective.
+        chunk_size: Maximum positive examples scored per forward call.
+
+    Returns:
+        Mean graph loss, pairwise accuracy, Hits@1, and MRR. Ties rank
+        against the positive link. Each metric uses all retained examples.
+    """
+    if chunk_size < 1:
+        raise ValueError("Evaluation chunk size must be positive.")
+    positive_count = samples.positive_src.numel()
+    if positive_count == 0:
+        raise ValueError("Cannot evaluate a sample set with no positive links.")
+
+    weighted_loss = 0.0
+    correctly_ranked_pairs = 0
+    top_ranked_positives = 0
+    reciprocal_rank_sum = 0.0
+    negative_count = 0
+    score_batch = getattr(scorer, "score_batch", None)
+
+    for start in range(0, positive_count, chunk_size):
+        stop = min(start + chunk_size, positive_count)
+        if score_batch is not None:
+            chunk_count = stop - start
+            chunk = LinkBatch(
+                positive_src=samples.positive_src[start:stop],
+                positive_dst=samples.positive_dst[start:stop],
+                negative_dst=samples.negative_dst[start:stop],
+                hard_mask=samples.hard_mask[start:stop],
+                stats=SamplingStats(chunk_count, chunk_count)
+            )
+            scores = score_batch(embeddings, chunk)
+            positive_logits, negative_logits = scores.positive, scores.negative
+        else:
+            sources = samples.positive_src[start:stop].to(embeddings.device)
+            destinations = samples.positive_dst[start:stop].to(embeddings.device)
+            negatives = samples.negative_dst[start:stop].to(embeddings.device)
+            positive_logits = scorer(embeddings, sources, destinations)
+            negative_logits = scorer(
+                embeddings, sources.unsqueeze(1).expand_as(negatives), negatives
+            )
+        loss = calculate_link_loss(positive_logits, negative_logits, objective)
+        if not torch.isfinite(loss).item():
+            raise FloatingPointError("Non-finite graph-link evaluation loss.")
+        weighted_loss += float(loss.item()) * (stop - start)
+
+        positive = positive_logits.unsqueeze(1)
+        correctly_ranked_pairs += int((positive > negative_logits).sum().item())
+        negative_count += negative_logits.numel()
+        higher_or_tied = (negative_logits >= positive).sum(dim=1)
+        top_ranked_positives += int((higher_or_tied == 0).sum().item())
+        reciprocal_rank_sum += float((1.0 / (higher_or_tied.float() + 1.0)).sum().item())
+
+    return {
+        "loss": weighted_loss / positive_count,
+        "pairwise_accuracy": correctly_ranked_pairs / negative_count,
+        "hits_at_1": top_ranked_positives / positive_count,
+        "mrr": reciprocal_rank_sum / positive_count
     }

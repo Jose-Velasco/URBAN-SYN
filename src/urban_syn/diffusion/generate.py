@@ -279,7 +279,14 @@ def load_generation_model(
     _check_graph_ids(model_state, graph)
 
     model = build_joint_model(graph, settings).to(device)
-    model.load_state_dict(model_state, strict=True)
+    # The pretrained connectivity scorer is used only during training. Joint
+    # checkpoints may include its frozen weights, but DDPM generation does not
+    # need to reconstruct or execute that auxiliary module.
+    generation_state = {
+        key: value for key, value in model_state.items()
+        if not key.startswith("connectivity_scorer.")
+    }
+    model.load_state_dict(generation_state, strict=True)
     model.eval()
     return model
 

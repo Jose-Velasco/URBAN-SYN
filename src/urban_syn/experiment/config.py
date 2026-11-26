@@ -24,6 +24,7 @@ from urban_syn.diffusion.config import (
     TrainingSettings,
 )
 from urban_syn.gnn.config import GNNSettings
+from urban_syn.link_pretrain.config import NegativeSamplingSettings
 
 
 class _Settings(BaseModel):
@@ -50,6 +51,21 @@ class ExperimentPaths(_Settings):
     output_root: Path = Path("outputs/experiments")
 
 
+class GradientWarmupSettings(_Settings):
+    """Configure diffusion-to-GNN gradient scaling during joint training.
+
+    The schedule follows the normalized sigmoid from LDLM, Appendix A.2.
+    A disabled schedule leaves the existing GNN training behavior unchanged.
+    """
+
+    enabled: bool = False
+    schedule: Literal["normalized_sigmoid"] = "normalized_sigmoid"
+    warmup_steps: int = Field(default=10000, ge=1)
+    gamma_min: float = Field(default=0.0, ge=0, lt=1, allow_inf_nan=False)
+    k: float = Field(default=10.0, gt=0, allow_inf_nan=False)
+    c: float = Field(default=0.8, gt=0, lt=1, allow_inf_nan=False)
+
+
 class RoadEncoderSettings(_Settings):
     """Select the source of GNN weights and whether diffusion updates them.
 
@@ -61,6 +77,7 @@ class RoadEncoderSettings(_Settings):
     initialization: Literal["random", "pretrained"] = "random"
     trainable: bool = True
     checkpoint: Path | None = None
+    gradient_warmup: GradientWarmupSettings = Field(default_factory=GradientWarmupSettings)
 
     @model_validator(mode="after")
     def validate_initialization(self) -> Self:
@@ -78,6 +95,32 @@ class RoadEncoderSettings(_Settings):
             raise ValueError(
                 "A randomly initialized, frozen road encoder is not a supported "
                 "comparison. Use initialization=pretrained or trainable=true."
+            )
+        if self.gradient_warmup.enabled and not self.trainable:
+            raise ValueError(
+                "model.road_encoder.gradient_warmup requires a trainable GNN."
+            )
+        return self
+
+
+class ConnectivityScorerSettings(_Settings):
+    """Load a frozen pretrained road-pair scorer for joint experiments.
+
+    ``checkpoint: auto`` selects ``best.pt`` next to the configured
+    pretrained ``encoder.pt``. An explicit path is also supported. The scorer
+    is not optimized during the initial connectivity-guidance experiments.
+    """
+
+    enabled: bool = False
+    checkpoint: Literal["auto"] | Path = "auto"
+    trainable: bool = False
+
+    @model_validator(mode="after")
+    def reject_scorer_finetuning(self) -> Self:
+        if self.trainable:
+            raise ValueError(
+                "Scorer fine-tuning is not implemented. Set "
+                "model.connectivity_scorer.trainable=false."
             )
         return self
 
@@ -103,7 +146,21 @@ class ModelOptions(_Settings):
 
     diffusion: DiffusionSettings
     road_encoder: RoadEncoderSettings = Field(default_factory=RoadEncoderSettings)
+    connectivity_scorer: ConnectivityScorerSettings = Field(
+        default_factory=ConnectivityScorerSettings
+    )
     conditioning: ConditioningSettings = Field(default_factory=ConditioningSettings)
+
+    @model_validator(mode="after")
+    def validate_scorer_encoder(self) -> Self:
+        if (self.connectivity_scorer.enabled
+                and self.road_encoder.initialization == "random"
+                and self.connectivity_scorer.checkpoint == "auto"):
+            raise ValueError(
+                "A randomly initialized GNN with connectivity guidance requires "
+                "a pretrained scorer checkpoint (best.pt)."
+            )
+        return self
 
 
 class OptimizerSettings(_Settings):
@@ -178,12 +235,26 @@ class WeightedLossSettings(_Settings):
     every_steps: int = Field(default=1, ge=1)
 
 
+class OptionalLossSettings(WeightedLossSettings):
+    """Weighted loss disabled unless explicitly requested by an experiment."""
+
+    enabled: bool = False
+
+
+class BPRLossSettings(OptionalLossSettings):
+    """Ranking guidance with reusable graph-aware negative-sampling settings."""
+
+    negatives: NegativeSamplingSettings = Field(default_factory=NegativeSamplingSettings)
+
+
 class LossSettings(_Settings):
     """Currently available loss implementations and their selection policy."""
 
     noise_mse: WeightedLossSettings = Field(default_factory=WeightedLossSettings)
     reconstruction_mse: WeightedLossSettings = Field(default_factory=WeightedLossSettings)
     hard_connectivity: WeightedLossSettings = Field(default_factory=WeightedLossSettings)
+    connectivity_bce: OptionalLossSettings = Field(default_factory=OptionalLossSettings)
+    connectivity_bpr: BPRLossSettings = Field(default_factory=BPRLossSettings)
 
     @model_validator(mode="after")
     def validate_objectives(self) -> Self:
@@ -197,13 +268,20 @@ class LossSettings(_Settings):
         choices = {
             "noise_mse": self.noise_mse,
             "reconstruction_mse": self.reconstruction_mse,
-            "hard_connectivity": self.hard_connectivity
+            "hard_connectivity": self.hard_connectivity,
+            "connectivity_bce": self.connectivity_bce,
+            "connectivity_bpr": self.connectivity_bpr
         }
+        if self.connectivity_bce.enabled and self.connectivity_bpr.enabled:
+            raise ValueError("Enable either connectivity_bce or connectivity_bpr, not both.")
         for name, choice in choices.items():
             if choice.enabled and choice.include_in_total and choice.every_steps != 1:
                 raise ValueError(f"{name} contributes to total and must run every step.")
 
-        gradient_losses = (self.noise_mse, self.reconstruction_mse)
+        gradient_losses = (
+            self.noise_mse, self.reconstruction_mse,
+            self.connectivity_bce, self.connectivity_bpr
+        )
         if not any(
             item.enabled and item.include_in_total and item.weight > 0
             for item in gradient_losses
@@ -273,7 +351,18 @@ class TrainingExperimentSettings(_Settings):
         return self
 
 
+class ScorerDiagnosticsSettings(_Settings):
+    """Read-only graph-link checks for the frozen pretrained scorer."""
+
+    enabled: bool = False
+    every_epochs: int = Field(default=10, ge=1)
+    sample_size: int = Field(default=256, ge=1)
+    chunk_size: int = Field(default=128, ge=1)
+    negatives: NegativeSamplingSettings = Field(default_factory=NegativeSamplingSettings)
+
+
 class TrackingLoggingSettings(_Settings):
+    scorer: ScorerDiagnosticsSettings = Field(default_factory=ScorerDiagnosticsSettings)
     metrics_every_steps: int = Field(default=100, ge=1)
     # 0 disables gradient diagnostics. Step metrics remain unaffected.
     gnn_diagnostics_every_steps: int = Field(default=100, ge=0)
@@ -281,6 +370,7 @@ class TrackingLoggingSettings(_Settings):
     gnn_embedding_enabled: bool = True
     gnn_embedding_every_epochs: int = Field(default=1, ge=1)
     gnn_embedding_sample_size: int = Field(default=128, ge=1)
+    gnn_embedding_source: Literal["graph", "trajectories"] = "graph"
 
     @model_validator(mode="before")
     @classmethod
@@ -312,6 +402,8 @@ class TrackingSettings(_Settings):
     provider: Literal["mlflow"] = "mlflow"
     # None delegates to MLFLOW_TRACKING_URI or a runtime-specific default.
     tracking_uri: str | None = None
+    # Independently locate the SQLite database and MLflow artifact store.
+    store_root: Path | None = None
     # Choose the default local SQLite layout when no explicit URI is provided.
     # Shared SQLite is the default; job scope isolates Slurm jobs when selected.
     storage_scope: Literal["job", "shared"] = "shared"
@@ -350,6 +442,9 @@ class RuntimeSettings(_Settings):
     device: Literal["auto", "cpu", "cuda"] = "auto"
     precision: Literal["fp32"] = "fp32"  # AMP added after supporting/tested.
     num_workers: int = Field(default=4, ge=0)
+    prefetch_factor: int = Field(default=2, ge=1)
+    persistent_workers: bool = True
+    pin_memory: bool = True
 
 
 class ExperimentSettings(_Settings):
@@ -367,6 +462,15 @@ class ExperimentSettings(_Settings):
     def validate_cross_section_requirements(self) -> Self:
         if self.training.validation.enabled and self.paths.trip_id_map is None:
             raise ValueError("Validation requires paths.trip_id_map to group by original trip.")
+        if self.tracking.logging.scorer.enabled and not self.model.connectivity_scorer.enabled:
+            raise ValueError("Scorer diagnostics require model.connectivity_scorer.enabled=true.")
+        if (
+            self.training.losses.connectivity_bce.enabled
+            or self.training.losses.connectivity_bpr.enabled
+        ) and not self.model.connectivity_scorer.enabled:
+            raise ValueError(
+                "Connectivity guidance requires model.connectivity_scorer.enabled=true."
+            )
         return self
 
 
@@ -405,13 +509,30 @@ def _resolve_paths(paths: ExperimentPaths, root: Path) -> ExperimentPaths:
 
 
 def _resolve_model_options(options: ModelOptions, root: Path) -> ModelOptions:
-    """Resolve pretrained encoder paths using the same root as other paths."""
+    """Resolve explicit pretrained paths using the shared project root."""
     selected = options.road_encoder
-    checkpoint = selected.checkpoint
-    if checkpoint is None:
-        return options
-    road_encoder = selected.model_copy(update={"checkpoint": _absolute(checkpoint, root)})
-    return options.model_copy(update={"road_encoder": road_encoder})
+    road_encoder = selected
+    if selected.checkpoint is not None:
+        road_encoder = selected.model_copy(
+            update={"checkpoint": _absolute(selected.checkpoint, root)}
+        )
+
+    scorer = options.connectivity_scorer
+    if isinstance(scorer.checkpoint, Path):
+        scorer = scorer.model_copy(
+            update={"checkpoint": _absolute(scorer.checkpoint, root)}
+        )
+    return options.model_copy(update={
+        "road_encoder": road_encoder,
+        "connectivity_scorer": scorer
+    })
+
+
+def _resolve_tracking(tracking: TrackingSettings, root: Path) -> TrackingSettings:
+    """Resolve an explicitly configured MLflow store independently of run outputs."""
+    if tracking.store_root is None:
+        return tracking
+    return tracking.model_copy(update={"store_root": _absolute(tracking.store_root, root)})
 
 
 def _read_model_settings(
@@ -441,7 +562,8 @@ def _read_model_settings(
 def load_experiment_config(
     path: str | Path,
     project_root: str | Path | None = None,
-    encoder_checkpoint: str | Path | None = None
+    encoder_checkpoint: str | Path | None = None,
+    generation_checkpoint: str | Path | None = None
 ) -> ResolvedExperimentConfig:
     """Validate a joint experiment and its referenced model architecture.
 
@@ -467,10 +589,8 @@ def load_experiment_config(
     if encoder_checkpoint is not None:
         model = raw.get("model")
         encoder = model.get("road_encoder") if isinstance(model, dict) else None
-        if not isinstance(encoder, dict) or encoder.get("initialization") != "pretrained":
-            raise ValueError(
-                "--encoder-checkpoint requires model.road_encoder.initialization=pretrained."
-            )
+        if not isinstance(encoder, dict):
+            raise ValueError("--encoder-checkpoint requires model.road_encoder settings.")
         if encoder.get("checkpoint") is not None:
             raise ValueError(
                 "Checkpoint is specified both in the joint YAML and by the launcher. "
@@ -480,12 +600,31 @@ def load_experiment_config(
         # and its other settings unchanged for reproducible run snapshots.
         raw = dict(raw)
         raw["model"] = dict(model)
-        raw["model"]["road_encoder"] = dict(encoder)
-        raw["model"]["road_encoder"]["checkpoint"] = str(encoder_checkpoint)
+        if encoder.get("initialization") == "pretrained":
+            raw["model"]["road_encoder"] = dict(encoder)
+            raw["model"]["road_encoder"]["checkpoint"] = str(encoder_checkpoint)
+        elif encoder.get("initialization") == "random":
+            scorer = model.get("connectivity_scorer") or {}
+            source = Path(encoder_checkpoint)
+            if not scorer.get("enabled") or scorer.get("checkpoint") != "auto":
+                raise ValueError(
+                    "--encoder-checkpoint requires model.road_encoder.initialization=pretrained "
+                    "or a scratch GNN with an automatic pretrained scorer."
+                )
+            if source.name != "encoder.pt" or source.parent.name != "checkpoints":
+                raise ValueError("Select the pretraining run's checkpoints/encoder.pt for its paired scorer.")
+            raw["model"]["connectivity_scorer"] = {
+                **scorer, "checkpoint": str(source.with_name("best.pt"))
+            }
+        else:
+            raise ValueError("Unknown road encoder initialization for pretraining checkpoint selection.")
+    if generation_checkpoint is not None:
+        raw = {**raw, "generation": {**raw.get("generation", {}), "checkpoint": str(generation_checkpoint)}}
     parsed = ExperimentSettings.model_validate(raw)
     resolved = parsed.model_copy(update={
         "paths": _resolve_paths(parsed.paths, root),
-        "model": _resolve_model_options(parsed.model, root)
+        "model": _resolve_model_options(parsed.model, root),
+        "tracking": _resolve_tracking(parsed.tracking, root)
     })
     joint = _read_model_settings(
         resolved.paths.graph_config, resolved.model, resolved.training

@@ -1,0 +1,19 @@
+# @package _global_
+model:
+  connectivity_scorer:
+    enabled: true
+    checkpoint: auto
+    trainable: false
+training:
+  losses:
+    connectivity_bce:
+      enabled: true
+      weight: 1.0
+      include_in_total: true
+      every_steps: 1
+    connectivity_bpr:
+      enabled: false
+tracking:
+  logging:
+    scorer:
+      enabled: true

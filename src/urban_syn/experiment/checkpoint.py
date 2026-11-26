@@ -45,6 +45,12 @@ def experiment_fingerprint(config: ResolvedExperimentConfig, graph: Data) -> str
     """
     settings = config.settings
     training_options = settings.training.model_dump(mode="json")
+    # Disabled new objectives must not change fingerprints of existing runs.
+    # Their settings do not affect the model, optimizer, or monitored loss.
+    losses = training_options["losses"]
+    for name in ("connectivity_bce", "connectivity_bpr"):
+        if not losses[name]["enabled"]:
+            losses.pop(name)
     # resume_from changes from null to a file path when restarting a run.
     # It is execution metadata, not a different training experiment.
     training_options["checkpoint"].pop("resume_from", None)
@@ -62,7 +68,15 @@ def experiment_fingerprint(config: ResolvedExperimentConfig, graph: Data) -> str
     # an experiment with different GNN initialization or freezing choices.
     encoder_settings = settings.model.road_encoder
     if encoder_settings.initialization != "random" or not encoder_settings.trainable:
-        relevant["road_encoder"] = encoder_settings.model_dump(mode="json")
+        encoder_options = encoder_settings.model_dump(mode="json")
+        if not encoder_settings.gradient_warmup.enabled:
+            # Preserve fingerprints of existing pretrained runs when disabled.
+            encoder_options.pop("gradient_warmup", None)
+        relevant["road_encoder"] = encoder_options
+    if settings.model.connectivity_scorer.enabled:
+        relevant["connectivity_scorer"] = settings.model.connectivity_scorer.model_dump(
+            mode="json"
+        )
 
     # Resuming under another output directory is fine; the model and data
     # selection must still match. Other runtime/tracking values may change.
@@ -258,8 +272,8 @@ def load_training_checkpoint(
         raise ValueError("Unsupported or incomplete training checkpoint version.")
 
     if version == 1:
-        # Allow resuming checkpoints made by the first Stage 3 implementation.
-        # Only the saved tracking metadata format differs; model training state
+        # Preserve compatibility with earlier checkpoint tracking metadata.
+        # Only the saved metadata format differs; model training state
         # is unchanged. New checkpoints write provider-neutral references.
         old_run_id = checkpoint.pop("mlflow_run_id", None)
         old_uri = checkpoint.pop("tracking_uri", None)

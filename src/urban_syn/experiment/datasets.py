@@ -11,9 +11,11 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Dataset, Subset
 
 from urban_syn.diffusion.data import LengthBatchSampler, RoadSequenceDataset
+
+from .connectivity_sampling import DiffusionBatchCollator
 
 from .config import ResolvedExperimentConfig
 
@@ -127,6 +129,35 @@ def split_prepared_sequences(
     )
 
 
+class StepIndexedDataset(Dataset):
+    """Pass batch sampling steps to workers with the trajectory indices."""
+
+    def __init__(self, dataset: Subset) -> None:
+        self.dataset = dataset
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __getitem__(self, key):
+        index, step = key
+        return self.dataset[index], step
+
+
+class StepLengthBatchSampler(LengthBatchSampler):
+    """Attach the intended training step to each length-grouped batch."""
+
+    start_step = 0
+
+    def set_epoch(self, epoch: int, start_step: int = 0) -> None:
+        super().set_epoch(epoch)
+        self.start_step = start_step
+
+    def __iter__(self):
+        for batch_index, batch in enumerate(super().__iter__()):
+            step = self.start_step + batch_index
+            yield [(index, step) for index in batch]
+
+
 def build_epoch_loader(
     dataset: RoadSequenceDataset,
     indices: tuple[int, ...],
@@ -134,7 +165,10 @@ def build_epoch_loader(
     seed: int,
     num_workers: int,
     shuffle: bool,
-    pin_memory: bool
+    pin_memory: bool,
+    prefetch_factor: int = 2,
+    persistent_workers: bool = True,
+    collate_fn: DiffusionBatchCollator | None = None
 ) -> DataLoader:
     """Build an epoch-reproducible, same-length trajectory data loader.
 
@@ -147,7 +181,7 @@ def build_epoch_loader(
     batch_size : int
         Number of equally long trajectories per mini-batch.
     seed : int
-        Per-epoch shuffle seed. Do not share a mutable sampler RNG across epochs.
+        Base shuffle seed. Call set_epoch before iterating each epoch.
     num_workers : int
         DataLoader worker count.
     shuffle : bool
@@ -155,29 +189,43 @@ def build_epoch_loader(
     pin_memory : bool
         Whether to pin host tensors for device transfer.
 
+    prefetch_factor : int
+        Outstanding batches per worker.
+    persistent_workers : bool
+        Keep workers alive between epochs.
+    collate_fn : DiffusionBatchCollator | None
+        Optional worker-side BPR batch preparation.
+
     Returns
     -------
     DataLoader
-        Loader yielding (road_ids, raw_rates) tensors of shape [B, T].
+        Road IDs and rates, plus prepared negatives when BPR is enabled.
     """
     if not indices:
         raise ValueError("Cannot create a DataLoader from an empty partition.")
 
     selected = Subset(dataset, list(indices))
     lengths = [dataset.lengths[i] for i in indices]
-    sampler = LengthBatchSampler(
+    sampler_type = StepLengthBatchSampler if collate_fn is not None else LengthBatchSampler
+    sampler = sampler_type(
         lengths=lengths,
         batch_size=batch_size,
         shuffle=shuffle,
         drop_last=False,
         seed=seed
     )
-    return DataLoader(
-        selected,
-        batch_sampler=sampler,
-        num_workers=num_workers,
-        pin_memory=pin_memory
-    )
+    if collate_fn is not None:
+        selected = StepIndexedDataset(selected)
+    options = {
+        "batch_sampler": sampler,
+        "num_workers": num_workers,
+        "pin_memory": pin_memory,
+        "collate_fn": collate_fn
+    }
+    if num_workers > 0:
+        options["prefetch_factor"] = prefetch_factor
+        options["persistent_workers"] = persistent_workers
+    return DataLoader(selected, **options)
 
 
 def load_training_dataset(config: ResolvedExperimentConfig, graph_edge_ids) -> tuple[RoadSequenceDataset, DatasetSplit]:

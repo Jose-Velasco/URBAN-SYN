@@ -150,6 +150,7 @@ class TrackingSettings(_Settings):
     provider: Literal["mlflow"] = "mlflow"
     experiment_name: str = Field(default="road_link_pretrain_nyc", min_length=1)
     tracking_uri: str | None = None
+    store_root: Path | None = None
     storage_scope: Literal["shared", "job"] = "shared"
     run_name: str | None = None
     tags: dict[str, str] = Field(default_factory=dict)
@@ -279,7 +280,14 @@ def load_link_pretrain_config(
         "resume_from": _absolute(resume_from, root) if resume_from is not None else None
     })
     training = parsed.training.model_copy(update={"checkpoint": checkpoint})
-    resolved = parsed.model_copy(update={"paths": resolved_paths, "training": training})
+    tracking = parsed.tracking
+    if tracking.store_root is not None:
+        tracking = tracking.model_copy(update={
+            "store_root": _absolute(tracking.store_root, root)
+        })
+    resolved = parsed.model_copy(update={
+        "paths": resolved_paths, "training": training, "tracking": tracking
+    })
     graph = _read_yaml_mapping(resolved.paths.graph_config)
     _validate_graph_yaml(graph, resolved.paths.graph_config)
     return ResolvedLinkPretrainConfig(resolved, source_path, root, graph)

@@ -47,6 +47,10 @@ def _stage_map(config: ResolvedExperimentConfig) -> dict[str, Stage]:
     encoder = config.settings.model.road_encoder
     if encoder.initialization == "pretrained" and config.settings.training.checkpoint.resume_from is None:
         training_files.append(encoder.checkpoint)
+    if config.settings.model.connectivity_scorer.enabled:
+        from .pretrained_scorer import resolve_scorer_checkpoint
+
+        training_files.append(resolve_scorer_checkpoint(config))
     if config.settings.training.validation.enabled:
         training_files.append(paths.trip_id_map)
     training_inputs = _required_items(training_files)

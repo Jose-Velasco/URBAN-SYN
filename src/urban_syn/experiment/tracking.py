@@ -529,9 +529,10 @@ class MLflowRunOptions:
 
     Args:
         experiment_name: MLflow experiment under which the run is recorded.
-        output_root: Directory containing the local ``mlflow`` data store.
+        output_root: Root for ordinary experiment outputs.
+        store_root: Optional independent storage root; overrides MLFLOW_TRACKING_URI.
         run_name: Human-readable run label.
-        tracking_uri: Explicit backend URI, or None for environment/default.
+        tracking_uri: Explicit backend URI; takes priority over all storage defaults.
         storage_scope: ``shared`` storage or separate storage for Slurm jobs.
         tags: Searchable metadata supplied by the calling training pipeline.
         parameters: Flat experiment parameters logged once for a new run.
@@ -545,6 +546,7 @@ class MLflowRunOptions:
     run_name: str
     tracking_uri: str | None = None
     storage_scope: str = "shared"
+    store_root: Path | None = None
     tags: Mapping[str, str] = field(default_factory=dict)
     parameters: Mapping[str, Any] = field(default_factory=dict)
     artifacts: tuple[tuple[Path, str | None], ...] = ()
@@ -566,15 +568,16 @@ class ConfiguredMLflowTracker:
             options: Validated run location, parameters, tags, and artifacts.
         """
         self.options = options
-        root = options.output_root / "mlflow"
+        root = options.store_root if options.store_root is not None else options.output_root / "mlflow"
         suffix = _slurm_store_suffix(options.storage_scope)
         if suffix is not None:
             root = root / "jobs" / suffix
         self.store_root = root
         self.artifacts_root = root / "artifacts"
+        environment_uri = os.environ.get("MLFLOW_TRACKING_URI") if options.store_root is None else None
         self.tracking_uri = (
             options.tracking_uri
-            or os.environ.get("MLFLOW_TRACKING_URI")
+            or environment_uri
             or f"sqlite:///{(root / 'tracking.db').as_posix()}"
         )
 
@@ -672,6 +675,7 @@ class MLflowTracker:
             ),
             tracking_uri=settings.tracking_uri,
             storage_scope=settings.storage_scope,
+            store_root=settings.store_root,
             tags=self._run_tags(),
             parameters=_experiment_parameters(config),
             documents=(("configuration/resolved_experiment.json", {

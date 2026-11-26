@@ -1,0 +1,111 @@
+dataset:
+  network_path: fmm_scripts/data/road_network/nyc.gpkg
+  layer: roads
+  root: outputs/pyg/nyc_full_training
+features:
+  numeric:
+  - log_length
+  - speed_kph
+  - lanes
+  - width
+  categorical:
+  - highway
+  - surface
+  - access
+  - junction
+  boolean:
+  - oneway
+  - bridge
+  - tunnel
+  geometry:
+  - start_lon
+  - start_lat
+  - mid_lon
+  - mid_lat
+  - end_lon
+  - end_lat
+  - bearing_sin
+  - bearing_cos
+  - straightness
+graph:
+  allow_self_loops: false
+  transforms:
+    degree_features:
+      enabled: true
+      log_scale: true
+    local_degree_profile:
+      enabled: true
+      log_scale: true
+    random_walk_pe:
+      enabled: true
+      walk_length: 3
+      drop_first: true
+    pagerank_features:
+      enabled: true
+      alpha: 0.85
+      tolerance: 1.0e-08
+    clustering_features:
+      enabled: true
+      turbo: false
+    betweenness:
+      enabled: true
+      k: 100
+      seed: 42
+      normalized: true
+      parallel: false
+    constraint_features:
+      enabled: true
+    laplacian_pe:
+      enabled: true
+      k: 16
+    edge_transition_count:
+      enabled: true
+      match_csv: fmm_scripts/outputs/nyc_15s_enriched_moves/nyc_15s_train_fmm_matches.csv
+      smoothing:
+        method: additive
+        alpha: 1.0
+    adamic_adar_edge_features:
+      enabled: false
+      batch_size: 25000
+    random_walk_edge_features:
+      enabled: false
+    laplacian_edge_features:
+      enabled: false
+model:
+  node_features:
+  - x
+  - degree_features
+  - local_degree_profile
+  - random_walk_pe
+  - pagerank_features
+  - clustering_features
+  - betweenness
+  - constraint_features
+  - laplacian_pe
+  edge_features:
+  - edge_transition_prob
+  gnn:
+    architecture: gatv2
+    hidden_dim: 256
+    output_dim: 128
+    num_layers: 3
+    dropout: 0.45
+    activation: relu
+    normalization: layer
+    residual: true
+    gatv2:
+      heads: 4
+      concat: true
+      final_concat: true
+      attention_dropout: 0.5
+      add_self_loops: false
+    gine:
+      train_eps: true
+      eps: 0.0
+      mlp:
+        hidden_dim: 128
+        num_layers: 3
+        activation: relu
+        dropout: 0.45
+        normalization: layer_norm
+        plain_last: true

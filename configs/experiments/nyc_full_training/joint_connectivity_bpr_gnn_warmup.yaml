@@ -1,0 +1,157 @@
+# NYC road connectivity comparison. Full training with matched data and budgets.
+experiment:
+  name: nyc_full_connectivity_bpr_gnn_warmup
+  seed: 101
+paths:
+  graph_config: configs/experiments/nyc_full_training/nyc_graph.yaml
+  train_sequences: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_train_prepared_road_sequences.parquet
+  test_sequences: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_test_prepared_road_sequences.parquet
+  trip_id_map: fmm_scripts/data/nyc_15s_fmm_trip_id_map.csv
+  road_network: fmm_scripts/data/road_network/nyc.gpkg
+  length_distribution: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_train_length_distribution.npy
+  test_reference_gps: null
+  output_root: outputs/experiments
+model:
+  diffusion:
+    hidden_dim: 512
+    residual_layers: 10
+    diffusion_steps: 1000
+    beta_start: 0.0001
+    beta_end: 0.02
+    similarity_chunk_size: 2048
+  road_encoder:
+    mode: joint
+    initialization: pretrained
+    trainable: true
+    checkpoint: null
+    gradient_warmup:
+      enabled: true
+      schedule: normalized_sigmoid
+      warmup_steps: 10000
+      gamma_min: 0.0
+      k: 10.0
+      c: 0.8
+  conditioning:
+    enabled: false
+  connectivity_scorer:
+    enabled: true
+    checkpoint: auto
+    trainable: false
+training:
+  epochs: 1000
+  batch_size: 256
+  max_batches: null
+  grad_clip_norm: 1.0
+  optimizer:
+    name: adamw
+    learning_rate: 0.001
+    weight_decay: 0.01
+  scheduler:
+    name: reduce_on_plateau
+    mode: min
+    factor: 0.5
+    patience: 20
+    threshold: 0.0001
+    threshold_mode: rel
+    cooldown: 0
+    min_lr: 1.0e-06
+    eps: 1.0e-08
+  losses:
+    noise_mse:
+      enabled: true
+      weight: 1.0
+      include_in_total: true
+      every_steps: 1
+    reconstruction_mse:
+      enabled: true
+      weight: 1.0
+      include_in_total: true
+      every_steps: 1
+    hard_connectivity:
+      enabled: true
+      weight: 1.0
+      include_in_total: false
+      every_steps: 100
+    connectivity_bce:
+      enabled: false
+    connectivity_bpr:
+      enabled: true
+      weight: 0.1
+      include_in_total: true
+      every_steps: 1
+      negatives:
+        strategy: mixed
+        amount: 2
+        k_hops: 4
+        hard_fraction: 0.75
+  validation:
+    enabled: true
+    fraction: 0.1
+    split_group_columns:
+    - uid
+    - tid
+  checkpoint:
+    monitor: auto
+    save_last: true
+    save_best: true
+    every_epochs: 100
+    resume_from: null
+tracking:
+  enabled: true
+  provider: mlflow
+  tracking_uri: null
+  storage_scope: shared
+  experiment_name: urban_syn_nyc_connectivity_comparison
+  run_name: null
+  tags:
+    dataset: nyc_15s_enriched_moves
+    pipeline: joint_diffusion
+    strategy: bpr_gnn_warmup
+    encoder_init: pretrained
+    conditioning: none
+    gradient_losses: noise_mse_reconstruction_mse_connectivity_bpr
+    comparison: connectivity_regularization
+    road_encoder: pretrained
+    gnn_update: warmup
+    scorer: frozen_bpr
+    connectivity_loss: bpr
+    sequence_representation: opath
+  logging:
+    metrics_every_steps: 100
+    gnn_diagnostics_every_steps: 500
+    gnn_embedding_enabled: true
+    gnn_embedding_every_epochs: 10
+    gnn_embedding_sample_size: 512
+    log_system_metrics: true
+    log_resolved_config: true
+    log_git_info: true
+    gnn_embedding_source: trajectories
+    scorer:
+      enabled: true
+      every_epochs: 10
+      sample_size: 256
+      chunk_size: 128
+      negatives:
+        strategy: mixed
+        amount: 2
+        k_hops: 4
+        hard_fraction: 0.75
+  artifacts:
+    log_best_checkpoint: true
+    log_last_checkpoint: true
+    log_generated_trajectories: true
+    log_training_logs: true
+generation:
+  enabled: true
+  checkpoint: null
+  checkpoint_choice: best
+  road_layer: roads
+  output_name: nyc_full_connectivity_bpr_gnn_warmup_generated_gps.parquet
+  num_trajectories: null
+  batch_size: 16
+  sampler:
+    name: ddpm
+runtime:
+  device: cuda
+  precision: fp32
+  num_workers: 4

@@ -1,0 +1,7 @@
+# @package _global_
+model:
+  road_encoder:
+    mode: joint
+    initialization: pretrained
+    trainable: false
+    checkpoint: null

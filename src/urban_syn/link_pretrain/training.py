@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 from .checkpoint import load_checkpoint, model_metadata, save_checkpoint, save_encoder
 from .config import ResolvedLinkPretrainConfig
 from .data import LinkBatch, SamplingStats
-from .evaluation import build_fixed_evaluation
+from .evaluation import build_fixed_evaluation, evaluate_link_scores
 from .loader import make_training_dataloader
 from .metrics import append_metric_history, export_metric_history
 from .loss import calculate_link_loss
@@ -105,74 +105,22 @@ def evaluate_link_metrics(
     objective: str,
     chunk_size: int
 ) -> dict[str, float]:
-    """Score fixed held-out pairs using one graph encoding and bounded chunks.
+    """Evaluate fixed graph links using the shared link-scoring metrics.
 
     Args:
-        model: Encoder and directional link scorer in evaluation mode.
-        message_graph: Device-ready training-only message graph.
-        samples: Fixed positive links ``[P]`` and aligned negatives
-            ``[P, amount]``; unchanged across validation epochs.
-        objective: Configured BCE or BPR objective.
-        chunk_size: Maximum positive links scored per decoder pass.
+        model: Trained road GNN and directional link scorer.
+        message_graph: Device-ready graph used to produce road embeddings.
+        samples: Fixed positive and negative graph-link examples.
+        objective: ``bce`` or ``bpr`` graph-evaluation objective.
+        chunk_size: Maximum positive examples per scoring pass.
 
     Returns:
-        Mean loss, pairwise ranking accuracy, Hits@1, and mean reciprocal
-        rank. Ties count against the positive link, including in MRR.
-        Loss is weighted by positives, so results do not depend on chunk size.
-
-    Raises:
-        ValueError: If no examples are available or chunk size is invalid.
-        FloatingPointError: If the computed objective is non-finite.
+        Mean evaluation loss, pairwise ranking accuracy, Hits@1, and MRR.
     """
-    if chunk_size < 1:
-        raise ValueError("Evaluation chunk size must be positive.")
-    positive_count = samples.positive_src.numel()
-    if positive_count == 0:
-        raise ValueError("Cannot evaluate a sample set with no positive links.")
-
     model.eval()
     embeddings = model.encode(message_graph)
-    weighted_loss = 0.0
-    correctly_ranked_pairs = 0
-    top_ranked_positives = 0
-    reciprocal_rank_sum = 0.0
-    negative_count = 0
-
-    for start in range(0, positive_count, chunk_size):
-        stop = min(start + chunk_size, positive_count)
-        # Reuse the same source-aligned scoring method as training.
-        # Only sample indices are sliced; graph embeddings are reused.
-        chunk_count = stop - start
-        chunk = LinkBatch(
-            positive_src=samples.positive_src[start:stop],
-            positive_dst=samples.positive_dst[start:stop],
-            negative_dst=samples.negative_dst[start:stop],
-            hard_mask=samples.hard_mask[start:stop],
-            stats=SamplingStats(
-                requested_positives=chunk_count,
-                retained_positives=chunk_count
-            )
-        )
-        scores = model.score_batch(embeddings, chunk)
-        loss = calculate_link_loss(scores.positive, scores.negative, objective)
-        if not torch.isfinite(loss).item():
-            raise FloatingPointError("Non-finite held-out link loss.")
-        weighted_loss += loss.item() * (stop - start)
-
-        positive = scores.positive.unsqueeze(1)
-        correctly_ranked_pairs += int((positive > scores.negative).sum().item())
-        negative_count += scores.negative.numel()
-        # Any tied or higher-scoring negative pushes the true link lower.
-        higher_or_tied = (scores.negative >= positive).sum(dim=1)
-        top_ranked_positives += int((higher_or_tied == 0).sum().item())
-        reciprocal_rank_sum += (1.0 / (higher_or_tied.float() + 1.0)).sum().item()
-
-    return {
-        "loss": weighted_loss / positive_count,
-        "pairwise_accuracy": correctly_ranked_pairs / negative_count,
-        "hits_at_1": top_ranked_positives / positive_count,
-        "mrr": reciprocal_rank_sum / positive_count
-    }
+    scorer = getattr(model, "decoder", model)
+    return evaluate_link_scores(embeddings, scorer, samples, objective, chunk_size)
 
 
 @torch.no_grad()

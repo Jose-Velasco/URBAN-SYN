@@ -12,6 +12,21 @@ study:
     joint_frozen:
       config: configs/experiments/hpc_smoke_test/joint_frozen.yaml
       pretrained_from: pretrain_bpr
+    joint_frozen_scorer:
+      config: configs/experiments/hpc_smoke_test/joint_frozen_scorer.yaml
+      pretrained_from: pretrain_bpr
+    joint_frozen_bce_guidance:
+      config: configs/experiments/hpc_smoke_test/joint_frozen_bce_guidance.yaml
+      pretrained_from: pretrain_bce
+    joint_frozen_bpr_guidance:
+      config: configs/experiments/hpc_smoke_test/joint_frozen_bpr_guidance.yaml
+      pretrained_from: pretrain_bpr
+    joint_gnn_warmup_bce:
+      config: configs/experiments/hpc_smoke_test/joint_gnn_warmup_bce.yaml
+      pretrained_from: pretrain_bce
+    joint_gnn_warmup_bpr:
+      config: configs/experiments/hpc_smoke_test/joint_gnn_warmup_bpr.yaml
+      pretrained_from: pretrain_bpr
     joint_finetune:
       config: configs/experiments/hpc_smoke_test/joint_finetune.yaml
       pretrained_from: pretrain_bpr

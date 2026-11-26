@@ -1,0 +1,4 @@
+# @package _global_
+# Select a graph configuration explicitly built for GINE.
+paths:
+  graph_config: configs/experiments/graph/nyc_gine.yaml

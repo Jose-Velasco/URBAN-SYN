@@ -1,0 +1,103 @@
+# Hydra presets for joint training, with architecture-matched pretraining sources.
+# GINE BCE/BPR references retain the historical study identities.
+study:
+  name: nyc_connectivity
+  composition: configs/experiments/connectivity
+  experiments:
+
+    # Pretraining sources
+    pretrain_bce:
+      config: configs/experiments/pretraining/gine_bce.yaml
+      source_study: nyc_full_bce_comparison
+    pretrain_bpr:
+      config: configs/experiments/pretraining/gine_bpr.yaml
+      source_study: nyc_full_bpr_comparison
+    pretrain_gatv2_bce: configs/experiments/pretraining/gatv2_bce.yaml
+    pretrain_gatv2_bpr: configs/experiments/pretraining/gatv2_bpr.yaml
+
+    # GINE full experiments
+    gine_baseline:
+      preset: gine_baseline
+    gine_baseline_warmup:
+      preset: gine_baseline_warmup
+    gine_bce_frozen:
+      preset: gine_bce_frozen
+      pretrained_from: pretrain_bce
+      source_study: nyc_full_bce_comparison
+    gine_bpr_frozen:
+      preset: gine_bpr_frozen
+      pretrained_from: pretrain_bpr
+      source_study: nyc_full_bpr_comparison
+    gine_bce_warmup:
+      preset: gine_bce_warmup
+      pretrained_from: pretrain_bce
+      source_study: nyc_full_bce_comparison
+    gine_bpr_warmup:
+      preset: gine_bpr_warmup
+      pretrained_from: pretrain_bpr
+      source_study: nyc_full_bpr_comparison
+
+    # GATv2 full experiments
+    gatv2_baseline:
+      preset: gatv2_baseline
+    gatv2_baseline_warmup:
+      preset: gatv2_baseline_warmup
+    gatv2_bce_frozen:
+      preset: gatv2_bce_frozen
+      pretrained_from: pretrain_gatv2_bce
+    gatv2_bpr_frozen:
+      preset: gatv2_bpr_frozen
+      pretrained_from: pretrain_gatv2_bpr
+    gatv2_bce_warmup:
+      preset: gatv2_bce_warmup
+      pretrained_from: pretrain_gatv2_bce
+    gatv2_bpr_warmup:
+      preset: gatv2_bpr_warmup
+      pretrained_from: pretrain_gatv2_bpr
+
+    # GINE smoke experiments
+    gine_baseline_smoke:
+      preset: gine_baseline_smoke
+    gine_baseline_warmup_smoke:
+      preset: gine_baseline_warmup_smoke
+    gine_bce_frozen_smoke:
+      preset: gine_bce_frozen_smoke
+      pretrained_from: pretrain_bce
+      source_study: nyc_full_bce_comparison
+    gine_bpr_frozen_smoke:
+      preset: gine_bpr_frozen_smoke
+      pretrained_from: pretrain_bpr
+      source_study: nyc_full_bpr_comparison
+    gine_bce_warmup_smoke:
+      preset: gine_bce_warmup_smoke
+      pretrained_from: pretrain_bce
+      source_study: nyc_full_bce_comparison
+    gine_bpr_warmup_smoke:
+      preset: gine_bpr_warmup_smoke
+      pretrained_from: pretrain_bpr
+      source_study: nyc_full_bpr_comparison
+
+    # GATv2 smoke experiments
+    gatv2_baseline_smoke:
+      preset: gatv2_baseline_smoke
+    gatv2_baseline_warmup_smoke:
+      preset: gatv2_baseline_warmup_smoke
+    gatv2_bce_frozen_smoke:
+      preset: gatv2_bce_frozen_smoke
+      pretrained_from: pretrain_gatv2_bce
+    gatv2_bpr_frozen_smoke:
+      preset: gatv2_bpr_frozen_smoke
+      pretrained_from: pretrain_gatv2_bpr
+    gatv2_bce_warmup_smoke:
+      preset: gatv2_bce_warmup_smoke
+      pretrained_from: pretrain_gatv2_bce
+    gatv2_bpr_warmup_smoke:
+      preset: gatv2_bpr_warmup_smoke
+      pretrained_from: pretrain_gatv2_bpr
+
+hpc:
+  partition: gpuqs
+  gres: gpu:a100:1
+  cpus_per_task: 8
+  memory: 64G
+  time: '20:00:00'

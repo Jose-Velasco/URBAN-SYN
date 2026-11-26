@@ -1,0 +1,24 @@
+# @package _global_
+model:
+  connectivity_scorer:
+    enabled: true
+    checkpoint: auto
+    trainable: false
+training:
+  losses:
+    connectivity_bce:
+      enabled: false
+    connectivity_bpr:
+      enabled: true
+      weight: 1.0
+      include_in_total: true
+      every_steps: 1
+      negatives:
+        strategy: mixed
+        amount: 2
+        k_hops: 4
+        hard_fraction: 0.75
+tracking:
+  logging:
+    scorer:
+      enabled: true

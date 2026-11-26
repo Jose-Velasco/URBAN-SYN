@@ -190,11 +190,16 @@ class LengthBatchSampler(Sampler[list[int]]):
         # if self.shuffle=True then trajectories in a group are shuffled and the groups ordering are shuffled too
         self.shuffle = shuffle
         self.drop_last = drop_last
+        self.seed = seed
         self.generator = torch.Generator().manual_seed(seed)
         
         self.groups: dict[int, list[int]] = defaultdict(list)
         for index, length in enumerate(lengths):
             self.groups[length].append(index)
+
+    def set_epoch(self, epoch: int) -> None:
+        """Reset the shuffle seed for the selected epoch."""
+        self.generator.manual_seed(self.seed + epoch)
 
     def __iter__(self) -> Iterator[list[int]]:
         batches: list[list[int]] = []

@@ -2,7 +2,7 @@
 
 This module owns optimization, optional validation, checkpoint selection, and
 tracking. Model computation and independently configured losses are injected
-through the Stage 1/2 factory interfaces.
+through the existing experiment factories.
 """
 
 from __future__ import annotations
@@ -25,14 +25,18 @@ from torch.optim import Optimizer
 from torch_geometric.data import Data
 
 from urban_syn.diffusion.losses import LossComposer
+from urban_syn.diffusion.gradient_warmup import normalized_sigmoid_scale
+from urban_syn.link_pretrain.metrics import export_metric_history
 
 from .checkpoint import (
     experiment_fingerprint,
     load_training_checkpoint,
     save_training_checkpoint
 )
-from .config import ResolvedExperimentConfig
+from .config import GradientWarmupSettings, ResolvedExperimentConfig
+from .connectivity_diagnostics import ScorerDiagnostics, sample_monitor_roads
 from .datasets import DatasetSplit, build_epoch_loader, load_training_dataset
+from .connectivity_sampling import DiffusionBatchCollator, DiffusionNegativeSampler
 from .diagnostics import (
     EmbeddingDiagnostics,
     gradient_norm,
@@ -211,40 +215,30 @@ def _mean_metrics(metrics: list[dict[str, float]]) -> dict[str, float]:
     return {key: sums[key] / counts[key] for key in sums}
 
 
-def _assert_joint_gradients(model: nn.Module) -> None:
-    """Verify that each trainable model branch receives valid gradients.
+def _skip_gnn_update_when_zero_scale(model: nn.Module, scale: float) -> None:
+    """Prevent Adam/AdamW weight decay or momentum from updating the GNN.
 
     Parameters
     ----------
     model : nn.Module
-        Joint road encoder and diffusion denoiser after backpropagation.
+        Joint model exposing its road_encoder module.
+    scale : float
+        Gradient scale used for the current training forward.
 
-    Returns
-    -------
-    None
-        Raises when an expected branch is disconnected from the objective.
+    Notes
+    -----
+    A zero gradient tensor still permits AdamW to change parameters. Setting
+    gradients to None causes PyTorch optimizers to skip those parameters.
     """
-    for component in ("road_encoder", "diff_model"):
-        branch = getattr(model, component, None)
-        if branch is None:
-            continue
-        # The frozen pretrained encoder is intentionally absent from the
-        # optimizer and must not be required to produce gradients.
-        if not any(parameter.requires_grad for parameter in branch.parameters()):
-            continue
-        gradients = (
-            parameter.grad for parameter in branch.parameters()
-            if parameter.requires_grad and parameter.grad is not None
-        )
-        if not any(torch.isfinite(gradient).all().item() and gradient.abs().sum().item() > 0
-                   for gradient in gradients):
-            raise RuntimeError(f"Joint training produced no finite, nonzero {component} gradients.")
+    if scale == 0.0:
+        for parameter in model.road_encoder.parameters():
+            parameter.grad = None
 
 
 def run_epoch(
     model: nn.Module,
     graph: Data,
-    batches: Iterable[tuple[Tensor, Tensor]],
+    batches: Iterable[tuple[Tensor, Tensor] | dict[str, Tensor | int]],
     composer: LossComposer,
     optimizer: Optimizer | None,
     grad_clip_norm: float,
@@ -252,7 +246,8 @@ def run_epoch(
     max_batches: int | None,
     log_every_steps: int,
     run: TrackingRun | None = None,
-    gnn_diagnostics_every_steps: int = 100
+    gnn_diagnostics_every_steps: int = 100,
+    gnn_gradient_warmup: GradientWarmupSettings | None = None
 ) -> tuple[dict[str, float], int]:
     """Execute one full training or validation epoch with shared model outputs.
 
@@ -262,8 +257,8 @@ def run_epoch(
         Trainable joint model exposing compute_training_outputs/losses.
     graph : Data
         Graph on the same device as the joint model.
-    batches : Iterable[tuple[Tensor, Tensor]]
-        Same-length road-ID and [0, 1] rate batches.
+    batches : Iterable
+        Same-length road IDs and rates, with prepared negatives for BPR.
     composer : LossComposer
         Independently configured objective implementations.
     optimizer : Optimizer | None
@@ -280,6 +275,9 @@ def run_epoch(
         Optional tracker run for step-level metrics.
     gnn_diagnostics_every_steps : int, default=100
         Frequency of optional gradient diagnostics, in optimizer steps; 0 disables.
+    gnn_gradient_warmup : GradientWarmupSettings | None, default=None
+        Optional normalized-sigmoid diffusion-to-GNN gradient schedule.
+        Ignored during no-gradient validation.
 
     Returns
     -------
@@ -295,10 +293,22 @@ def run_epoch(
     prefix = "train" if training else "val"
     recorded: list[dict[str, float]] = []
 
-    for batch_index, (road_ids, rates) in enumerate(batches):
+    for batch_index, batch in enumerate(batches):
         if max_batches is not None and batch_index >= max_batches:
             break
+        sample_step = global_step if training else batch_index
+        batch_values = {"sample_step": sample_step}
+        if isinstance(batch, dict):
+            road_ids, rates = batch["road_ids"], batch["rates"]
+            if batch["sample_step"] != sample_step:
+                raise ValueError("Prepared BPR batch has the wrong sampling step.")
+            for key in ("negative_retained_mask", "negative_model_ids"):
+                if key in batch:
+                    batch_values[key] = batch[key].to(device=graph.x.device, non_blocking=True)
+        else:
+            road_ids, rates = batch
         road_ids = road_ids.to(device=graph.x.device, dtype=torch.long, non_blocking=True)
+        batch_values["road_ids"] = road_ids
         rates = rates.to(device=graph.x.device, dtype=graph.x.dtype, non_blocking=True)
 
         # Existing diffusion training expects [-1, 1] position rates.
@@ -306,20 +316,41 @@ def run_epoch(
         if training:
             optimizer.zero_grad(set_to_none=True)
 
+        warmup_enabled = (
+            training and gnn_gradient_warmup is not None
+            and gnn_gradient_warmup.enabled
+        )
+        gradient_scale = 1.0
+        if warmup_enabled:
+            gradient_scale = normalized_sigmoid_scale(
+                global_step,
+                gnn_gradient_warmup.warmup_steps,
+                gnn_gradient_warmup.gamma_min,
+                gnn_gradient_warmup.k,
+                gnn_gradient_warmup.c
+            )
+
         with torch.set_grad_enabled(training):
-            output = model.compute_training_outputs(graph, road_ids, normalized_rates)
+            if warmup_enabled:
+                output = model.compute_training_outputs(
+                    graph, road_ids, normalized_rates,
+                    gnn_gradient_scale=gradient_scale
+                )
+            else:
+                output = model.compute_training_outputs(graph, road_ids, normalized_rates)
             losses = model.compute_training_losses(
                 output,
                 composer,
-                step=global_step if training else batch_index
+                step=global_step if training else batch_index,
+                batch=batch_values
             )
             if not torch.isfinite(losses.total).item():
                 raise FloatingPointError(f"Non-finite {prefix} objective in batch {batch_index}.")
             diagnostic_metrics = {}
             if training:
                 losses.total.backward()
-                if global_step == 0:
-                    _assert_joint_gradients(model)
+                if warmup_enabled:
+                    _skip_gnn_update_when_zero_scale(model, gradient_scale)
                 if should_log_gradient_diagnostics(global_step + 1, gnn_diagnostics_every_steps):
                     diagnostic_metrics = {
                         "train/gnn_grad_norm": gradient_norm(model.road_encoder),
@@ -332,6 +363,8 @@ def run_epoch(
                 global_step += 1
 
         metrics = _batch_loss_metrics(losses, prefix)
+        if warmup_enabled:
+            metrics["train/gnn_gradient_scale"] = gradient_scale
         if training:
             metrics[f"{prefix}/grad_norm"] = float(grad_norm.item())
             metrics.update(diagnostic_metrics)
@@ -388,6 +421,49 @@ def _checkpoint_monitor(config: ResolvedExperimentConfig) -> str:
     return "val/objective" if choice == "val_loss" else "train/objective"
 
 
+
+@torch.no_grad()
+def _observe_representation_metrics(
+    model: nn.Module,
+    graph: Data,
+    embedding_diagnostics: EmbeddingDiagnostics | None,
+    scorer_diagnostics: ScorerDiagnostics | None
+) -> dict[str, float]:
+    """Share one evaluation-mode road encoding across active diagnostics.
+
+    Args:
+        model: Joint diffusion model with road encoder and optional scorer.
+        graph: Device-ready road graph in the current GNN's node order.
+        embedding_diagnostics: Existing fixed-road representation metrics.
+        scorer_diagnostics: Fixed graph-link scorer metrics, when enabled.
+
+    Returns:
+        Read-only metrics. Encoder and scorer training modes are restored.
+    """
+    if embedding_diagnostics is None and scorer_diagnostics is None:
+        return {}
+    encoder = model.road_encoder
+    scorer = getattr(model, "connectivity_scorer", None)
+    was_training = encoder.training
+    scorer_was_training = scorer.training if scorer is not None else None
+    encoder.eval()
+    if scorer is not None:
+        scorer.eval()
+    try:
+        embeddings = model.encode_road_nodes(graph)
+        values: dict[str, float] = {}
+        if embedding_diagnostics is not None:
+            values.update(embedding_diagnostics.observe_embeddings(embeddings, graph))
+        if scorer_diagnostics is not None:
+            if scorer is None:
+                raise ValueError("Scorer diagnostics require a loaded connectivity scorer.")
+            values.update(scorer_diagnostics.observe(embeddings, scorer))
+        return values
+    finally:
+        encoder.train(was_training)
+        if scorer is not None:
+            scorer.train(scorer_was_training)
+
 def _train_epochs(
     config: ResolvedExperimentConfig,
     components: TrainingComponents,
@@ -438,31 +514,94 @@ def _train_epochs(
     best_epoch = int(restored["best_epoch"]) if restored else 0
     run.set_tags({"checkpoint_monitor": monitor})
     diagnostic_logging = settings.tracking.logging
+    scorer_settings = getattr(diagnostic_logging, "scorer", None)
+    scorer_enabled = scorer_settings is not None and scorer_settings.enabled
+    scorer_diagnostics = None
+    monitoring_roads = None
+    embedding_from_trajectories = (
+        diagnostic_logging.gnn_embedding_enabled
+        and getattr(diagnostic_logging, "gnn_embedding_source", "graph") == "trajectories"
+    )
+    if scorer_enabled or embedding_from_trajectories:
+        monitoring_roads = sample_monitor_roads(
+            dataset,
+            split,
+            training.validation.enabled,
+            max(scorer_settings.sample_size * 3, diagnostic_logging.gnn_embedding_sample_size),
+            settings.experiment.seed
+        )
+    if scorer_enabled:
+        scorer = components.model.connectivity_scorer
+        scorer_diagnostics = ScorerDiagnostics(
+            components.graph.edge_index,
+            components.graph.num_nodes,
+            monitoring_roads,
+            scorer_settings,
+            settings.experiment.seed,
+            getattr(scorer, "pretrained_objective", None),
+            "val" if training.validation.enabled else "train"
+        )
+        scorer_diagnostics.write_sample_manifest(
+            run_dir / "metrics" / "scorer_link_sample.json", components.graph.edge_id
+        )
     embedding_diagnostics = (
-        EmbeddingDiagnostics(diagnostic_logging.gnn_embedding_sample_size, settings.experiment.seed)
+        EmbeddingDiagnostics(
+            diagnostic_logging.gnn_embedding_sample_size,
+            settings.experiment.seed,
+            road_indices=monitoring_roads if embedding_from_trajectories else None,
+            metric_split=(
+                "val" if embedding_from_trajectories and training.validation.enabled
+                else "train"
+            )
+        )
         if diagnostic_logging.gnn_embedding_enabled else None
     )
-    if embedding_diagnostics is not None:
-        # Record the initial GNN before the first optimizer step. On resume,
-        # observe restored weights only as the next drift reference.
-        initial = embedding_diagnostics.observe(components.model, components.graph)
-        embedding_diagnostics.write_sample_manifest(
-            run_dir / "metrics" / "road_embedding_sample.json", components.graph
+    if embedding_diagnostics is not None or scorer_diagnostics is not None:
+        initial = _observe_representation_metrics(
+            components.model, components.graph, embedding_diagnostics, scorer_diagnostics
         )
+        if embedding_diagnostics is not None:
+            embedding_diagnostics.write_sample_manifest(
+                run_dir / "metrics" / "road_embedding_sample.json", components.graph
+            )
         if restored is None:
             _record_epoch_metrics(run_dir / "metrics" / "history.jsonl", 0, 0, initial)
             run.log_metrics({**initial, "epoch": 0.0}, step=0)
 
-    for epoch in range(start_epoch, training.epochs + 1):
-        train_batches = build_epoch_loader(
-            dataset,
-            split.train_indices,
-            training.batch_size,
-            seed=settings.experiment.seed + epoch,
-            num_workers=settings.runtime.num_workers,
-            shuffle=True,
-            pin_memory=components.device.type == "cuda"
+    ranking = training.losses.connectivity_bpr
+    collator = None
+    if ranking.enabled:
+        negatives = DiffusionNegativeSampler(
+            components.graph.edge_index,
+            int(components.graph.num_nodes),
+            ranking.negatives,
+            settings.experiment.seed
         )
+        collator = DiffusionBatchCollator(negatives, ranking.every_steps)
+
+    runtime = settings.runtime
+    loader_options = {
+        "seed": settings.experiment.seed,
+        "num_workers": runtime.num_workers,
+        "pin_memory": runtime.pin_memory and components.device.type == "cuda",
+        "prefetch_factor": runtime.prefetch_factor,
+        "persistent_workers": runtime.persistent_workers,
+        "collate_fn": collator
+    }
+    train_batches = build_epoch_loader(
+        dataset, split.train_indices, training.batch_size, shuffle=True, **loader_options
+    )
+    validation_batches = None
+    if training.validation.enabled:
+        validation_batches = build_epoch_loader(
+            dataset, split.validation_indices, training.batch_size, shuffle=False, **loader_options
+        )
+
+    for epoch in range(start_epoch, training.epochs + 1):
+        if collator is not None:
+            train_batches.batch_sampler.set_epoch(epoch, global_step)
+        else:
+            train_batches.batch_sampler.set_epoch(epoch)
         train_metrics, global_step = run_epoch(
             components.model,
             components.graph,
@@ -474,20 +613,12 @@ def _train_epochs(
             training.max_batches,
             settings.tracking.logging.metrics_every_steps,
             run,
-            gnn_diagnostics_every_steps=settings.tracking.logging.gnn_diagnostics_every_steps
+            gnn_diagnostics_every_steps=settings.tracking.logging.gnn_diagnostics_every_steps,
+            gnn_gradient_warmup=settings.model.road_encoder.gradient_warmup
         )
         metrics = dict(train_metrics)
 
-        if training.validation.enabled:
-            validation_batches = build_epoch_loader(
-                dataset,
-                split.validation_indices,
-                training.batch_size,
-                seed=settings.experiment.seed,
-                num_workers=settings.runtime.num_workers,
-                shuffle=False,
-                pin_memory=components.device.type == "cuda"
-            )
+        if validation_batches is not None:
             val_metrics, _ = run_epoch(
                 components.model,
                 components.graph,
@@ -510,12 +641,21 @@ def _train_epochs(
             best_loss = monitored_loss
             best_epoch = epoch
 
-        # Embedding diagnostics are scheduled independently of all checkpoint files.
-        if (
+        embed_due = (
             embedding_diagnostics is not None
             and epoch % diagnostic_logging.gnn_embedding_every_epochs == 0
-        ):
-            metrics.update(embedding_diagnostics.observe(components.model, components.graph))
+        )
+        scorer_due = (
+            scorer_diagnostics is not None
+            and epoch % scorer_settings.every_epochs == 0
+        )
+        if embed_due or scorer_due:
+            metrics.update(_observe_representation_metrics(
+                components.model,
+                components.graph,
+                embedding_diagnostics if embed_due else None,
+                scorer_diagnostics if scorer_due else None
+            ))
 
         _record_epoch_metrics(run_dir / "metrics" / "history.jsonl", epoch, global_step, metrics)
         run.log_metrics({**metrics, "epoch": float(epoch)}, step=global_step)
@@ -558,11 +698,15 @@ def _train_epochs(
 
     completed_epoch = max(start_epoch - 1, training.epochs)
     run.set_tags({"best_epoch": str(best_epoch), "completed_epochs": str(completed_epoch)})
+    history = run_dir / "metrics" / "history.jsonl"
+    export_metric_history(history, run_dir / "metrics" / "metrics.parquet")
     for destination, path in (
         ("configuration", run_dir / "resolved_config.json"),
         ("configuration", run_dir / "data_split.json"),
         ("metrics", run_dir / "metrics" / "history.jsonl"),
-        ("metrics", run_dir / "metrics" / "road_embedding_sample.json")
+        ("metrics", run_dir / "metrics" / "metrics.parquet"),
+        ("metrics", run_dir / "metrics" / "road_embedding_sample.json"),
+        ("metrics", run_dir / "metrics" / "scorer_link_sample.json")
     ):
         if path.is_file():
             run.log_artifact(path, artifact_path=destination)
@@ -604,7 +748,10 @@ def run_joint_training(config: ResolvedExperimentConfig, tracker: ExperimentTrac
         components = build_training_components(config)
         dataset, split = load_training_dataset(config, components.graph.edge_id)
         _save_run_files(config, split, run_dir)
-        composer = build_loss_composer(training.losses)
+        composer = build_loss_composer(
+            training.losses,
+            scorer=getattr(components.model, "connectivity_scorer", None)
+        )
         fingerprint = experiment_fingerprint(config, components.graph)
         monitor = _checkpoint_monitor(config)
         road_settings = settings.model.road_encoder

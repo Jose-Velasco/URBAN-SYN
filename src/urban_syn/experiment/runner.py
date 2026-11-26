@@ -26,6 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--encoder-checkpoint", default=None,
         help="Pretrained encoder.pt selected by the study or explicitly for this run"
     )
+    parser.add_argument("--checkpoint", default=None, help="Joint checkpoint for standalone generation")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Show stage plan without checking files")
     mode.add_argument("--validate-only", action="store_true", help="Check source files without executing")
@@ -47,9 +48,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     args = build_parser().parse_args(argv)
     try:
+        if args.checkpoint is not None and args.target != "generate":
+            raise ValueError("--checkpoint is only supported with the generate target.")
         config = load_experiment_config(
             args.config, project_root=args.project_root,
-            encoder_checkpoint=args.encoder_checkpoint
+            encoder_checkpoint=args.encoder_checkpoint,
+            generation_checkpoint=args.checkpoint
         )
         stages = stages_for_target(config, args.target)
         # Keep stage outputs within this invocation, not in module-global state.

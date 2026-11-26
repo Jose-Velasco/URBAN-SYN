@@ -1,0 +1,25 @@
+# @package _global_
+# Small integration run. Shares the architecture, objectives and warmup settings
+# with its corresponding full-training preset.
+model:
+  diffusion:
+    diffusion_steps: 20
+training:
+  epochs: 3
+  max_batches: 3
+  batch_size: 16
+  validation:
+    enabled: false
+  checkpoint:
+    every_epochs: 1
+tracking:
+  logging:
+    gnn_embedding_every_epochs: 1
+    gnn_embedding_sample_size: 64
+    scorer:
+      every_epochs: 1
+      sample_size: 16
+      chunk_size: 16
+generation:
+  num_trajectories: 2
+  batch_size: 2

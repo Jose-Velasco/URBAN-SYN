@@ -1,0 +1,27 @@
+# @package _global_
+defaults:
+- /gnn: gatv2
+- /encoder: frozen
+- /pretraining: bpr
+- /connectivity: bpr
+- _self_
+experiment:
+  name: nyc_full_gatv2_connectivity_bpr_frozen
+  seed: 101
+tracking:
+  tags:
+    dataset: nyc_15s_enriched_moves
+    pipeline: joint_diffusion
+    strategy: bpr_frozen
+    encoder_init: pretrained
+    conditioning: none
+    gradient_losses: noise_mse_reconstruction_mse_connectivity_bpr
+    comparison: connectivity_regularization
+    road_encoder: pretrained
+    gnn_update: frozen
+    scorer: frozen_bpr
+    connectivity_loss: bpr
+    sequence_representation: opath
+    gnn_architecture: gatv2
+generation:
+  output_name: nyc_full_gatv2_connectivity_bpr_frozen_generated_gps.parquet

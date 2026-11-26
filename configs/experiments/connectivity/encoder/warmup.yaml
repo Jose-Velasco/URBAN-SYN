@@ -1,0 +1,15 @@
+# @package _global_
+# Pretrained encoder updated by diffusion with normalized sigmoid gradient warmup.
+model:
+  road_encoder:
+    mode: joint
+    initialization: pretrained
+    trainable: true
+    checkpoint: null
+    gradient_warmup:
+      enabled: true
+      schedule: normalized_sigmoid
+      warmup_steps: 10000
+      gamma_min: 0.0
+      k: 10.0
+      c: 0.8

@@ -1,0 +1,4 @@
+# @package _global_
+tracking:
+  tags:
+    pretraining_objective: none

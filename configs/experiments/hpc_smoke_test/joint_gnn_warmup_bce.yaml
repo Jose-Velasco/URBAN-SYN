@@ -1,0 +1,123 @@
+# Short joint-training check for warmed GNN embeddings with BCE connectivity regularization.
+# Reuse the matching BCE pretraining run through hpc_smoke_test/study.yaml.
+experiment:
+  name: nyc_joint_gnn_warmup_bce_smoke
+  seed: 101
+
+paths:
+  graph_config: configs/experiments/hpc_smoke_test/nyc_graph.yaml
+  train_sequences: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_train_prepared_road_sequences.parquet
+  test_sequences: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_test_prepared_road_sequences.parquet
+  trip_id_map: fmm_scripts/data/nyc_15s_fmm_trip_id_map.csv
+  road_network: fmm_scripts/data/road_network/nyc.gpkg
+  length_distribution: fmm_scripts/outputs/urban_syn_ready/nyc_15s_enriched_moves_train_length_distribution.npy
+  output_root: outputs/experiments
+
+model:
+  diffusion:
+    hidden_dim: 256
+    residual_layers: 10
+    diffusion_steps: 1000
+    beta_start: 0.0001
+    beta_end: 0.02
+    similarity_chunk_size: 2048
+  road_encoder:
+    initialization: pretrained
+    trainable: true
+    gradient_warmup:
+      enabled: true
+      schedule: normalized_sigmoid
+      warmup_steps: 1  # Two-batch smoke run exercises zero and full coefficients.
+      gamma_min: 0.0
+      k: 10.0
+      c: 0.8
+    checkpoint: null                    # Injected by the Slurm study launcher.
+  connectivity_scorer:
+    enabled: true
+    checkpoint: auto                    # Matching best.pt beside encoder.pt.
+    trainable: false                    # Scorer weights stay fixed.
+  conditioning:
+    enabled: false
+
+training:
+  epochs: 1
+  batch_size: 8
+  max_batches: 2
+  grad_clip_norm: 1.0
+  optimizer:
+    name: adamw
+    learning_rate: 0.001
+    weight_decay: 0.01
+  scheduler:
+    name: none
+  losses:
+    noise_mse:
+      enabled: true
+      weight: 1.0
+      include_in_total: true
+      every_steps: 1
+    reconstruction_mse:
+      enabled: true
+      weight: 1.0
+      include_in_total: true
+      every_steps: 1
+    hard_connectivity:
+      enabled: false
+      include_in_total: false
+    connectivity_bce:
+      enabled: true
+      weight: 0.1
+      include_in_total: true
+      every_steps: 1
+  validation:
+    enabled: false
+  checkpoint:
+    monitor: auto
+    save_last: true
+    save_best: true
+    every_epochs: 1
+    resume_from: null
+
+generation:
+  enabled: true
+  checkpoint_choice: best
+  road_layer: roads
+  output_name: nyc_gnn_warmup_bce_smoke_generated.parquet
+  num_trajectories: 2
+  batch_size: 2
+  sampler:
+    name: ddpm
+
+tracking:
+  enabled: true
+  provider: mlflow
+  storage_scope: job
+  experiment_name: urban_syn_gnn_warmup_bce_smoke
+  tags:
+    component: pretrained_gnn_warmup_bce
+    purpose: road_connectivity_regularization
+  logging:
+    metrics_every_steps: 1
+    gnn_diagnostics_every_steps: 0
+    gnn_embedding_enabled: true
+    gnn_embedding_every_epochs: 1
+    gnn_embedding_sample_size: 64
+    gnn_embedding_source: trajectories
+    scorer:
+      enabled: true
+      every_epochs: 1
+      sample_size: 64
+      chunk_size: 32
+      negatives:
+        strategy: mixed
+        amount: 2
+        k_hops: 2
+        hard_fraction: 0.75
+    log_system_metrics: true
+    log_resolved_config: true
+    log_git_info: true
+
+runtime:
+  device: cuda
+  precision: fp32
+  num_workers: 4

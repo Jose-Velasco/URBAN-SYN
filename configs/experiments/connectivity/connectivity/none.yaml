@@ -1,0 +1,11 @@
+# @package _global_
+training:
+  losses:
+    connectivity_bce:
+      enabled: false
+    connectivity_bpr:
+      enabled: false
+tracking:
+  logging:
+    scorer:
+      enabled: false
