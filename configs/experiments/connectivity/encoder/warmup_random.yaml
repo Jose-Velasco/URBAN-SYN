@@ -9,7 +9,7 @@ model:
     gradient_warmup:
       enabled: true
       schedule: normalized_sigmoid
-      warmup_steps: 10000
+      warmup_steps: 50000
       gamma_min: 0.0
       k: 10.0
       c: 0.8

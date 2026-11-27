@@ -63,7 +63,7 @@ training:
     connectivity_bpr:
       enabled: false
   validation:
-    enabled: false
+    enabled: true
     fraction: 0.1
     split_group_columns:
     - uid
@@ -104,7 +104,7 @@ tracking:
       chunk_size: 128
       negatives:
         strategy: mixed
-        amount: 2
+        amount: 6
         k_hops: 4
         hard_fraction: 0.75
   artifacts:
@@ -124,7 +124,7 @@ generation:
 runtime:
   device: cuda
   precision: fp32
-  num_workers: 4
+  num_workers: 5
   prefetch_factor: 2
   persistent_workers: true
   pin_memory: true

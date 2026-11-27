@@ -15,7 +15,7 @@ training:
       every_steps: 1
       negatives:
         strategy: mixed
-        amount: 2
+        amount: 6
         k_hops: 4
         hard_fraction: 0.75
 tracking:
